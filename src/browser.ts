@@ -80,17 +80,16 @@ export class CrawlPage {
       return snapshotRole({
         cdpUrl: this.cdpUrl,
         targetId: this.targetId,
-        selector: opts?.selector,
-        frameSelector: opts?.frameSelector,
+        selector: opts.selector,
+        frameSelector: opts.frameSelector,
         refsMode: 'role',
         options: {
-          interactive: opts?.interactive,
-          compact: opts?.compact,
-          maxDepth: opts?.maxDepth,
+          interactive: opts.interactive,
+          compact: opts.compact,
+          maxDepth: opts.maxDepth,
         },
       });
     }
-    // Default: aria mode (uses Playwright's _snapshotForAI)
     return snapshotAi({
       cdpUrl: this.cdpUrl,
       targetId: this.targetId,

@@ -22,7 +22,7 @@ export async function clickViaPlaywright(opts: {
   restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
 
   const locator = refLocator(page, opts.ref);
-  const timeout = Math.max(500, Math.min(60000, Math.floor(opts.timeoutMs ?? 8000)));
+  const timeout = normalizeTimeoutMs(opts.timeoutMs, 8000, 60000);
 
   try {
     if (opts.doubleClick) {
@@ -47,7 +47,7 @@ export async function hoverViaPlaywright(opts: {
 
   try {
     await refLocator(page, opts.ref).hover({
-      timeout: Math.max(500, Math.min(60000, opts.timeoutMs ?? 8000)),
+      timeout: normalizeTimeoutMs(opts.timeoutMs, 8000, 60000),
     });
   } catch (err) {
     throw toAIFriendlyError(err, opts.ref);
@@ -69,7 +69,7 @@ export async function typeViaPlaywright(opts: {
   restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
 
   const locator = refLocator(page, opts.ref);
-  const timeout = Math.max(500, Math.min(60000, opts.timeoutMs ?? 8000));
+  const timeout = normalizeTimeoutMs(opts.timeoutMs, 8000, 60000);
 
   try {
     if (opts.slowly) {
@@ -98,7 +98,7 @@ export async function selectOptionViaPlaywright(opts: {
 
   try {
     await refLocator(page, opts.ref).selectOption(opts.values, {
-      timeout: Math.max(500, Math.min(60000, opts.timeoutMs ?? 8000)),
+      timeout: normalizeTimeoutMs(opts.timeoutMs, 8000, 60000),
     });
   } catch (err) {
     throw toAIFriendlyError(err, opts.ref);
@@ -118,7 +118,7 @@ export async function dragViaPlaywright(opts: {
 
   try {
     await refLocator(page, opts.startRef).dragTo(refLocator(page, opts.endRef), {
-      timeout: Math.max(500, Math.min(60000, opts.timeoutMs ?? 8000)),
+      timeout: normalizeTimeoutMs(opts.timeoutMs, 8000, 60000),
     });
   } catch (err) {
     throw toAIFriendlyError(err, `${opts.startRef} -> ${opts.endRef}`);
@@ -135,14 +135,13 @@ export async function fillFormViaPlaywright(opts: {
   ensurePageState(page);
   restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
 
-  const timeout = Math.max(500, Math.min(60000, opts.timeoutMs ?? 8000));
+  const timeout = normalizeTimeoutMs(opts.timeoutMs, 8000, 60000);
 
   for (const field of opts.fields) {
     const ref = field.ref.trim();
     const type = field.type.trim();
     const rawValue = field.value;
-    const value = typeof rawValue === 'string' ? rawValue :
-      (typeof rawValue === 'number' || typeof rawValue === 'boolean') ? String(rawValue) : '';
+    const value = rawValue == null ? '' : String(rawValue);
 
     if (!ref || !type) continue;
     const locator = refLocator(page, ref);

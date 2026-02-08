@@ -1,7 +1,5 @@
 export { BrowserClaw, CrawlPage } from './browser.js';
 export type { FrameEvalResult } from './actions/evaluate.js';
-
-// Types
 export type {
   LaunchOptions,
   ConnectOptions,

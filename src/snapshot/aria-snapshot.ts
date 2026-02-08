@@ -4,7 +4,7 @@ import {
   buildRoleSnapshotFromAiSnapshot,
   getRoleSnapshotStats,
 } from './ref-map.js';
-import type { SnapshotResult, AriaSnapshotResult, AriaNode, SnapshotOptions } from '../types.js';
+import type { SnapshotResult, AriaSnapshotResult, AriaNode } from '../types.js';
 
 /**
  * Take a role-based snapshot using Playwright's ariaSnapshot() or _snapshotForAI.

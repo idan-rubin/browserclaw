@@ -1,4 +1,4 @@
-import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget } from '../connection.js';
+import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget, normalizeTimeoutMs } from '../connection.js';
 import { buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
 import type { SnapshotResult, SnapshotOptions } from '../types.js';
 
@@ -22,7 +22,7 @@ export async function snapshotAi(opts: {
   }
 
   const result = await maybe._snapshotForAI({
-    timeout: Math.max(500, Math.min(60000, Math.floor(opts.timeoutMs ?? 5000))),
+    timeout: normalizeTimeoutMs(opts.timeoutMs, 5000, 60000),
     track: 'response',
   });
 
@@ -31,10 +31,8 @@ export async function snapshotAi(opts: {
   const limit = typeof maxChars === 'number' && Number.isFinite(maxChars) && maxChars > 0
     ? Math.floor(maxChars) : undefined;
 
-  let truncated = false;
   if (limit && snapshot.length > limit) {
     snapshot = `${snapshot.slice(0, limit)}\n\n[...TRUNCATED - page too large]`;
-    truncated = true;
   }
 
   const built = buildRoleSnapshotFromAiSnapshot(snapshot, opts.options);

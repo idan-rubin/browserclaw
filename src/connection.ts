@@ -180,13 +180,13 @@ export function restoreRoleRefsForTarget(opts: {
 }): void {
   const targetId = opts.targetId?.trim() || '';
   if (!targetId) return;
-  const cached = roleRefsByTarget.get(roleRefsKey(opts.cdpUrl, targetId));
-  if (!cached) return;
+  const entry = roleRefsByTarget.get(roleRefsKey(opts.cdpUrl, targetId));
+  if (!entry) return;
   const state = ensurePageState(opts.page);
   if (state.roleRefs) return;
-  state.roleRefs = cached.refs;
-  state.roleRefsFrameSelector = cached.frameSelector;
-  state.roleRefsMode = cached.mode;
+  state.roleRefs = entry.refs;
+  state.roleRefsFrameSelector = entry.frameSelector;
+  state.roleRefsMode = entry.mode;
 }
 
 // ── Connect to Browser ──
@@ -332,8 +332,6 @@ export function toAIFriendlyError(error: unknown, selector: string): Error {
   return error instanceof Error ? error : new Error(message);
 }
 
-function normalizeTimeoutMs(timeoutMs: number | undefined, fallback: number): number {
-  return Math.max(500, Math.min(120000, timeoutMs ?? fallback));
+export function normalizeTimeoutMs(timeoutMs: number | undefined, fallback: number, maxMs = 120000): number {
+  return Math.max(500, Math.min(maxMs, timeoutMs ?? fallback));
 }
-
-export { normalizeTimeoutMs };
