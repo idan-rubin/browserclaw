@@ -54,15 +54,6 @@ export async function createPageViaPlaywright(opts: {
   };
 }
 
-export async function closePageViaPlaywright(opts: {
-  cdpUrl: string;
-  targetId?: string;
-}): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
-  await page.close();
-}
-
 export async function closePageByTargetIdViaPlaywright(opts: {
   cdpUrl: string;
   targetId: string;
