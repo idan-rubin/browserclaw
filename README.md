@@ -1,6 +1,6 @@
 # browserclaw
 
-AI-friendly browser automation with **snapshot + ref targeting**. No CSS selectors, no XPath, no vision — just numbered refs that map to interactive elements.
+A standalone, typed wrapper around [OpenClaw](https://github.com/openclaw/openclaw)'s browser automation module. Provides AI-friendly browser control with **snapshot + ref targeting** — no CSS selectors, no XPath, no vision, just numbered refs that map to interactive elements.
 
 ```typescript
 import { BrowserClaw } from 'browserclaw';
