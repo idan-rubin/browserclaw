@@ -20,9 +20,9 @@ async function main() {
 
     // Fill each text field
     for (const [ref, info] of textboxes) {
-      const value = info.name === 'Customer name' ? 'Idan Rubin'
+      const value = info.name === 'Customer name' ? 'Jane Doe'
         : info.name === 'Telephone' ? '555-1234'
-          : info.name === 'E-mail address' ? 'idan@example.com'
+          : info.name === 'E-mail address' ? 'jane@example.com'
             : 'test';
       console.log(`Filling ${ref} (${info.name}): ${value}`);
       await page.type(ref, value);

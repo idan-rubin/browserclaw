@@ -1,5 +1,8 @@
 # browserclaw
 
+[![npm version](https://img.shields.io/npm/v/browserclaw.svg)](https://www.npmjs.com/package/browserclaw)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+
 A standalone, typed wrapper around [OpenClaw](https://github.com/openclaw/openclaw)'s browser automation module. Provides AI-friendly browser control with **snapshot + ref targeting** — no CSS selectors, no XPath, no vision, just numbered refs that map to interactive elements.
 
 ```typescript
@@ -38,7 +41,7 @@ The snapshot + ref pattern means:
 npm install browserclaw
 ```
 
-Requires Chrome, Brave, Edge, or Chromium installed on the system. browserclaw automatically detects your default Chromium-based browser.
+Requires a Chromium-based browser installed on the system (Chrome, Brave, Edge, or Chromium). browserclaw auto-detects your installed browser — no need to install Playwright browsers separately.
 
 ## How It Works
 
@@ -64,6 +67,8 @@ Requires Chrome, Brave, Edge, or Chromium installed on the system. browserclaw a
 1. **Snapshot** a page → get an AI-readable text tree with numbered refs (`e1`, `e2`, `e3`...)
 2. **AI reads** the snapshot text and picks a ref to act on
 3. **Actions target refs** → browserclaw resolves each ref to a Playwright locator and executes the action
+
+> **Note:** Refs are not stable across navigations or page changes. Always take a fresh snapshot before acting — if an action fails, re-snapshot and use the new refs.
 
 ## API
 
@@ -118,7 +123,7 @@ const { nodes } = await page.ariaSnapshot({ limit: 500 });
 ```
 
 **Snapshot modes:**
-- `'aria'` (default) — Uses Playwright's `_snapshotForAI()`. Refs are resolved via `aria-ref` locators. Best for most use cases.
+- `'aria'` (default) — Uses Playwright's `_snapshotForAI()`. Refs are resolved via `aria-ref` locators. Best for most use cases. Requires `playwright-core` >= 1.50.
 - `'role'` — Uses Playwright's `ariaSnapshot()` + `getByRole()`. Supports `selector` and `frameSelector` for scoped snapshots.
 
 ### Actions
@@ -150,8 +155,8 @@ await page.press('Meta+Shift+p');
 
 // Fill multiple form fields at once
 await page.fill([
-  { ref: 'e2', type: 'text', value: 'Idan' },
-  { ref: 'e4', type: 'text', value: 'idan@example.com' },
+  { ref: 'e2', type: 'text', value: 'Jane Doe' },
+  { ref: 'e4', type: 'text', value: 'jane@example.com' },
   { ref: 'e6', type: 'checkbox', value: true },
 ]);
 ```
@@ -234,23 +239,29 @@ await page.resize(1280, 720);
 
 ## Examples
 
-See the [`examples/`](./examples) directory:
+See the [`examples/`](./examples) directory for runnable demos:
 
 - **[basic.ts](./examples/basic.ts)** — Navigate, snapshot, click a ref
 - **[form-fill.ts](./examples/form-fill.ts)** — Fill a multi-field form using refs
 - **[ai-agent.ts](./examples/ai-agent.ts)** — AI agent loop pattern with Claude/GPT
 
+Run from the source tree:
+
+```bash
+npx tsx examples/basic.ts
+```
+
 ## Requirements
 
 - **Node.js** >= 18
 - **Chromium-based browser** installed (Chrome, Brave, Edge, or Chromium)
-- **playwright-core** (installed automatically as a dependency)
+- **playwright-core** >= 1.50 (installed automatically as a dependency)
 
 No need to install Playwright browsers — browserclaw uses your system's existing Chrome installation via CDP.
 
 ## Contributing
 
-Contributions are welcome! Please:
+Contributions welcome! Please:
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b my-feature`)
@@ -258,6 +269,10 @@ Contributions are welcome! Please:
 4. Run `npm run typecheck && npm run build` to verify
 5. Submit a pull request
 
+## Acknowledgments
+
+browserclaw extracts and wraps the browser automation module from [OpenClaw](https://github.com/openclaw/openclaw) by [Peter Steinberger](https://github.com/steipete). The snapshot + ref system, CDP connection management, and Playwright integration originate from that project.
+
 ## License
 
-MIT
+[MIT](./LICENSE)

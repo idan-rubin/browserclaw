@@ -236,8 +236,8 @@ export class CrawlPage {
    * @example
    * ```ts
    * await page.fill([
-   *   { ref: 'e2', type: 'text', value: 'Idan' },
-   *   { ref: 'e4', type: 'text', value: 'idan@example.com' },
+   *   { ref: 'e2', type: 'text', value: 'Jane Doe' },
+   *   { ref: 'e4', type: 'text', value: 'jane@example.com' },
    *   { ref: 'e6', type: 'checkbox', value: true },
    * ]);
    * ```
