@@ -47,7 +47,7 @@ Requires a Chromium-based browser installed on the system (Chrome, Brave, Edge, 
 
 ```
 ┌─────────────┐     snapshot()     ┌─────────────────────────────────┐
-│  Web Page    │ ──────────────►   │  AI-readable text tree          │
+│  Web Page   │ ──────────────►    │  AI-readable text tree          │
 │             │                    │                                 │
 │  [buttons]  │                    │  - heading "Example Domain"     │
 │  [links]    │                    │  - paragraph "This domain..."   │
@@ -58,8 +58,8 @@ Requires a Chromium-based browser installed on the system (Chrome, Brave, Edge, 
                                           decides: click e1
                                                   │
 ┌─────────────┐     click('e1')    ┌──────────────▼──────────────────┐
-│  Web Page    │ ◄──────────────   │  Ref "e1" resolves to:         │
-│  (navigated) │                   │  getByRole('link',              │
+│  Web Page   │ ◄──────────────    │  Ref "e1" resolves to:          │
+│  (navigated)│                    │  getByRole('link',              │
 │             │                    │    { name: 'More information' })│
 └─────────────┘                    └─────────────────────────────────┘
 ```
