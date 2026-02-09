@@ -35,6 +35,46 @@ The snapshot + ref pattern means:
 3. **Cheap** — no vision API calls, just text in/text out
 4. **Reliable** — built on Playwright, the most robust browser automation engine
 
+## Comparison with Other Tools
+
+The AI browser automation space is moving fast. Here's how browserclaw's **snapshot + ref** approach compares to the major alternatives:
+
+| | **browserclaw** | **[browser-use](https://github.com/browser-use/browser-use)** | **[Stagehand](https://github.com/browserbase/stagehand)** | **[Skyvern](https://github.com/Skyvern-AI/skyvern)** | **[Playwright MCP](https://github.com/microsoft/playwright-mcp)** |
+|---|---|---|---|---|---|
+| **Approach** | Accessibility snapshot with numbered refs | DOM element indexing + screenshots via raw CDP | Accessibility tree with natural language primitives | Vision-first: screenshots + DOM hybrid | Accessibility snapshots via MCP protocol |
+| **How AI targets elements** | Ref ID → Playwright `getByRole()` locator | Element index → CDP node interaction | Natural language → AI resolves to element | Screenshot → Vision LLM → coordinates | Ref ID → Playwright locator |
+| **Targeting** | **Deterministic** — exact locator match | Semi-deterministic — index-based, but indexes change | AI-interpreted — LLM picks the element each time | **Probabilistic** — vision model guesses coordinates | **Deterministic** — exact locator match |
+| **Vision model required** | No | Optional (screenshots as supporting signal) | No | **Yes** — core to how it works | No |
+| **Tokens per step** | ~500-1500 (text only) | ~2000-5000+ (DOM index + optional screenshot) | ~1000-3000 (accessibility tree chunks) | ~5000-10000+ (screenshot + DOM text) | ~500-1500 (text only) |
+| **Speed per step** | ~50ms snapshot + action | Faster raw CDP ops, but vision calls add seconds | ~100ms + LLM interpretation overhead | Slow — screenshot + vision API per step | ~50ms snapshot + action |
+| **Repeated run consistency** | Same page → same refs → **reproducible** | Indexes can shift between runs | LLM re-interprets each time — **variable** | Vision model re-interprets each time — **variable** | Same page → same refs → **reproducible** |
+| **Resilience to UI changes** | Immune to visual changes — snapshots are semantic | Partially resilient — index-based, but layout changes shift indexes | Good — accessibility tree is semantic | Breaks on visual changes — new pixels, new guesses | Immune to visual changes |
+| **Form filling** | `page.fill([...])` — batch multiple fields in one call | Sequential — one field at a time | `page.act("fill the form")` — AI figures it out | Sequential with vision per field | One field at a time via MCP tools |
+| **Cross-origin iframes** | Full CDP access (Stripe, payment forms) | Full CDP access | Limited | Limited | Limited |
+| **Browser engine** | **Playwright** — battle-tested, auto-wait, retry logic | Raw CDP — fast but reinvents Playwright's abstractions | Playwright (moving to own engine) | Playwright | Playwright |
+| **Type** | Library (embed in your code) | Framework (agent loop built-in) | SDK (primitives + agent mode) | Platform (hosted + self-hosted) | MCP Server (protocol-based) |
+| **Language** | TypeScript/JS | Python | TypeScript/JS | Python | TypeScript/JS |
+
+### Also worth knowing
+
+- **[LaVague](https://github.com/lavague-ai/LaVague)** — Python framework that uses a World Model + Action Engine architecture. Generates Selenium code via RAG on HTML. Interesting approach, but code generation adds latency and failure modes.
+- **[AgentQL](https://github.com/tinyfish-io/agentql)** — Semantic query language for the web. AI-powered selectors that find elements by meaning rather than position. Complementary to browserclaw rather than competing.
+- **[Vercel agent-browser](https://github.com/vercel-labs/agent-browser)** — Uses element refs (`@e1`, `@e2`) very similar to browserclaw. Good validation of the ref-based paradigm.
+
+### Why snapshot + refs wins for repeated complex UI tasks
+
+All these tools are impressive engineering — but they make different tradeoffs. When you're running the same multi-step workflow hundreds of times (filling forms, navigating dashboards, processing queues), the differences compound:
+
+**Cost.** Vision calls on every step add up fast. browserclaw's text-only approach uses **~4x fewer tokens per run** than vision-based tools, and the gap widens with task complexity. A 20-step task repeated 100 times: ~3M tokens with browserclaw vs ~12M+ with vision-based tools.
+
+**Speed.** No vision API round-trips means each step completes in milliseconds, not seconds. A 20-step workflow finishes in **seconds, not minutes**.
+
+**Reliability.** Coordinate-based clicking is the #1 failure mode in vision-based automation. One element shifts by 10 pixels and the whole run fails. Natural-language targeting ("click the submit button") re-interprets every time — sometimes it picks the wrong one. Ref-based targeting is **deterministic**: same page state → same refs → same result.
+
+**Playwright.** browser-use [dropped Playwright for raw CDP](https://browser-use.com/posts/playwright-to-cdp) to go "closer to the metal." That's a bold bet — but it means reinventing auto-wait, retry logic, cross-browser support, and thousands of edge cases that Playwright has spent years solving. browserclaw gets all of that for free.
+
+**Simplicity.** No framework opinions, no agent loop, no hosted platform. Just `snapshot()` → read refs → act. Compose it into whatever agent architecture you want.
+
 ## Install
 
 ```bash
