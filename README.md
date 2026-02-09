@@ -51,7 +51,6 @@ The AI browser automation space is moving fast. Here's how browserclaw compares 
 | Cross-origin iframe access | :white_check_mark: | :white_check_mark: | :x: | :x: | :x: |
 | Playwright (auto-wait, retry, locators) | :white_check_mark: | :x: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Embeddable library (no framework lock-in) | :white_check_mark: | :x: | :heavy_minus_sign: | :x: | :x: |
-| TypeScript/JS | :white_check_mark: | :x: | :white_check_mark: | :x: | :white_check_mark: |
 
 :white_check_mark: = Yes&ensp; :heavy_minus_sign: = Partial&ensp; :x: = No
 
