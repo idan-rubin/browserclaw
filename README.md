@@ -41,7 +41,7 @@ The AI browser automation space is moving fast. Here's how browserclaw compares 
 
 | | [browserclaw](https://github.com/idan-rubin/browserclaw) | [browser-use](https://github.com/browser-use/browser-use) | [Stagehand](https://github.com/browserbase/stagehand) | [Skyvern](https://github.com/Skyvern-AI/skyvern) | [Playwright MCP](https://github.com/microsoft/playwright-mcp) |
 |:---|:---:|:---:|:---:|:---:|:---:|
-| Same ref = same element, every time | :white_check_mark: | :heavy_minus_sign: | :x: | :x: | :white_check_mark: |
+| Ref → exact element, no guessing | :white_check_mark: | :heavy_minus_sign: | :x: | :x: | :white_check_mark: |
 | No vision model in the loop | :white_check_mark: | :heavy_minus_sign: | :white_check_mark: | :x: | :white_check_mark: |
 | Survives redesigns (semantic, not pixel) | :white_check_mark: | :heavy_minus_sign: | :white_check_mark: | :x: | :white_check_mark: |
 | Fill 10 form fields in one call | :white_check_mark: | :x: | :x: | :x: | :x: |
