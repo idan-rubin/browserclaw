@@ -90,6 +90,9 @@ export class CrawlPage {
         },
       });
     }
+    if (opts?.selector || opts?.frameSelector) {
+      throw new Error('selector and frameSelector are only supported in role mode. Use { mode: "role" } or omit these options.');
+    }
     return snapshotAi({
       cdpUrl: this.cdpUrl,
       targetId: this.targetId,
@@ -676,9 +679,10 @@ export class BrowserClaw {
   async currentPage(): Promise<CrawlPage> {
     const { browser } = await connectBrowser(this.cdpUrl);
     const pages = await getAllPages(browser);
-    if (!pages.length) throw new Error('No pages available');
+    if (!pages.length) throw new Error('No pages available. Use browser.open(url) to create a tab.');
     const tid = await pageTargetId(pages[0]!).catch(() => null);
-    return new CrawlPage(this.cdpUrl, tid ?? '');
+    if (!tid) throw new Error('Failed to get targetId for the current page.');
+    return new CrawlPage(this.cdpUrl, tid);
   }
 
   /**

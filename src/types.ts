@@ -307,12 +307,4 @@ export interface PageState {
   roleRefs?: RoleRefs;
   roleRefsFrameSelector?: string;
   roleRefsMode?: 'role' | 'aria';
-  armIdUpload: number;
-  armIdDialog: number;
-  armIdDownload: number;
-}
-
-/** @internal */
-export interface ContextState {
-  traceActive: boolean;
 }

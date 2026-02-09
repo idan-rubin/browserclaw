@@ -32,7 +32,10 @@ export async function snapshotAi(opts: {
     ? Math.floor(maxChars) : undefined;
 
   if (limit && snapshot.length > limit) {
-    snapshot = `${snapshot.slice(0, limit)}\n\n[...TRUNCATED - page too large]`;
+    // Truncate at the last newline before the limit to avoid cutting mid-ref
+    const lastNewline = snapshot.lastIndexOf('\n', limit);
+    const cutoff = lastNewline > 0 ? lastNewline : limit;
+    snapshot = `${snapshot.slice(0, cutoff)}\n\n[...TRUNCATED - page too large]`;
   }
 
   const built = buildRoleSnapshotFromAiSnapshot(snapshot, opts.options);

@@ -1,7 +1,7 @@
 import { chromium } from 'playwright-core';
 import type { Browser } from 'playwright-core';
 import { getChromeWebSocketUrl } from './chrome-launcher.js';
-import type { PageState, ContextState, RoleRefs } from './types.js';
+import type { PageState, RoleRefs } from './types.js';
 
 // ── Persistent Connection Cache ──
 
@@ -9,7 +9,6 @@ let cached: { browser: Browser; cdpUrl: string } | null = null;
 let connecting: Promise<{ browser: Browser; cdpUrl: string }> | null = null;
 
 const pageStates = new WeakMap<any, PageState>();
-const contextStates = new WeakMap<any, ContextState>();
 const observedContexts = new WeakSet();
 const observedPages = new WeakSet();
 
@@ -45,9 +44,6 @@ export function ensurePageState(page: any): PageState {
     requests: [],
     requestIds: new WeakMap(),
     nextRequestId: 0,
-    armIdUpload: 0,
-    armIdDialog: 0,
-    armIdDownload: 0,
   };
   pageStates.set(page, state);
 
@@ -124,18 +120,13 @@ export function ensurePageState(page: any): PageState {
   return state;
 }
 
-export function ensureContextState(context: any): ContextState {
-  const existing = contextStates.get(context);
-  if (existing) return existing;
-  const state: ContextState = { traceActive: false };
-  contextStates.set(context, state);
-  return state;
+export function ensureContextState(_context: any): void {
+  // Context tracking placeholder for future use (tracing, etc.)
 }
 
 function observeContext(context: any): void {
   if (observedContexts.has(context)) return;
   observedContexts.add(context);
-  ensureContextState(context);
   for (const page of context.pages()) ensurePageState(page);
   context.on('page', (page: any) => ensurePageState(page));
 }
@@ -223,6 +214,10 @@ export async function connectBrowser(cdpUrl: string): Promise<{ browser: Browser
 }
 
 export async function disconnectBrowser(): Promise<void> {
+  // Wait for any in-flight connection to finish before disconnecting
+  if (connecting) {
+    try { await connecting; } catch {}
+  }
   const cur = cached;
   cached = null;
   if (cur) await cur.browser.close().catch(() => {});
@@ -262,6 +257,14 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
         if (target) {
           const urlMatch = pages.filter(p => p.url() === target.url);
           if (urlMatch.length === 1) return urlMatch[0];
+          // Multiple tabs with the same URL: match by index position
+          if (urlMatch.length > 1) {
+            const sameUrlTargets = targets.filter((t: any) => t.url === target.url);
+            if (sameUrlTargets.length === urlMatch.length) {
+              const idx = sameUrlTargets.findIndex((t: any) => t.id === targetId);
+              if (idx >= 0 && idx < urlMatch.length) return urlMatch[idx];
+            }
+          }
         }
       }
     } catch {}

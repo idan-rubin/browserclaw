@@ -461,12 +461,11 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
 
 export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Promise<void> {
   const proc = running.proc;
-  if (proc.killed) return;
+  if (proc.exitCode != null) return;
   try { proc.kill('SIGTERM'); } catch {}
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (proc.exitCode != null || proc.killed) return;
-    if (!await isChromeReachable(`http://127.0.0.1:${running.cdpPort}`, 200)) return;
+    if (proc.exitCode != null) return;
     await new Promise(r => setTimeout(r, 100));
   }
   try { proc.kill('SIGKILL'); } catch {}

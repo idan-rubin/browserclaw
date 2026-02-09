@@ -42,7 +42,7 @@ export async function createPageViaPlaywright(opts: {
   ensurePageState(page);
   const targetUrl = (opts.url ?? '').trim() || 'about:blank';
   if (targetUrl !== 'about:blank') {
-    await page.goto(targetUrl, { timeout: 30000 }).catch(() => {});
+    await page.goto(targetUrl, { timeout: 30000 });
   }
   const tid = await pageTargetId(page).catch(() => null);
   if (!tid) throw new Error('Failed to get targetId for new page');
