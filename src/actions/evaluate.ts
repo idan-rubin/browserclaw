@@ -38,8 +38,8 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
           try {
             const candidate = (0, eval)('(' + fnBody + ')');
             return typeof candidate === 'function' ? candidate() : candidate;
-          } catch (err: any) {
-            throw new Error('Invalid evaluate function: ' + (err?.message ?? String(err)));
+          } catch (err: unknown) {
+            throw new Error('Invalid evaluate function: ' + (err instanceof Error ? err.message : String(err)));
           }
         },
         fnText,
@@ -86,8 +86,8 @@ export async function evaluateViaPlaywright(opts: {
         try {
           const candidate = (0, eval)('(' + fnBody + ')');
           return typeof candidate === 'function' ? candidate(el) : candidate;
-        } catch (err: any) {
-          throw new Error('Invalid evaluate function: ' + (err?.message ?? String(err)));
+        } catch (err: unknown) {
+          throw new Error('Invalid evaluate function: ' + (err instanceof Error ? err.message : String(err)));
         }
       },
       fnText,
@@ -102,8 +102,8 @@ export async function evaluateViaPlaywright(opts: {
       try {
         const candidate = (0, eval)('(' + fnBody + ')');
         return typeof candidate === 'function' ? candidate() : candidate;
-      } catch (err: any) {
-        throw new Error('Invalid evaluate function: ' + (err?.message ?? String(err)));
+      } catch (err: unknown) {
+        throw new Error('Invalid evaluate function: ' + (err instanceof Error ? err.message : String(err)));
       }
     },
     fnText,

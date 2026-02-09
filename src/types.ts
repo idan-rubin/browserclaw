@@ -302,7 +302,7 @@ export interface PageState {
   console: ConsoleMessage[];
   errors: PageError[];
   requests: NetworkRequest[];
-  requestIds: WeakMap<any, string>;
+  requestIds: WeakMap<object, string>;
   nextRequestId: number;
   roleRefs?: RoleRefs;
   roleRefsFrameSelector?: string;

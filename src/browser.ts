@@ -506,7 +506,7 @@ export class CrawlPage {
    *
    * @returns Array of cookie objects
    */
-  async cookies(): Promise<any[]> {
+  async cookies(): Promise<Awaited<ReturnType<import('playwright-core').BrowserContext['cookies']>>> {
     const result = await cookiesGetViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this.targetId });
     return result.cookies;
   }

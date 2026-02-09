@@ -6,7 +6,7 @@ import type { CookieData, StorageKind } from '../types.js';
 export async function cookiesGetViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
-}): Promise<{ cookies: any[] }> {
+}): Promise<{ cookies: Awaited<ReturnType<import('playwright-core').BrowserContext['cookies']>> }> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
   return { cookies: await page.context().cookies() };
@@ -25,7 +25,7 @@ export async function cookiesSetViaPlaywright(opts: {
   const hasDomainPath = typeof cookie.domain === 'string' && cookie.domain.trim() &&
     typeof cookie.path === 'string' && cookie.path.trim();
   if (!hasUrl && !hasDomainPath) throw new Error('cookie requires url, or domain+path');
-  await page.context().addCookies([cookie as any]);
+  await page.context().addCookies([cookie]);
 }
 
 export async function cookiesClearViaPlaywright(opts: {

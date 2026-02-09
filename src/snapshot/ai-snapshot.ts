@@ -1,4 +1,5 @@
 import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget, normalizeTimeoutMs } from '../connection.js';
+import type { PageWithAI } from '../connection.js';
 import { buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
 import type { SnapshotResult, SnapshotOptions } from '../types.js';
 
@@ -16,7 +17,7 @@ export async function snapshotAi(opts: {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
 
-  const maybe = page as any;
+  const maybe = page as PageWithAI;
   if (!maybe._snapshotForAI) {
     throw new Error('Playwright _snapshotForAI is not available. Upgrade playwright-core to >= 1.50.');
   }

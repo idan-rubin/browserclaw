@@ -1,14 +1,19 @@
 import { chromium } from 'playwright-core';
-import type { Browser } from 'playwright-core';
+import type { Browser, Page, BrowserContext } from 'playwright-core';
 import { getChromeWebSocketUrl } from './chrome-launcher.js';
 import type { PageState, RoleRefs } from './types.js';
+
+/** Page extended with Playwright's private `_snapshotForAI` method. */
+export type PageWithAI = Page & {
+  _snapshotForAI?: (opts: { timeout: number; track: string }) => Promise<{ full?: string }>;
+};
 
 // ── Persistent Connection Cache ──
 
 let cached: { browser: Browser; cdpUrl: string } | null = null;
-let connecting: Promise<{ browser: Browser; cdpUrl: string }> | null = null;
+const connectingByUrl = new Map<string, Promise<{ browser: Browser; cdpUrl: string }>>();
 
-const pageStates = new WeakMap<any, PageState>();
+const pageStates = new WeakMap<Page, PageState>();
 const observedContexts = new WeakSet();
 const observedPages = new WeakSet();
 
@@ -34,7 +39,7 @@ function roleRefsKey(cdpUrl: string, targetId: string): string {
 
 // ── Page State Management ──
 
-export function ensurePageState(page: any): PageState {
+export function ensurePageState(page: Page): PageState {
   const existing = pageStates.get(page);
   if (existing) return existing;
 
@@ -50,7 +55,7 @@ export function ensurePageState(page: any): PageState {
   if (!observedPages.has(page)) {
     observedPages.add(page);
 
-    page.on('console', (msg: any) => {
+    page.on('console', (msg) => {
       state.console.push({
         type: msg.type(),
         text: msg.text(),
@@ -60,7 +65,7 @@ export function ensurePageState(page: any): PageState {
       if (state.console.length > MAX_CONSOLE_MESSAGES) state.console.shift();
     });
 
-    page.on('pageerror', (err: any) => {
+    page.on('pageerror', (err) => {
       state.errors.push({
         message: err?.message ? String(err.message) : String(err),
         name: err?.name ? String(err.name) : undefined,
@@ -70,7 +75,7 @@ export function ensurePageState(page: any): PageState {
       if (state.errors.length > MAX_PAGE_ERRORS) state.errors.shift();
     });
 
-    page.on('request', (req: any) => {
+    page.on('request', (req) => {
       state.nextRequestId += 1;
       const id = `r${state.nextRequestId}`;
       state.requestIds.set(req, id);
@@ -84,7 +89,7 @@ export function ensurePageState(page: any): PageState {
       if (state.requests.length > MAX_NETWORK_REQUESTS) state.requests.shift();
     });
 
-    page.on('response', (resp: any) => {
+    page.on('response', (resp) => {
       const req = resp.request();
       const id = state.requestIds.get(req);
       if (!id) return;
@@ -98,7 +103,7 @@ export function ensurePageState(page: any): PageState {
       }
     });
 
-    page.on('requestfailed', (req: any) => {
+    page.on('requestfailed', (req) => {
       const id = state.requestIds.get(req);
       if (!id) return;
       for (let i = state.requests.length - 1; i >= 0; i--) {
@@ -120,13 +125,13 @@ export function ensurePageState(page: any): PageState {
   return state;
 }
 
-export function ensureContextState(_context: any): void {}
+export function ensureContextState(_context: BrowserContext): void {}
 
-function observeContext(context: any): void {
+function observeContext(context: BrowserContext): void {
   if (observedContexts.has(context)) return;
   observedContexts.add(context);
   for (const page of context.pages()) ensurePageState(page);
-  context.on('page', (page: any) => ensurePageState(page));
+  context.on('page', (page) => ensurePageState(page));
 }
 
 function observeBrowser(browser: Browser): void {
@@ -136,7 +141,7 @@ function observeBrowser(browser: Browser): void {
 // ── Role Refs Storage ──
 
 export function storeRoleRefsForTarget(opts: {
-  page: any;
+  page: Page;
   cdpUrl: string;
   targetId?: string;
   refs: RoleRefs;
@@ -165,7 +170,7 @@ export function storeRoleRefsForTarget(opts: {
 export function restoreRoleRefsForTarget(opts: {
   cdpUrl: string;
   targetId?: string;
-  page: any;
+  page: Page;
 }): void {
   const targetId = opts.targetId?.trim() || '';
   if (!targetId) return;
@@ -183,7 +188,9 @@ export function restoreRoleRefsForTarget(opts: {
 export async function connectBrowser(cdpUrl: string): Promise<{ browser: Browser; cdpUrl: string }> {
   const normalized = normalizeCdpUrl(cdpUrl);
   if (cached?.cdpUrl === normalized) return cached;
-  if (connecting) return await connecting;
+
+  const existing = connectingByUrl.get(normalized);
+  if (existing) return await existing;
 
   const connectWithRetry = async () => {
     let lastErr: unknown;
@@ -197,6 +204,9 @@ export async function connectBrowser(cdpUrl: string): Promise<{ browser: Browser
         observeBrowser(browser);
         browser.on('disconnected', () => {
           if (cached?.browser === browser) cached = null;
+          for (const key of roleRefsByTarget.keys()) {
+            if (key.startsWith(normalized + '::')) roleRefsByTarget.delete(key);
+          }
         });
         return connected;
       } catch (err) {
@@ -207,13 +217,16 @@ export async function connectBrowser(cdpUrl: string): Promise<{ browser: Browser
     throw lastErr instanceof Error ? lastErr : new Error('CDP connect failed');
   };
 
-  connecting = connectWithRetry().finally(() => { connecting = null; });
-  return await connecting;
+  const promise = connectWithRetry().finally(() => { connectingByUrl.delete(normalized); });
+  connectingByUrl.set(normalized, promise);
+  return await promise;
 }
 
 export async function disconnectBrowser(): Promise<void> {
-  if (connecting) {
-    try { await connecting; } catch {}
+  if (connectingByUrl.size) {
+    for (const p of connectingByUrl.values()) {
+      try { await p; } catch {}
+    }
   }
   const cur = cached;
   cached = null;
@@ -222,15 +235,25 @@ export async function disconnectBrowser(): Promise<void> {
 
 // ── Page Lookup ──
 
+/** CDP target entry from /json/list endpoint. */
+interface CdpTarget {
+  id: string;
+  url: string;
+  title?: string;
+  type?: string;
+  webSocketDebuggerUrl?: string;
+}
+
 export async function getAllPages(browser: Browser) {
   return browser.contexts().flatMap(c => c.pages());
 }
 
-export async function pageTargetId(page: any): Promise<string | null> {
+export async function pageTargetId(page: Page): Promise<string | null> {
   const session = await page.context().newCDPSession(page);
   try {
     const info = await session.send('Target.getTargetInfo');
-    return String((info as any)?.targetInfo?.targetId ?? '').trim() || null;
+    const targetInfo = (info as { targetInfo?: { targetId?: string } }).targetInfo;
+    return String(targetInfo?.targetId ?? '').trim() || null;
   } finally {
     await session.detach().catch(() => {});
   }
@@ -249,15 +272,15 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
       const listUrl = `${cdpUrl.replace(/\/+$/, '').replace(/^ws:/, 'http:').replace(/\/cdp$/, '')}/json/list`;
       const response = await fetch(listUrl);
       if (response.ok) {
-        const targets = await response.json() as any[];
+        const targets = await response.json() as CdpTarget[];
         const target = targets.find(t => t.id === targetId);
         if (target) {
           const urlMatch = pages.filter(p => p.url() === target.url);
           if (urlMatch.length === 1) return urlMatch[0];
           if (urlMatch.length > 1) {
-            const sameUrlTargets = targets.filter((t: any) => t.url === target.url);
+            const sameUrlTargets = targets.filter(t => t.url === target.url);
             if (sameUrlTargets.length === urlMatch.length) {
-              const idx = sameUrlTargets.findIndex((t: any) => t.id === targetId);
+              const idx = sameUrlTargets.findIndex(t => t.id === targetId);
               if (idx >= 0 && idx < urlMatch.length) return urlMatch[idx];
             }
           }
@@ -284,7 +307,7 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
 
 // ── Ref Locator ──
 
-export function refLocator(page: any, ref: string) {
+export function refLocator(page: Page, ref: string) {
   const normalized = ref.startsWith('@') ? ref.slice(1) : ref.startsWith('ref=') ? ref.slice(4) : ref;
 
   if (/^e\d+$/.test(normalized)) {
@@ -303,9 +326,10 @@ export function refLocator(page: any, ref: string) {
     const locAny = state?.roleRefsFrameSelector
       ? page.frameLocator(state.roleRefsFrameSelector)
       : page;
+    const role = info.role as Parameters<Page['getByRole']>[0];
     const locator = info.name
-      ? locAny.getByRole(info.role, { name: info.name, exact: true })
-      : locAny.getByRole(info.role);
+      ? locAny.getByRole(role, { name: info.name, exact: true })
+      : locAny.getByRole(role);
     return info.nth !== undefined ? locator.nth(info.nth) : locator;
   }
 

@@ -30,7 +30,7 @@ Most browser automation tools were built for humans writing test scripts. AI age
 - **browserclaw** gives the AI a **text snapshot** with numbered refs — the AI reads text (what it's best at) and returns a ref ID (deterministic targeting)
 
 The snapshot + ref pattern means:
-1. **Deterministic** — refs resolve to exact elements via Playwright's `getByRole()`, no guessing
+1. **Deterministic** — refs resolve to exact elements via Playwright locators, no guessing
 2. **Fast** — text snapshots are tiny compared to screenshots
 3. **Cheap** — no vision API calls, just text in/text out
 4. **Reliable** — built on Playwright, the most robust browser automation engine
@@ -55,7 +55,7 @@ The AI browser automation space is moving fast. Here's how browserclaw compares 
 
 ### How each tool works under the hood
 
-- **browserclaw** — Accessibility snapshot with numbered refs → Playwright `getByRole()` locator. Exact match every time. No vision model, no LLM in the targeting loop.
+- **browserclaw** — Accessibility snapshot with numbered refs → Playwright locator (`aria-ref` in default mode, `getByRole()` in role mode). One ref, one element. No vision model, no LLM in the targeting loop.
 - **browser-use** — DOM element indexing via raw CDP + optional screenshots. [Dropped Playwright](https://browser-use.com/posts/playwright-to-cdp) to go "closer to the metal" — fast, but now reinvents auto-wait, retry logic, and cross-browser support from scratch.
 - **Stagehand** — Accessibility tree + natural language primitives (`page.act("click login")`). Convenient, but the LLM re-interprets which element to target on every single call — non-deterministic by design.
 - **Skyvern** — Vision-first. Screenshots sent to a Vision LLM that guesses coordinates. Multi-agent architecture (Planner/Actor/Validator) adds self-correction, but at significant cost and latency.
@@ -95,9 +95,9 @@ Requires a Chromium-based browser installed on the system (Chrome, Brave, Edge, 
                                           decides: click e1
                                                   │
 ┌─────────────┐     click('e1')    ┌──────────────▼──────────────────┐
-│  Web Page   │ ◄──────────────    │  Ref "e1" resolves to:          │
-│  (navigated)│                    │  getByRole('link',              │
-│             │                    │    { name: 'More information' })│
+│  Web Page   │ ◄──────────────    │  Ref "e1" resolves to a         │
+│  (navigated)│                    │  Playwright locator — one ref,  │
+│             │                    │  one exact element              │
 └─────────────┘                    └─────────────────────────────────┘
 ```
 
@@ -105,7 +105,7 @@ Requires a Chromium-based browser installed on the system (Chrome, Brave, Edge, 
 2. **AI reads** the snapshot text and picks a ref to act on
 3. **Actions target refs** → browserclaw resolves each ref to a Playwright locator and executes the action
 
-> **Note:** Refs are not stable across navigations or page changes. Always take a fresh snapshot before acting — if an action fails, re-snapshot and use the new refs.
+> **Note:** Refs are scoped to the snapshot that created them. After navigation or DOM changes, old refs become invalid — actions will throw an `"Unknown ref"` error. Always re-snapshot before acting on a changed page.
 
 ## API
 
@@ -167,6 +167,8 @@ const { nodes } = await page.ariaSnapshot({ limit: 500 });
 
 All actions target elements by ref ID from the most recent snapshot.
 
+> **Default timeouts:** 8 000 ms for actions (click, type, fill, select, drag), 20 000 ms for waits and navigation.
+
 ```typescript
 // Click
 await page.click('e1');
@@ -196,6 +198,11 @@ await page.fill([
   { ref: 'e4', type: 'text', value: 'jane@example.com' },
   { ref: 'e6', type: 'checkbox', value: true },
 ]);
+// Supported types:
+//   'text'     — calls Playwright fill() with the string value
+//   'checkbox' — calls setChecked(); truthy values: true, 1, '1', 'true'
+//   'radio'    — same as checkbox (setChecked)
+// Empty ref or type throws — no silent skips.
 ```
 
 ### Navigation & Waiting

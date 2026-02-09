@@ -1,4 +1,5 @@
 import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget } from '../connection.js';
+import type { PageWithAI } from '../connection.js';
 import {
   buildRoleSnapshotFromAriaSnapshot,
   buildRoleSnapshotFromAiSnapshot,
@@ -30,7 +31,7 @@ export async function snapshotRole(opts: {
     if (opts.selector?.trim() || opts.frameSelector?.trim()) {
       throw new Error('refs=aria does not support selector/frame snapshots yet.');
     }
-    const maybe = page as any;
+    const maybe = page as PageWithAI;
     if (!maybe._snapshotForAI) {
       throw new Error('refs=aria requires Playwright _snapshotForAI support.');
     }
@@ -80,6 +81,17 @@ export async function snapshotRole(opts: {
   };
 }
 
+/** CDP accessibility tree node from Accessibility.getFullAXTree. */
+interface CdpAXNode {
+  nodeId: string;
+  childIds?: string[];
+  role?: { value?: string | number | boolean };
+  name?: { value?: string | number | boolean };
+  value?: { value?: string | number | boolean };
+  description?: { value?: string | number | boolean };
+  backendDOMNodeId?: number;
+}
+
 /**
  * Take a raw ARIA accessibility tree snapshot via CDP.
  */
@@ -95,14 +107,14 @@ export async function snapshotAria(opts: {
   const session = await page.context().newCDPSession(page);
   try {
     await session.send('Accessibility.enable').catch(() => {});
-    const res = await session.send('Accessibility.getFullAXTree') as { nodes?: any[] };
+    const res = await session.send('Accessibility.getFullAXTree') as { nodes?: CdpAXNode[] };
     return { nodes: formatAriaNodes(Array.isArray(res?.nodes) ? res.nodes : [], limit) };
   } finally {
     await session.detach().catch(() => {});
   }
 }
 
-function axValue(v: any): string {
+function axValue(v: { value?: string | number | boolean } | undefined): string {
   if (!v || typeof v !== 'object') return '';
   const value = v.value;
   if (typeof value === 'string') return value;
@@ -110,8 +122,8 @@ function axValue(v: any): string {
   return '';
 }
 
-function formatAriaNodes(nodes: any[], limit: number): AriaNode[] {
-  const byId = new Map<string, any>();
+function formatAriaNodes(nodes: CdpAXNode[], limit: number): AriaNode[] {
+  const byId = new Map<string, CdpAXNode>();
   for (const n of nodes) if (n.nodeId) byId.set(n.nodeId, n);
 
   const referenced = new Set<string>();

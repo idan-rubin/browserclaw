@@ -25,10 +25,12 @@ export async function clickViaPlaywright(opts: {
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 8000, 60000);
 
   try {
+    const button = opts.button as 'left' | 'right' | 'middle' | undefined;
+    const modifiers = opts.modifiers as ('Alt' | 'Control' | 'Meta' | 'Shift')[] | undefined;
     if (opts.doubleClick) {
-      await locator.dblclick({ timeout, button: opts.button, modifiers: opts.modifiers });
+      await locator.dblclick({ timeout, button, modifiers });
     } else {
-      await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
+      await locator.click({ timeout, button, modifiers });
     }
   } catch (err) {
     throw toAIFriendlyError(err, opts.ref);
@@ -137,13 +139,15 @@ export async function fillFormViaPlaywright(opts: {
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 8000, 60000);
 
-  for (const field of opts.fields) {
+  for (let i = 0; i < opts.fields.length; i++) {
+    const field = opts.fields[i]!;
     const ref = field.ref.trim();
     const type = field.type.trim();
     const rawValue = field.value;
     const value = rawValue == null ? '' : String(rawValue);
 
-    if (!ref || !type) continue;
+    if (!ref) throw new Error(`fill(): field at index ${i} has empty ref`);
+    if (!type) throw new Error(`fill(): field "${ref}" has empty type`);
     const locator = refLocator(page, ref);
 
     if (type === 'checkbox' || type === 'radio') {
