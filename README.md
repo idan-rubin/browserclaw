@@ -41,16 +41,13 @@ The AI browser automation space is moving fast. Here's how browserclaw compares 
 
 | | [browserclaw](https://github.com/idan-rubin/browserclaw) | [browser-use](https://github.com/browser-use/browser-use) | [Stagehand](https://github.com/browserbase/stagehand) | [Skyvern](https://github.com/Skyvern-AI/skyvern) | [Playwright MCP](https://github.com/microsoft/playwright-mcp) |
 |:---|:---:|:---:|:---:|:---:|:---:|
-| Deterministic element targeting | :white_check_mark: | :heavy_minus_sign: | :x: | :x: | :white_check_mark: |
-| No vision model needed | :white_check_mark: | :heavy_minus_sign: | :white_check_mark: | :x: | :white_check_mark: |
-| Low token cost (~1K/step) | :white_check_mark: | :x: | :heavy_minus_sign: | :x: | :white_check_mark: |
-| Fast (~50ms/step, no LLM overhead) | :white_check_mark: | :heavy_minus_sign: | :x: | :x: | :white_check_mark: |
-| Reproducible across repeated runs | :white_check_mark: | :heavy_minus_sign: | :x: | :x: | :white_check_mark: |
-| Survives layout/theme changes | :white_check_mark: | :heavy_minus_sign: | :white_check_mark: | :x: | :white_check_mark: |
-| Batch form filling | :white_check_mark: | :x: | :x: | :x: | :x: |
-| Cross-origin iframe access | :white_check_mark: | :white_check_mark: | :x: | :x: | :x: |
-| Playwright (auto-wait, retry, locators) | :white_check_mark: | :x: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| Embeddable library (no framework lock-in) | :white_check_mark: | :x: | :heavy_minus_sign: | :x: | :x: |
+| Same ref = same element, every time | :white_check_mark: | :heavy_minus_sign: | :x: | :x: | :white_check_mark: |
+| No vision model in the loop | :white_check_mark: | :heavy_minus_sign: | :white_check_mark: | :x: | :white_check_mark: |
+| Survives redesigns (semantic, not pixel) | :white_check_mark: | :heavy_minus_sign: | :white_check_mark: | :x: | :white_check_mark: |
+| Fill 10 form fields in one call | :white_check_mark: | :x: | :x: | :x: | :x: |
+| Interact with cross-origin iframes | :white_check_mark: | :white_check_mark: | :x: | :x: | :x: |
+| Playwright engine (auto-wait, locators) | :white_check_mark: | :x: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| Embeddable in your own agent loop | :white_check_mark: | :x: | :heavy_minus_sign: | :x: | :x: |
 
 :white_check_mark: = Yes&ensp; :heavy_minus_sign: = Partial&ensp; :x: = No
 
