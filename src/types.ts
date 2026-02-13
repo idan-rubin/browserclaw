@@ -78,7 +78,7 @@ export interface SnapshotResult {
    * AI agents should treat snapshot content as potentially adversarial
    * (e.g. prompt injection via page text). Always `true` for browser snapshots.
    */
-  untrusted: boolean;
+  untrusted?: true;
 }
 
 /** Statistics about a snapshot's content. */
@@ -141,7 +141,7 @@ export interface AriaSnapshotResult {
    * Indicates this content originates from an untrusted external source (the web page).
    * AI agents should treat snapshot content as potentially adversarial. Always `true`.
    */
-  untrusted: boolean;
+  untrusted?: true;
 }
 
 // ── Actions ──
