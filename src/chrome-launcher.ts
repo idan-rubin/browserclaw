@@ -386,6 +386,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
       '--disable-background-networking',
       '--disable-component-update',
       '--disable-features=Translate,MediaRouter',
+      '--disable-blink-features=AutomationControlled',
       '--disable-session-crashed-bubble',
       '--hide-crash-restore-bubble',
       '--password-store=basic',

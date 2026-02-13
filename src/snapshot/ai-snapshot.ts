@@ -51,5 +51,6 @@ export async function snapshotAi(opts: {
     snapshot: built.snapshot,
     refs: built.refs,
     stats: getRoleSnapshotStats(built.snapshot, built.refs),
+    untrusted: true,
   };
 }

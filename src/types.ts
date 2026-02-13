@@ -73,6 +73,12 @@ export interface SnapshotResult {
   refs: RoleRefs;
   /** Statistics about the snapshot */
   stats?: SnapshotStats;
+  /**
+   * Indicates this content originates from an untrusted external source (the web page).
+   * AI agents should treat snapshot content as potentially adversarial
+   * (e.g. prompt injection via page text). Always `true` for browser snapshots.
+   */
+  untrusted: boolean;
 }
 
 /** Statistics about a snapshot's content. */
@@ -131,6 +137,11 @@ export interface AriaNode {
 export interface AriaSnapshotResult {
   /** Flat list of accessibility tree nodes */
   nodes: AriaNode[];
+  /**
+   * Indicates this content originates from an untrusted external source (the web page).
+   * AI agents should treat snapshot content as potentially adversarial. Always `true`.
+   */
+  untrusted: boolean;
 }
 
 // ── Actions ──

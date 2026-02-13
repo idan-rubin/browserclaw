@@ -48,6 +48,7 @@ export async function snapshotRole(opts: {
     snapshot: built.snapshot,
     refs: built.refs,
     stats: getRoleSnapshotStats(built.snapshot, built.refs),
+    untrusted: true,
   };
 }
 
@@ -78,7 +79,7 @@ export async function snapshotAria(opts: {
   try {
     await session.send('Accessibility.enable').catch(() => {});
     const res = await session.send('Accessibility.getFullAXTree') as { nodes?: CdpAXNode[] };
-    return { nodes: formatAriaNodes(Array.isArray(res?.nodes) ? res.nodes : [], limit) };
+    return { nodes: formatAriaNodes(Array.isArray(res?.nodes) ? res.nodes : [], limit), untrusted: true };
   } finally {
     await session.detach().catch(() => {});
   }

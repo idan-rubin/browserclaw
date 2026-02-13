@@ -125,11 +125,29 @@ export function ensurePageState(page: Page): PageState {
   return state;
 }
 
+// ── Stealth: hide navigator.webdriver ──
+
+const STEALTH_SCRIPT = `Object.defineProperty(navigator, 'webdriver', { get: () => undefined })`;
+
+function applyStealthToPage(page: Page): void {
+  page.evaluate(STEALTH_SCRIPT).catch(() => {});
+}
+
 function observeContext(context: BrowserContext): void {
   if (observedContexts.has(context)) return;
   observedContexts.add(context);
-  for (const page of context.pages()) ensurePageState(page);
-  context.on('page', (page) => ensurePageState(page));
+
+  // Hide navigator.webdriver for all future navigations in this context
+  context.addInitScript(STEALTH_SCRIPT).catch(() => {});
+
+  for (const page of context.pages()) {
+    ensurePageState(page);
+    applyStealthToPage(page);
+  }
+  context.on('page', (page) => {
+    ensurePageState(page);
+    applyStealthToPage(page);
+  });
 }
 
 function observeBrowser(browser: Browser): void {
