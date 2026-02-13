@@ -4,7 +4,7 @@
 
 ### What is browserclaw?
 
-[browserclaw](https://github.com/anthropics/browserclaw) is a standalone browser automation library built on the snapshot + ref pattern from OpenClaw. It tracks OpenClaw's latest browser layer changes and packages them as a focused, dependency-light library any project can use.
+[browserclaw](https://github.com/idan-rubin/browserclaw) is a standalone browser automation library built on the snapshot + ref pattern from OpenClaw. It tracks OpenClaw's latest browser layer changes and packages them as a focused, dependency-light library any project can use.
 
 ### Why separate the browser layer?
 
