@@ -26,7 +26,7 @@ A standalone library fixes that:
 - Network, console, and error monitoring
 - Platform-native Chrome detection (macOS/Linux/Windows)
 
-All of this can flow upstream — that's the whole point of a shared foundation.
+As an example, we're already using browserclaw to power [tovli.ai](https://tovli.ai). All of this can flow upstream — that's the whole point of a shared foundation.
 
 ### What's next?
 
