@@ -402,7 +402,10 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
       args.push('--no-sandbox', '--disable-setuid-sandbox');
     }
     if (process.platform === 'linux') args.push('--disable-dev-shm-usage');
-    if (opts.chromeArgs?.length) args.push(...opts.chromeArgs);
+    const extraArgs = Array.isArray(opts.chromeArgs)
+      ? opts.chromeArgs.filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
+      : [];
+    if (extraArgs.length) args.push(...extraArgs);
     args.push('about:blank');
     return spawn(exe.path, args, {
       stdio: 'pipe',
