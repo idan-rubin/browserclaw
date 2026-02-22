@@ -1,19 +1,20 @@
 import { connectBrowser, getPageForTargetId, ensurePageState, pageTargetId, findPageByTargetId, getAllPages, normalizeTimeoutMs } from '../connection.js';
-import { isInternalUrlResolved } from '../security.js';
-import type { BrowserTab } from '../types.js';
+import { assertBrowserNavigationAllowed } from '../security.js';
+import type { BrowserTab, SsrfPolicy } from '../types.js';
 
 export async function navigateViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
   url: string;
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
+  /** @deprecated Use ssrfPolicy: { allowPrivateNetwork: true } instead */
   allowInternal?: boolean;
 }): Promise<{ url: string }> {
   const url = String(opts.url ?? '').trim();
   if (!url) throw new Error('url is required');
-  if (!opts.allowInternal && await isInternalUrlResolved(url)) {
-    throw new Error(`Navigation to internal/loopback address blocked: "${url}". Set allowInternal: true if this is intentional.`);
-  }
+  const policy = opts.allowInternal ? { ...opts.ssrfPolicy, allowPrivateNetwork: true } : opts.ssrfPolicy;
+  await assertBrowserNavigationAllowed({ url, ssrfPolicy: policy });
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
   await page.goto(url, { timeout: normalizeTimeoutMs(opts.timeoutMs, 20000) });
@@ -39,11 +40,14 @@ export async function listPagesViaPlaywright(opts: { cdpUrl: string }): Promise<
 export async function createPageViaPlaywright(opts: {
   cdpUrl: string;
   url?: string;
+  ssrfPolicy?: SsrfPolicy;
+  /** @deprecated Use ssrfPolicy: { allowPrivateNetwork: true } instead */
   allowInternal?: boolean;
 }): Promise<BrowserTab> {
   const targetUrl = (opts.url ?? '').trim() || 'about:blank';
-  if (targetUrl !== 'about:blank' && !opts.allowInternal && await isInternalUrlResolved(targetUrl)) {
-    throw new Error(`Navigation to internal/loopback address blocked: "${targetUrl}". Set allowInternal: true if this is intentional.`);
+  if (targetUrl !== 'about:blank') {
+    const policy = opts.allowInternal ? { ...opts.ssrfPolicy, allowPrivateNetwork: true } : opts.ssrfPolicy;
+    await assertBrowserNavigationAllowed({ url: targetUrl, ssrfPolicy: policy });
   }
   const { browser } = await connectBrowser(opts.cdpUrl);
   const context = browser.contexts()[0] ?? await browser.newContext();
@@ -60,6 +64,14 @@ export async function createPageViaPlaywright(opts: {
     url: page.url(),
     type: 'page',
   };
+}
+
+export async function closePageViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId?: string;
+}): Promise<void> {
+  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  await page.close();
 }
 
 export async function closePageByTargetIdViaPlaywright(opts: {

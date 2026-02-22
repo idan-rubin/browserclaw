@@ -68,6 +68,8 @@ export async function evaluateViaPlaywright(opts: {
   targetId?: string;
   fn: string;
   ref?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<unknown> {
   const fnText = String(opts.fn ?? '').trim();
   if (!fnText) throw new Error('function is required');
@@ -75,6 +77,8 @@ export async function evaluateViaPlaywright(opts: {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
   restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
+
+  const timeout = opts.timeoutMs != null ? opts.timeoutMs : undefined;
 
   if (opts.ref) {
     const locator = refLocator(page, opts.ref);
@@ -91,11 +95,12 @@ export async function evaluateViaPlaywright(opts: {
         }
       },
       fnText,
+      { timeout },
     );
   }
 
   // Runs in the browser page context (sandboxed), not in Node.js
-  return await page.evaluate(
+  const evalPromise = page.evaluate(
     // eslint-disable-next-line no-eval
     (fnBody: string) => {
       'use strict';
@@ -108,4 +113,12 @@ export async function evaluateViaPlaywright(opts: {
     },
     fnText,
   );
+
+  if (!opts.signal) return evalPromise;
+  return Promise.race([
+    evalPromise,
+    new Promise<never>((_, reject) => {
+      opts.signal!.addEventListener('abort', () => reject(new Error('Evaluate aborted')), { once: true });
+    }),
+  ]);
 }

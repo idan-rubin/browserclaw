@@ -1,5 +1,63 @@
 import { resolve, normalize, sep } from 'node:path';
 import { lookup } from 'node:dns/promises';
+import type { SsrfPolicy } from './types.js';
+
+export type LookupFn = typeof lookup;
+
+/**
+ * Thrown when a navigation URL is blocked by SSRF policy.
+ * Callers can catch this specifically to distinguish navigation blocks
+ * from other errors.
+ */
+export class InvalidBrowserNavigationUrlError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidBrowserNavigationUrlError';
+  }
+}
+
+/** Options for browser navigation SSRF policy. */
+export type BrowserNavigationPolicyOptions = {
+  ssrfPolicy?: SsrfPolicy;
+};
+
+/** Build a BrowserNavigationPolicyOptions from an SsrfPolicy. */
+export function withBrowserNavigationPolicy(ssrfPolicy?: SsrfPolicy): BrowserNavigationPolicyOptions {
+  return { ssrfPolicy };
+}
+
+/**
+ * Assert that a URL is allowed for browser navigation under the given SSRF policy.
+ * Throws `InvalidBrowserNavigationUrlError` if the URL is blocked.
+ */
+export async function assertBrowserNavigationAllowed(opts: {
+  url: string;
+  lookupFn?: LookupFn;
+} & BrowserNavigationPolicyOptions): Promise<void> {
+  const policy = opts.ssrfPolicy;
+
+  if (policy?.allowPrivateNetwork) return;
+
+  const allowedHostnames = [
+    ...(policy?.allowedHostnames ?? []),
+    ...(policy?.hostnameAllowlist ?? []),
+  ];
+
+  if (allowedHostnames.length) {
+    let parsed: URL;
+    try { parsed = new URL(opts.url); } catch {
+      throw new InvalidBrowserNavigationUrlError(`Invalid URL: "${opts.url}"`);
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    if (allowedHostnames.some(h => h.toLowerCase() === hostname)) return;
+  }
+
+  if (await isInternalUrlResolved(opts.url, opts.lookupFn)) {
+    throw new InvalidBrowserNavigationUrlError(
+      `Navigation to internal/loopback address blocked: "${opts.url}". Use ssrfPolicy: { allowPrivateNetwork: true } if this is intentional.`
+    );
+  }
+}
 
 /**
  * Validate that an output file path is safe — no directory traversal or escape.
@@ -236,7 +294,7 @@ export function isInternalUrl(url: string): boolean {
  * Async version that also resolves DNS to catch rebinding attacks
  * where a public hostname resolves to an internal IP.
  */
-export async function isInternalUrlResolved(url: string): Promise<boolean> {
+export async function isInternalUrlResolved(url: string, lookupFn: LookupFn = lookup): Promise<boolean> {
   // First do the fast synchronous check
   if (isInternalUrl(url)) return true;
 
@@ -249,7 +307,7 @@ export async function isInternalUrlResolved(url: string): Promise<boolean> {
   }
 
   try {
-    const { address } = await lookup(parsed.hostname);
+    const { address } = await lookupFn(parsed.hostname);
     if (isInternalIP(address)) return true;
   } catch {
     // DNS resolution failed — fail closed

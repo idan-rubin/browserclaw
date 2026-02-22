@@ -9,7 +9,7 @@ import {
 import type { FormField } from '../types.js';
 
 type MouseButton = 'left' | 'right' | 'middle';
-type KeyModifier = 'Alt' | 'Control' | 'Meta' | 'Shift';
+type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
 
 export async function clickViaPlaywright(opts: {
   cdpUrl: string;

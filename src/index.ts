@@ -1,6 +1,9 @@
 export { BrowserClaw, CrawlPage } from './browser.js';
+export { InvalidBrowserNavigationUrlError, withBrowserNavigationPolicy, assertBrowserNavigationAllowed } from './security.js';
+export type { BrowserNavigationPolicyOptions, LookupFn } from './security.js';
 export type { FrameEvalResult } from './actions/evaluate.js';
 export type {
+  SsrfPolicy,
   LaunchOptions,
   ConnectOptions,
   SnapshotResult,

@@ -19,7 +19,7 @@ import type {
   LaunchOptions, ConnectOptions, SnapshotResult, SnapshotOptions, AriaSnapshotResult,
   BrowserTab, FormField, ClickOptions, TypeOptions, WaitOptions,
   ScreenshotOptions, ConsoleMessage, PageError, NetworkRequest,
-  CookieData, StorageKind, RunningChrome,
+  CookieData, StorageKind, RunningChrome, SsrfPolicy,
   DownloadResult, DialogOptions, ResponseBodyResult, TraceStartOptions,
   ColorScheme, GeolocationOptions, HttpCredentials,
 } from './types.js';
@@ -46,13 +46,13 @@ import type {
 export class CrawlPage {
   private readonly cdpUrl: string;
   private readonly targetId: string;
-  private readonly allowInternal: boolean;
+  private readonly ssrfPolicy: SsrfPolicy | undefined;
 
   /** @internal */
-  constructor(cdpUrl: string, targetId: string, allowInternal = false) {
+  constructor(cdpUrl: string, targetId: string, ssrfPolicy?: SsrfPolicy) {
     this.cdpUrl = cdpUrl;
     this.targetId = targetId;
-    this.allowInternal = allowInternal;
+    this.ssrfPolicy = ssrfPolicy;
   }
 
   /** The CDP target ID for this page. Use this to identify the page in multi-tab scenarios. */
@@ -90,6 +90,7 @@ export class CrawlPage {
         targetId: this.targetId,
         selector: opts.selector,
         frameSelector: opts.frameSelector,
+        refsMode: opts.refsMode,
         options: {
           interactive: opts.interactive,
           compact: opts.compact,
@@ -407,7 +408,7 @@ export class CrawlPage {
       targetId: this.targetId,
       url,
       timeoutMs: opts?.timeoutMs,
-      allowInternal: this.allowInternal,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -488,12 +489,14 @@ export class CrawlPage {
    * const count = await page.evaluate('() => document.querySelectorAll("img").length');
    * ```
    */
-  async evaluate(fn: string, opts?: { ref?: string }): Promise<unknown> {
+  async evaluate(fn: string, opts?: { ref?: string; timeoutMs?: number; signal?: AbortSignal }): Promise<unknown> {
     return evaluateViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this.targetId,
       fn,
       ref: opts?.ref,
+      timeoutMs: opts?.timeoutMs,
+      signal: opts?.signal,
     });
   }
 
@@ -993,13 +996,13 @@ export class CrawlPage {
  */
 export class BrowserClaw {
   private readonly cdpUrl: string;
-  private readonly allowInternal: boolean;
+  private readonly ssrfPolicy: SsrfPolicy | undefined;
   private chrome: RunningChrome | null;
 
-  private constructor(cdpUrl: string, chrome: RunningChrome | null, allowInternal = false) {
+  private constructor(cdpUrl: string, chrome: RunningChrome | null, ssrfPolicy?: SsrfPolicy) {
     this.cdpUrl = cdpUrl;
     this.chrome = chrome;
-    this.allowInternal = allowInternal;
+    this.ssrfPolicy = ssrfPolicy;
   }
 
   /**
@@ -1028,7 +1031,8 @@ export class BrowserClaw {
   static async launch(opts: LaunchOptions = {}): Promise<BrowserClaw> {
     const chrome = await launchChrome(opts);
     const cdpUrl = `http://127.0.0.1:${chrome.cdpPort}`;
-    return new BrowserClaw(cdpUrl, chrome, opts.allowInternal);
+    const ssrfPolicy = opts.allowInternal ? { ...opts.ssrfPolicy, allowPrivateNetwork: true } : opts.ssrfPolicy;
+    return new BrowserClaw(cdpUrl, chrome, ssrfPolicy);
   }
 
   /**
@@ -1050,7 +1054,8 @@ export class BrowserClaw {
       throw new Error(`Cannot connect to Chrome at ${cdpUrl}. Is Chrome running with --remote-debugging-port?`);
     }
     await connectBrowser(cdpUrl, opts?.authToken);
-    return new BrowserClaw(cdpUrl, null, opts?.allowInternal);
+    const ssrfPolicy = opts?.allowInternal ? { ...opts.ssrfPolicy, allowPrivateNetwork: true } : opts?.ssrfPolicy;
+    return new BrowserClaw(cdpUrl, null, ssrfPolicy);
   }
 
   /**
@@ -1066,8 +1071,8 @@ export class BrowserClaw {
    * ```
    */
   async open(url: string): Promise<CrawlPage> {
-    const tab = await createPageViaPlaywright({ cdpUrl: this.cdpUrl, url, allowInternal: this.allowInternal });
-    return new CrawlPage(this.cdpUrl, tab.targetId, this.allowInternal);
+    const tab = await createPageViaPlaywright({ cdpUrl: this.cdpUrl, url, ssrfPolicy: this.ssrfPolicy });
+    return new CrawlPage(this.cdpUrl, tab.targetId, this.ssrfPolicy);
   }
 
   /**
@@ -1081,7 +1086,7 @@ export class BrowserClaw {
     if (!pages.length) throw new Error('No pages available. Use browser.open(url) to create a tab.');
     const tid = await pageTargetId(pages[0]!).catch(() => null);
     if (!tid) throw new Error('Failed to get targetId for the current page.');
-    return new CrawlPage(this.cdpUrl, tid, this.allowInternal);
+    return new CrawlPage(this.cdpUrl, tid, this.ssrfPolicy);
   }
 
   /**
@@ -1120,7 +1125,7 @@ export class BrowserClaw {
    * @returns CrawlPage for the specified tab
    */
   page(targetId: string): CrawlPage {
-    return new CrawlPage(this.cdpUrl, targetId, this.allowInternal);
+    return new CrawlPage(this.cdpUrl, targetId, this.ssrfPolicy);
   }
 
   /** The CDP endpoint URL for this browser connection. */

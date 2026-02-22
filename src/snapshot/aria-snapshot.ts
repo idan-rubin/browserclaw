@@ -14,6 +14,7 @@ export async function snapshotRole(opts: {
   targetId?: string;
   selector?: string;
   frameSelector?: string;
+  refsMode?: 'role' | 'aria';
   options?: {
     interactive?: boolean;
     compact?: boolean;
@@ -43,7 +44,7 @@ export async function snapshotRole(opts: {
     targetId: opts.targetId,
     refs: built.refs,
     frameSelector: frameSelector || undefined,
-    mode: 'role',
+    mode: opts.refsMode ?? 'role',
   });
 
   return {

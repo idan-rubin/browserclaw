@@ -1,3 +1,18 @@
+// ── SSRF Policy ──
+
+/**
+ * Policy for controlling which URLs browser navigation is allowed to reach.
+ * By default all private/internal addresses are blocked to prevent SSRF attacks.
+ */
+export interface SsrfPolicy {
+  /** Allow navigation to private/internal network addresses. Default: `false` */
+  allowPrivateNetwork?: boolean;
+  /** Hostnames explicitly allowed even if they resolve to private addresses */
+  allowedHostnames?: string[];
+  /** Alias for allowedHostnames */
+  hostnameAllowlist?: string[];
+}
+
 // ── Chrome Launcher ──
 
 /** Supported browser types that can be detected and launched. */
@@ -46,9 +61,13 @@ export interface LaunchOptions {
   /** Additional Chrome command-line arguments (e.g. `['--start-maximized']`). */
   chromeArgs?: string[];
   /**
+   * SSRF policy controlling which URLs navigation is allowed to reach.
+   * By default all private/internal addresses are blocked.
+   */
+  ssrfPolicy?: SsrfPolicy;
+  /**
    * Allow navigation to internal/loopback addresses (localhost, 127.x, private IPs).
-   * Default: `false` — internal URLs are blocked to prevent SSRF attacks.
-   * Set to `true` if you need to access local development servers.
+   * @deprecated Use `ssrfPolicy: { allowPrivateNetwork: true }` instead.
    */
   allowInternal?: boolean;
 }
@@ -56,9 +75,13 @@ export interface LaunchOptions {
 /** Options for connecting to an existing browser instance. */
 export interface ConnectOptions {
   /**
+   * SSRF policy controlling which URLs navigation is allowed to reach.
+   * By default all private/internal addresses are blocked.
+   */
+  ssrfPolicy?: SsrfPolicy;
+  /**
    * Allow navigation to internal/loopback addresses (localhost, 127.x, private IPs).
-   * Default: `false` — internal URLs are blocked to prevent SSRF attacks.
-   * Set to `true` if you need to access local development servers.
+   * @deprecated Use `ssrfPolicy: { allowPrivateNetwork: true }` instead.
    */
   allowInternal?: boolean;
   /**
@@ -151,6 +174,13 @@ export interface SnapshotOptions {
    * - `'role'` — uses Playwright's `ariaSnapshot()` + `getByRole()` resolution
    */
   mode?: 'role' | 'aria';
+  /**
+   * How refs are stored for role-mode snapshots.
+   * - `'role'` (default) — refs resolved via `getByRole()`
+   * - `'aria'` — refs resolved via aria snapshot index
+   * Only applies when `mode: 'role'`.
+   */
+  refsMode?: 'role' | 'aria';
 }
 
 /** A node in the raw ARIA accessibility tree. */
@@ -203,7 +233,7 @@ export interface ClickOptions {
   /** Mouse button to use */
   button?: 'left' | 'right' | 'middle';
   /** Modifier keys to hold during click */
-  modifiers?: ('Alt' | 'Control' | 'Meta' | 'Shift')[];
+  modifiers?: ('Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift')[];
   /** Timeout in milliseconds. Default: `8000` */
   timeoutMs?: number;
 }
