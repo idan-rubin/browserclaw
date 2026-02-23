@@ -77,7 +77,7 @@ export async function setGeolocationViaPlaywright(opts: {
   }
 
   if (opts.latitude === undefined || opts.longitude === undefined) {
-    throw new Error('latitude and longitude are required when not clearing geolocation.');
+    throw new Error('latitude and longitude are required (or set clear=true)');
   }
 
   await context.grantPermissions(['geolocation'], opts.origin ? { origin: opts.origin } : undefined);

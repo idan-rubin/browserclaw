@@ -21,8 +21,11 @@ export async function responseBodyViaPlaywright(opts: {
   let body = await response.text();
   let truncated = false;
 
-  if (opts.maxChars && body.length > opts.maxChars) {
-    body = body.slice(0, opts.maxChars);
+  const maxChars = typeof opts.maxChars === 'number' && Number.isFinite(opts.maxChars)
+    ? Math.max(1, Math.min(5_000_000, Math.floor(opts.maxChars)))
+    : undefined;
+  if (maxChars !== undefined && body.length > maxChars) {
+    body = body.slice(0, maxChars);
     truncated = true;
   }
 

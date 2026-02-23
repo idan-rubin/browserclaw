@@ -1,4 +1,4 @@
-import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget } from '../connection.js';
+import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget, normalizeTimeoutMs } from '../connection.js';
 import {
   buildRoleSnapshotFromAriaSnapshot,
   getRoleSnapshotStats,
@@ -15,6 +15,7 @@ export async function snapshotRole(opts: {
   selector?: string;
   frameSelector?: string;
   refsMode?: 'role' | 'aria';
+  timeoutMs?: number;
   options?: {
     interactive?: boolean;
     compact?: boolean;
@@ -35,7 +36,7 @@ export async function snapshotRole(opts: {
       ? page.locator(selector)
       : page.locator(':root'));
 
-  const ariaSnapshot = await locator.ariaSnapshot({ timeout: 10000 });
+  const ariaSnapshot = await locator.ariaSnapshot({ timeout: normalizeTimeoutMs(opts.timeoutMs, 5000) });
   const built = buildRoleSnapshotFromAriaSnapshot(String(ariaSnapshot ?? ''), opts.options);
 
   storeRoleRefsForTarget({

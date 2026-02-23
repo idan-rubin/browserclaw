@@ -335,7 +335,7 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
   const found = await findPageByTargetId(browser, opts.targetId, opts.cdpUrl);
   if (!found) {
     if (pages.length === 1) return first;
-    throw new Error('tab not found');
+    throw new Error(`Tab not found (targetId: ${opts.targetId}). Call browser.tabs() to list open tabs.`);
   }
   return found;
 }
@@ -344,6 +344,7 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
 
 export function refLocator(page: Page, ref: string) {
   const normalized = ref.startsWith('@') ? ref.slice(1) : ref.startsWith('ref=') ? ref.slice(4) : ref;
+  if (!normalized.trim()) throw new Error('ref is required');
 
   if (/^e\d+$/.test(normalized)) {
     const state = pageStates.get(page);

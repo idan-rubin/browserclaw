@@ -91,6 +91,7 @@ export class CrawlPage {
         selector: opts.selector,
         frameSelector: opts.frameSelector,
         refsMode: opts.refsMode,
+        timeoutMs: opts.timeoutMs,
         options: {
           interactive: opts.interactive,
           compact: opts.compact,
