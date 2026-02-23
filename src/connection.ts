@@ -335,7 +335,7 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
   const found = await findPageByTargetId(browser, opts.targetId, opts.cdpUrl);
   if (!found) {
     if (pages.length === 1) return first;
-    throw new Error(`Tab not found (targetId: ${opts.targetId}). Use browser.tabs() to list open tabs.`);
+    throw new Error('tab not found');
   }
   return found;
 }
