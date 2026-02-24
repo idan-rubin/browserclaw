@@ -8,12 +8,12 @@ export async function navigateViaPlaywright(opts: {
   url: string;
   timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
-  /** @deprecated Use ssrfPolicy: { allowPrivateNetwork: true } instead */
+  /** @deprecated Use ssrfPolicy: { dangerouslyAllowPrivateNetwork: true } instead */
   allowInternal?: boolean;
 }): Promise<{ url: string }> {
   const url = String(opts.url ?? '').trim();
   if (!url) throw new Error('url is required');
-  const policy = opts.allowInternal ? { ...opts.ssrfPolicy, allowPrivateNetwork: true } : opts.ssrfPolicy;
+  const policy = opts.allowInternal ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
   await assertBrowserNavigationAllowed({ url, ssrfPolicy: policy });
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
@@ -41,12 +41,12 @@ export async function createPageViaPlaywright(opts: {
   cdpUrl: string;
   url?: string;
   ssrfPolicy?: SsrfPolicy;
-  /** @deprecated Use ssrfPolicy: { allowPrivateNetwork: true } instead */
+  /** @deprecated Use ssrfPolicy: { dangerouslyAllowPrivateNetwork: true } instead */
   allowInternal?: boolean;
 }): Promise<BrowserTab> {
   const targetUrl = (opts.url ?? '').trim() || 'about:blank';
   if (targetUrl !== 'about:blank') {
-    const policy = opts.allowInternal ? { ...opts.ssrfPolicy, allowPrivateNetwork: true } : opts.ssrfPolicy;
+    const policy = opts.allowInternal ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
     await assertBrowserNavigationAllowed({ url: targetUrl, ssrfPolicy: policy });
   }
   const { browser } = await connectBrowser(opts.cdpUrl);

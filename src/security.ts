@@ -55,7 +55,7 @@ export async function assertBrowserNavigationAllowed(opts: {
 
   const policy = opts.ssrfPolicy;
 
-  if (policy?.allowPrivateNetwork) return;
+  if (policy?.dangerouslyAllowPrivateNetwork ?? policy?.allowPrivateNetwork ?? true) return;
 
   const allowedHostnames = [
     ...(policy?.allowedHostnames ?? []),
@@ -69,7 +69,7 @@ export async function assertBrowserNavigationAllowed(opts: {
 
   if (await isInternalUrlResolved(rawUrl, opts.lookupFn)) {
     throw new InvalidBrowserNavigationUrlError(
-      `Navigation to internal/loopback address blocked: "${rawUrl}". Use ssrfPolicy: { allowPrivateNetwork: true } if this is intentional.`
+      `Navigation to internal/loopback address blocked: "${rawUrl}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
     );
   }
 }

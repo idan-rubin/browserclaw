@@ -1032,7 +1032,7 @@ export class BrowserClaw {
   static async launch(opts: LaunchOptions = {}): Promise<BrowserClaw> {
     const chrome = await launchChrome(opts);
     const cdpUrl = `http://127.0.0.1:${chrome.cdpPort}`;
-    const ssrfPolicy = opts.allowInternal ? { ...opts.ssrfPolicy, allowPrivateNetwork: true } : opts.ssrfPolicy;
+    const ssrfPolicy = opts.allowInternal ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
     return new BrowserClaw(cdpUrl, chrome, ssrfPolicy);
   }
 
@@ -1055,7 +1055,7 @@ export class BrowserClaw {
       throw new Error(`Cannot connect to Chrome at ${cdpUrl}. Is Chrome running with --remote-debugging-port?`);
     }
     await connectBrowser(cdpUrl, opts?.authToken);
-    const ssrfPolicy = opts?.allowInternal ? { ...opts.ssrfPolicy, allowPrivateNetwork: true } : opts?.ssrfPolicy;
+    const ssrfPolicy = opts?.allowInternal ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts?.ssrfPolicy;
     return new BrowserClaw(cdpUrl, null, ssrfPolicy);
   }
 

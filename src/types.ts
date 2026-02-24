@@ -2,10 +2,19 @@
 
 /**
  * Policy for controlling which URLs browser navigation is allowed to reach.
- * By default all private/internal addresses are blocked to prevent SSRF attacks.
+ * Defaults to trusted-network mode (private/internal addresses allowed).
+ * Set `dangerouslyAllowPrivateNetwork: false` to enforce strict public-only checks.
  */
 export interface SsrfPolicy {
-  /** Allow navigation to private/internal network addresses. Default: `false` */
+  /**
+   * Allow navigation to private/internal network addresses.
+   * Default: `true` (trusted-network mode). Set to `false` for strict public-only enforcement.
+   */
+  dangerouslyAllowPrivateNetwork?: boolean;
+  /**
+   * Allow navigation to private/internal network addresses.
+   * @deprecated Use `dangerouslyAllowPrivateNetwork` instead.
+   */
   allowPrivateNetwork?: boolean;
   /** Hostnames explicitly allowed even if they resolve to private addresses */
   allowedHostnames?: string[];
@@ -62,12 +71,13 @@ export interface LaunchOptions {
   chromeArgs?: string[];
   /**
    * SSRF policy controlling which URLs navigation is allowed to reach.
-   * By default all private/internal addresses are blocked.
+   * Defaults to trusted-network mode (private/internal addresses allowed).
+   * Set `dangerouslyAllowPrivateNetwork: false` to enforce strict public-only checks.
    */
   ssrfPolicy?: SsrfPolicy;
   /**
    * Allow navigation to internal/loopback addresses (localhost, 127.x, private IPs).
-   * @deprecated Use `ssrfPolicy: { allowPrivateNetwork: true }` instead.
+   * @deprecated Use `ssrfPolicy: { dangerouslyAllowPrivateNetwork: true }` instead.
    */
   allowInternal?: boolean;
 }
@@ -76,12 +86,13 @@ export interface LaunchOptions {
 export interface ConnectOptions {
   /**
    * SSRF policy controlling which URLs navigation is allowed to reach.
-   * By default all private/internal addresses are blocked.
+   * Defaults to trusted-network mode (private/internal addresses allowed).
+   * Set `dangerouslyAllowPrivateNetwork: false` to enforce strict public-only checks.
    */
   ssrfPolicy?: SsrfPolicy;
   /**
    * Allow navigation to internal/loopback addresses (localhost, 127.x, private IPs).
-   * @deprecated Use `ssrfPolicy: { allowPrivateNetwork: true }` instead.
+   * @deprecated Use `ssrfPolicy: { dangerouslyAllowPrivateNetwork: true }` instead.
    */
   allowInternal?: boolean;
   /**
