@@ -350,7 +350,9 @@ export async function isChromeReachable(cdpUrl: string, timeoutMs = 500, authTok
     const headers: Record<string, string> = {};
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
     const res = await fetch(`${cdpUrl.replace(/\/+$/, '')}/json/version`, { signal: ctrl.signal, headers });
-    return res.ok;
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data != null && typeof data === 'object';
   } catch { return false; }
   finally { clearTimeout(t); }
 }
@@ -364,6 +366,7 @@ export async function getChromeWebSocketUrl(cdpUrl: string, timeoutMs = 500, aut
     const res = await fetch(`${cdpUrl.replace(/\/+$/, '')}/json/version`, { signal: ctrl.signal, headers });
     if (!res.ok) return null;
     const data = await res.json() as { webSocketDebuggerUrl?: string };
+    if (!data || typeof data !== 'object') return null;
     return String(data?.webSocketDebuggerUrl ?? '').trim() || null;
   } catch { return null; }
   finally { clearTimeout(t); }
