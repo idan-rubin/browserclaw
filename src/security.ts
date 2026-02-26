@@ -1,5 +1,6 @@
-import { resolve, normalize, sep } from 'node:path';
+import { resolve, normalize, dirname, sep } from 'node:path';
 import { lookup } from 'node:dns/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import type { SsrfPolicy } from './types.js';
 
 export type LookupFn = typeof lookup;
@@ -84,7 +85,7 @@ export async function assertBrowserNavigationAllowed(opts: {
  *   the resolved path must be within one of these roots.
  * @throws If the path is unsafe
  */
-export function assertSafeOutputPath(path: string, allowedRoots?: string[]): void {
+export async function assertSafeOutputPath(path: string, allowedRoots?: string[]): Promise<void> {
   if (!path || typeof path !== 'string') {
     throw new Error('Output path is required.');
   }
@@ -96,14 +97,41 @@ export function assertSafeOutputPath(path: string, allowedRoots?: string[]): voi
     throw new Error(`Unsafe output path: directory traversal detected in "${path}".`);
   }
 
-  // If allowed roots are specified, resolved path must be within one of them
   if (allowedRoots?.length) {
     const resolved = resolve(normalized);
-    const withinRoot = allowedRoots.some(root => {
-      const normalizedRoot = resolve(root);
-      return resolved === normalizedRoot || resolved.startsWith(normalizedRoot + sep);
-    });
-    if (!withinRoot) {
+
+    // Resolve the parent directory via realpath to detect symlink-parent escapes
+    let parentReal: string;
+    try {
+      parentReal = await realpath(dirname(resolved));
+    } catch {
+      throw new Error(`Unsafe output path: parent directory is inaccessible for "${path}".`);
+    }
+
+    // If the target already exists, ensure it is not a symlink
+    try {
+      const targetStat = await lstat(resolved);
+      if (targetStat.isSymbolicLink()) {
+        throw new Error(`Unsafe output path: "${path}" is a symbolic link.`);
+      }
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
+
+    // Verify the resolved parent is within one of the allowed roots
+    const results = await Promise.all(
+      allowedRoots.map(async (root) => {
+        try {
+          const rootStat = await lstat(resolve(root));
+          if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return false;
+          const rootReal = await realpath(resolve(root));
+          return parentReal === rootReal || parentReal.startsWith(rootReal + sep);
+        } catch {
+          return false;
+        }
+      })
+    );
+    if (!results.some(Boolean)) {
       throw new Error(`Unsafe output path: "${path}" is outside allowed directories.`);
     }
   }
@@ -264,6 +292,7 @@ function isInternalIP(ip: string): boolean {
   if (lower === '::1') return true;
   if (lower.startsWith('fe80:')) return true;  // link-local
   if (lower.startsWith('fc') || lower.startsWith('fd')) return true;  // ULA
+  if (lower.startsWith('ff')) return true;  // multicast (ff00::/8)
 
   // IPv6 transition addresses: NAT64, 6to4, Teredo, IPv4-mapped
   const embedded = extractEmbeddedIPv4(lower);
@@ -303,6 +332,27 @@ export function isInternalUrl(url: string): boolean {
   }
 
   return false;
+}
+
+/**
+ * Validate upload file paths immediately before use — rejects symlinks,
+ * missing files, and non-regular files to prevent TOCTOU path-swap attacks.
+ */
+export async function assertSafeUploadPaths(paths: string[]): Promise<void> {
+  for (const filePath of paths) {
+    let stat: Awaited<ReturnType<typeof lstat>>;
+    try {
+      stat = await lstat(filePath);
+    } catch {
+      throw new Error(`Upload path does not exist or is inaccessible: "${filePath}".`);
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Upload path is a symbolic link: "${filePath}".`);
+    }
+    if (!stat.isFile()) {
+      throw new Error(`Upload path is not a regular file: "${filePath}".`);
+    }
+  }
 }
 
 /**

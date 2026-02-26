@@ -17,7 +17,7 @@ export async function downloadViaPlaywright(opts: {
   timeoutMs?: number;
   allowedOutputRoots?: string[];
 }): Promise<DownloadResult> {
-  assertSafeOutputPath(opts.path, opts.allowedOutputRoots);
+  await assertSafeOutputPath(opts.path, opts.allowedOutputRoots);
 
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
@@ -58,7 +58,7 @@ export async function waitForDownloadViaPlaywright(opts: {
 
   const download = await page.waitForEvent('download', { timeout });
   const savePath = opts.path ?? download.suggestedFilename();
-  assertSafeOutputPath(savePath, opts.allowedOutputRoots);
+  await assertSafeOutputPath(savePath, opts.allowedOutputRoots);
   await download.saveAs(savePath);
 
   return {

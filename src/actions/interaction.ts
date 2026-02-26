@@ -6,6 +6,7 @@ import {
   toAIFriendlyError,
   normalizeTimeoutMs,
 } from '../connection.js';
+import { assertSafeUploadPaths } from '../security.js';
 import type { FormField } from '../types.js';
 
 type MouseButton = 'left' | 'right' | 'middle';
@@ -222,6 +223,8 @@ export async function setInputFilesViaPlaywright(opts: {
       : null;
   if (!locator) throw new Error('Either ref or element is required for setInputFiles');
 
+  await assertSafeUploadPaths(opts.paths);
+
   try {
     await locator.setInputFiles(opts.paths);
   } catch (err) {
@@ -285,7 +288,9 @@ export async function armFileUploadViaPlaywright(opts: {
     const handler = async (fc: { setFiles: (files: string[]) => Promise<void> }) => {
       clearTimeout(timer);
       try {
-        await fc.setFiles(opts.paths ?? []);
+        const paths = opts.paths ?? [];
+        if (paths.length > 0) await assertSafeUploadPaths(paths);
+        await fc.setFiles(paths);
         resolve();
       } catch (err) {
         reject(err);

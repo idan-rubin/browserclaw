@@ -27,7 +27,7 @@ export async function traceStopViaPlaywright(opts: {
   path: string;
   allowedOutputRoots?: string[];
 }): Promise<void> {
-  assertSafeOutputPath(opts.path, opts.allowedOutputRoots);
+  await assertSafeOutputPath(opts.path, opts.allowedOutputRoots);
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
   const context = page.context();
