@@ -1,4 +1,4 @@
-<h2 align="center">🦞 BrowserClaw — Standalone OpenClaw browser module</h1>
+<h2 align="center">🦞 BrowserClaw — Standalone OpenClaw browser module</h2>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/browserclaw"><img src="https://img.shields.io/npm/v/browserclaw.svg" alt="npm version" /></a>
@@ -217,13 +217,13 @@ await page.press('Meta+Shift+p');
 
 // Fill multiple form fields at once
 await page.fill([
-  { ref: 'e2', type: 'text', value: 'Jane Doe' },
-  { ref: 'e4', type: 'text', value: 'jane@example.com' },
+  { ref: 'e2', value: 'Jane Doe' },
+  { ref: 'e4', value: 'jane@example.com' },
   { ref: 'e6', type: 'checkbox', value: true },
 ]);
 ```
 
-`fill()` field types: `'text'` calls Playwright `fill()` with the string value. `'checkbox'` and `'radio'` call `setChecked()` — truthy values are `true`, `1`, `'1'`, `'true'`. Empty ref or type throws.
+`fill()` field types: `'text'` (default) calls Playwright `fill()` with the string value. `'checkbox'` and `'radio'` call `setChecked()` — truthy values are `true`, `1`, `'1'`, `'true'`. Type can be omitted and defaults to `'text'`. Empty ref throws.
 
 #### Highlight
 

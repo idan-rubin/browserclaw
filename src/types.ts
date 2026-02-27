@@ -234,7 +234,7 @@ export interface FormField {
   /** Ref ID of the form field (e.g. `'e3'`) */
   ref: string;
   /** Field type: `'text'`, `'checkbox'`, `'radio'`, etc. */
-  type: string;
+  type?: string;
   /** Value to set. Booleans for checkboxes, strings for text fields. */
   value?: string | number | boolean;
 }

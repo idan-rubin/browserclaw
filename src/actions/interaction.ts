@@ -144,12 +144,11 @@ export async function fillFormViaPlaywright(opts: {
   for (let i = 0; i < opts.fields.length; i++) {
     const field = opts.fields[i]!;
     const ref = field.ref.trim();
-    const type = field.type.trim();
+    const type = (typeof field.type === 'string' ? field.type.trim() : '') || 'text';
     const rawValue = field.value;
     const value = rawValue == null ? '' : String(rawValue);
 
     if (!ref) throw new Error(`fill(): field at index ${i} has empty ref`);
-    if (!type) throw new Error(`fill(): field "${ref}" has empty type`);
     const locator = refLocator(page, ref);
 
     if (type === 'checkbox' || type === 'radio') {
