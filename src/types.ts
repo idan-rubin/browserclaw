@@ -20,6 +20,12 @@ export interface SsrfPolicy {
   allowedHostnames?: string[];
   /** Alias for allowedHostnames */
   hostnameAllowlist?: string[];
+  /**
+   * Allow navigation to the RFC 2544 benchmark testing range (198.18.0.0/15).
+   * This range is blocked by default. Enable only in proxy/fake-IP networking
+   * environments where this range is used for legitimate routing.
+   */
+  allowRfc2544BenchmarkRange?: boolean;
 }
 
 // ── Chrome Launcher ──

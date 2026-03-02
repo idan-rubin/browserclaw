@@ -1,5 +1,5 @@
 import { connectBrowser, getPageForTargetId, ensurePageState, pageTargetId, findPageByTargetId, getAllPages, normalizeTimeoutMs } from '../connection.js';
-import { assertBrowserNavigationAllowed } from '../security.js';
+import { assertBrowserNavigationAllowed, assertBrowserNavigationResultAllowed } from '../security.js';
 import type { BrowserTab, SsrfPolicy } from '../types.js';
 
 export async function navigateViaPlaywright(opts: {
@@ -18,7 +18,9 @@ export async function navigateViaPlaywright(opts: {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
   await page.goto(url, { timeout: normalizeTimeoutMs(opts.timeoutMs, 20000) });
-  return { url: page.url() };
+  const finalUrl = page.url();
+  await assertBrowserNavigationResultAllowed({ url: finalUrl, ssrfPolicy: policy });
+  return { url: finalUrl };
 }
 
 export async function listPagesViaPlaywright(opts: { cdpUrl: string }): Promise<BrowserTab[]> {
@@ -45,8 +47,8 @@ export async function createPageViaPlaywright(opts: {
   allowInternal?: boolean;
 }): Promise<BrowserTab> {
   const targetUrl = (opts.url ?? '').trim() || 'about:blank';
+  const policy = opts.allowInternal ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
   if (targetUrl !== 'about:blank') {
-    const policy = opts.allowInternal ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
     await assertBrowserNavigationAllowed({ url: targetUrl, ssrfPolicy: policy });
   }
   const { browser } = await connectBrowser(opts.cdpUrl);
@@ -55,6 +57,7 @@ export async function createPageViaPlaywright(opts: {
   ensurePageState(page);
   if (targetUrl !== 'about:blank') {
     await page.goto(targetUrl, { timeout: normalizeTimeoutMs(undefined, 20000) });
+    await assertBrowserNavigationResultAllowed({ url: page.url(), ssrfPolicy: policy });
   }
   const tid = await pageTargetId(page).catch(() => null);
   if (!tid) throw new Error('Failed to get targetId for new page');

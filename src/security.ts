@@ -68,7 +68,8 @@ export async function assertBrowserNavigationAllowed(opts: {
     if (allowedHostnames.some(h => h.toLowerCase() === hostname)) return;
   }
 
-  if (await isInternalUrlResolved(rawUrl, opts.lookupFn)) {
+  const ipOpts: IsInternalIPOpts = { allowRfc2544BenchmarkRange: policy?.allowRfc2544BenchmarkRange };
+  if (await isInternalUrlResolved(rawUrl, opts.lookupFn, ipOpts)) {
     throw new InvalidBrowserNavigationUrlError(
       `Navigation to internal/loopback address blocked: "${rawUrl}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
     );
@@ -271,10 +272,12 @@ function isUnsupportedIPv4Literal(ip: string): boolean {
   return false;
 }
 
+type IsInternalIPOpts = { allowRfc2544BenchmarkRange?: boolean };
+
 /**
  * Check whether an IP address string is internal/private/loopback.
  */
-function isInternalIP(ip: string): boolean {
+function isInternalIP(ip: string, opts?: IsInternalIPOpts): boolean {
   // Reject non-standard IPv4 literals before any range checks (fail closed)
   if (!ip.includes(':') && isUnsupportedIPv4Literal(ip)) return true;
 
@@ -286,6 +289,8 @@ function isInternalIP(ip: string): boolean {
   if (/^169\.254\./.test(ip)) return true;
   if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip)) return true;
   if (ip === '0.0.0.0') return true;
+  // RFC 2544 benchmark testing range (198.18.0.0/15 = 198.18.x.x - 198.19.x.x)
+  if (!opts?.allowRfc2544BenchmarkRange && /^198\.1[89]\./.test(ip)) return true;
 
   // IPv6
   const lower = ip.toLowerCase();
@@ -298,7 +303,7 @@ function isInternalIP(ip: string): boolean {
   const embedded = extractEmbeddedIPv4(lower);
   if (embedded !== null) {
     if (embedded === '') return true;  // parse error — fail closed
-    return isInternalIP(embedded);
+    return isInternalIP(embedded, opts);
   }
 
   return false;
@@ -308,7 +313,7 @@ function isInternalIP(ip: string): boolean {
  * Check whether a URL targets a loopback or private/internal network address.
  * Synchronous hostname-based check. Used to prevent SSRF attacks.
  */
-export function isInternalUrl(url: string): boolean {
+export function isInternalUrl(url: string, opts?: IsInternalIPOpts): boolean {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -324,7 +329,7 @@ export function isInternalUrl(url: string): boolean {
   if (hostname === 'localhost') return true;
 
   // Check if hostname is an IP literal
-  if (isInternalIP(hostname)) return true;
+  if (isInternalIP(hostname, opts)) return true;
 
   // .local, .internal, .localhost TLDs
   if (hostname.endsWith('.local') || hostname.endsWith('.internal') || hostname.endsWith('.localhost')) {
@@ -359,9 +364,9 @@ export async function assertSafeUploadPaths(paths: string[]): Promise<void> {
  * Async version that also resolves DNS to catch rebinding attacks
  * where a public hostname resolves to an internal IP.
  */
-export async function isInternalUrlResolved(url: string, lookupFn: LookupFn = lookup): Promise<boolean> {
+export async function isInternalUrlResolved(url: string, lookupFn: LookupFn = lookup, opts?: IsInternalIPOpts): Promise<boolean> {
   // First do the fast synchronous check
-  if (isInternalUrl(url)) return true;
+  if (isInternalUrl(url, opts)) return true;
 
   // Then resolve DNS to catch rebinding
   let parsed: URL;
@@ -373,11 +378,38 @@ export async function isInternalUrlResolved(url: string, lookupFn: LookupFn = lo
 
   try {
     const { address } = await lookupFn(parsed.hostname);
-    if (isInternalIP(address)) return true;
+    if (isInternalIP(address, opts)) return true;
   } catch {
     // DNS resolution failed — fail closed
     return true;
   }
 
   return false;
+}
+
+/**
+ * Best-effort post-navigation guard for the final page URL.
+ * Only validates http/https URLs and about:blank — swallows errors on
+ * unparseable URLs and non-network protocols (e.g. chrome-error://) to avoid
+ * false positives on browser-internal error pages.
+ *
+ * Call this after `page.goto()` to catch redirect-based SSRF bypasses.
+ */
+export async function assertBrowserNavigationResultAllowed(opts: {
+  url: string;
+  lookupFn?: LookupFn;
+} & BrowserNavigationPolicyOptions): Promise<void> {
+  const rawUrl = String(opts.url ?? '').trim();
+  if (!rawUrl) return;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return;
+  }
+
+  if (NETWORK_NAVIGATION_PROTOCOLS.has(parsed.protocol) || SAFE_NON_NETWORK_URLS.has(parsed.href)) {
+    await assertBrowserNavigationAllowed(opts);
+  }
 }
