@@ -372,6 +372,50 @@ export async function getChromeWebSocketUrl(cdpUrl: string, timeoutMs = 500, aut
   finally { clearTimeout(t); }
 }
 
+export async function isChromeCdpReady(cdpUrl: string, timeoutMs = 500, handshakeTimeoutMs = 800): Promise<boolean> {
+  const wsUrl = await getChromeWebSocketUrl(cdpUrl, timeoutMs);
+  if (!wsUrl) return false;
+  return await canRunCdpHealthCommand(wsUrl, handshakeTimeoutMs);
+}
+
+async function canRunCdpHealthCommand(wsUrl: string, timeoutMs = 800): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { ws.close(); } catch {}
+      resolve(value);
+    };
+
+    const timer = setTimeout(() => finish(false), Math.max(50, timeoutMs + 25));
+
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch {
+      finish(false);
+      return;
+    }
+
+    ws.onopen = () => {
+      try {
+        ws.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' }));
+      } catch { finish(false); }
+    };
+    ws.onmessage = (event) => {
+      try {
+        const parsed = JSON.parse(String(event.data));
+        if (parsed?.id !== 1) return;
+        finish(Boolean(parsed.result && typeof parsed.result === 'object'));
+      } catch { /* ignore non-JSON frames */ }
+    };
+    ws.onerror = () => finish(false);
+    ws.onclose = () => finish(false);
+  });
+}
+
 export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChrome> {
   const cdpPort = opts.cdpPort ?? DEFAULT_CDP_PORT;
   await ensurePortAvailable(cdpPort);
@@ -451,6 +495,11 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   const proc = spawnChrome();
   const cdpUrl = `http://127.0.0.1:${cdpPort}`;
 
+  // Capture stderr for diagnostics on failure
+  const stderrChunks: Buffer[] = [];
+  const onStderr = (chunk: Buffer) => { stderrChunks.push(chunk); };
+  proc.stderr?.on('data', onStderr);
+
   // Wait for Chrome to be ready
   const readyDeadline = Date.now() + 15000;
   while (Date.now() < readyDeadline) {
@@ -459,9 +508,16 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   }
 
   if (!await isChromeReachable(cdpUrl, 500)) {
+    const stderrOutput = Buffer.concat(stderrChunks).toString('utf8').trim();
+    const stderrHint = stderrOutput ? `\nChrome stderr:\n${stderrOutput.slice(0, 2000)}` : '';
+    const sandboxHint = process.platform === 'linux' && !opts.noSandbox
+      ? '\nHint: If running in a container or as root, try setting noSandbox: true.' : '';
     try { proc.kill('SIGKILL'); } catch {}
-    throw new Error(`Failed to start Chrome CDP on port ${cdpPort}. Chrome may not have started correctly.`);
+    throw new Error(`Failed to start Chrome CDP on port ${cdpPort}.${sandboxHint}${stderrHint}`);
   }
+
+  proc.stderr?.off('data', onStderr);
+  stderrChunks.length = 0;
 
   return {
     pid: proc.pid ?? -1,
