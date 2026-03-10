@@ -6,3 +6,5 @@ dist/
 .DS_Store
 .env
 .env.*
+.claude/
+internal/

@@ -2,6 +2,8 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/browserclaw"><img src="https://img.shields.io/npm/v/browserclaw.svg" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/browserclaw"><img src="https://img.shields.io/npm/dw/browserclaw" alt="npm downloads" /></a>
+  <a href="https://github.com/idan-rubin/browserclaw/stargazers"><img src="https://img.shields.io/github/stars/idan-rubin/browserclaw" alt="GitHub stars" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
 </p>
 
