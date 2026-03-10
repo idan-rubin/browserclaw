@@ -1,7 +1,14 @@
 export { BrowserClaw, CrawlPage } from './browser.js';
-export { isChromeCdpReady } from './chrome-launcher.js';
-export { InvalidBrowserNavigationUrlError, withBrowserNavigationPolicy, assertBrowserNavigationAllowed } from './security.js';
-export type { BrowserNavigationPolicyOptions, LookupFn } from './security.js';
+export { isChromeCdpReady, isChromeReachable, getChromeWebSocketUrl, normalizeCdpHttpBaseForJsonEndpoints } from './chrome-launcher.js';
+export {
+  InvalidBrowserNavigationUrlError,
+  withBrowserNavigationPolicy,
+  assertBrowserNavigationAllowed,
+  assertBrowserNavigationResultAllowed,
+  assertBrowserNavigationRedirectChainAllowed,
+  requiresInspectableBrowserNavigationRedirects,
+} from './security.js';
+export type { BrowserNavigationPolicyOptions, BrowserNavigationRequestLike, LookupFn } from './security.js';
 export type { FrameEvalResult } from './actions/evaluate.js';
 export type {
   SsrfPolicy,

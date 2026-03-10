@@ -343,33 +343,124 @@ function resolveUserDataDir(profileName: string): string {
   return path.join(configDir, 'browserclaw', 'profiles', profileName, 'user-data');
 }
 
-export async function isChromeReachable(cdpUrl: string, timeoutMs = 500, authToken?: string): Promise<boolean> {
+// ── WebSocket / CDP URL Helpers ──
+
+function isWebSocketUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'ws:' || parsed.protocol === 'wss:';
+  } catch { return false; }
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
+}
+
+/**
+ * Normalize a WebSocket debugger URL returned by `/json/version` to match the
+ * external CDP host/port. Handles wildcard binds (`0.0.0.0`, `[::]`),
+ * protocol upgrades (HTTP→WSS), and auth/search param inheritance.
+ */
+function normalizeCdpWsUrl(wsUrl: string, cdpUrl: string): string {
+  const ws = new URL(wsUrl);
+  const cdp = new URL(cdpUrl);
+  const isWildcardBind = ws.hostname === '0.0.0.0' || ws.hostname === '[::]';
+  if ((isLoopbackHost(ws.hostname) || isWildcardBind) && !isLoopbackHost(cdp.hostname)) {
+    ws.hostname = cdp.hostname;
+    const cdpPort = cdp.port || (cdp.protocol === 'https:' ? '443' : '80');
+    if (cdpPort) ws.port = cdpPort;
+    ws.protocol = cdp.protocol === 'https:' ? 'wss:' : 'ws:';
+  }
+  if (cdp.protocol === 'https:' && ws.protocol === 'ws:') ws.protocol = 'wss:';
+  if (!ws.username && !ws.password && (cdp.username || cdp.password)) {
+    ws.username = cdp.username;
+    ws.password = cdp.password;
+  }
+  for (const [key, value] of cdp.searchParams.entries()) {
+    if (!ws.searchParams.has(key)) ws.searchParams.append(key, value);
+  }
+  return ws.toString();
+}
+
+/**
+ * Convert a WebSocket CDP URL to an HTTP base URL for `/json/*` endpoints.
+ */
+export function normalizeCdpHttpBaseForJsonEndpoints(cdpUrl: string): string {
+  try {
+    const url = new URL(cdpUrl);
+    if (url.protocol === 'ws:') url.protocol = 'http:';
+    else if (url.protocol === 'wss:') url.protocol = 'https:';
+    url.pathname = url.pathname.replace(/\/devtools\/browser\/.*$/, '');
+    url.pathname = url.pathname.replace(/\/cdp$/, '');
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return cdpUrl
+      .replace(/^ws:/, 'http:')
+      .replace(/^wss:/, 'https:')
+      .replace(/\/devtools\/browser\/.*$/, '')
+      .replace(/\/cdp$/, '')
+      .replace(/\/$/, '');
+  }
+}
+
+function appendCdpPath(cdpUrl: string, cdpPath: string): string {
+  const url = new URL(cdpUrl);
+  url.pathname = `${url.pathname.replace(/\/$/, '')}${cdpPath.startsWith('/') ? cdpPath : `/${cdpPath}`}`;
+  return url.toString();
+}
+
+// ── Chrome Reachability ──
+
+async function canOpenWebSocket(url: string, timeoutMs: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { ws.close(); } catch {}
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), Math.max(50, timeoutMs + 25));
+    let ws: WebSocket;
+    try { ws = new WebSocket(url); } catch { finish(false); return; }
+    ws.onopen = () => finish(true);
+    ws.onerror = () => finish(false);
+  });
+}
+
+async function fetchChromeVersion(
+  cdpUrl: string,
+  timeoutMs = 500,
+  authToken?: string,
+): Promise<Record<string, any> | null> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
+    const httpBase = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
     const headers: Record<string, string> = {};
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-    const res = await fetch(`${cdpUrl.replace(/\/+$/, '')}/json/version`, { signal: ctrl.signal, headers });
-    if (!res.ok) return false;
+    const res = await fetch(appendCdpPath(httpBase, '/json/version'), { signal: ctrl.signal, headers });
+    if (!res.ok) return null;
     const data = await res.json();
-    return data != null && typeof data === 'object';
-  } catch { return false; }
+    if (!data || typeof data !== 'object') return null;
+    return data as Record<string, any>;
+  } catch { return null; }
   finally { clearTimeout(t); }
 }
 
+export async function isChromeReachable(cdpUrl: string, timeoutMs = 500, authToken?: string): Promise<boolean> {
+  if (isWebSocketUrl(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs);
+  const version = await fetchChromeVersion(cdpUrl, timeoutMs, authToken);
+  return Boolean(version);
+}
+
 export async function getChromeWebSocketUrl(cdpUrl: string, timeoutMs = 500, authToken?: string): Promise<string | null> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const headers: Record<string, string> = {};
-    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-    const res = await fetch(`${cdpUrl.replace(/\/+$/, '')}/json/version`, { signal: ctrl.signal, headers });
-    if (!res.ok) return null;
-    const data = await res.json() as { webSocketDebuggerUrl?: string };
-    if (!data || typeof data !== 'object') return null;
-    return String(data?.webSocketDebuggerUrl ?? '').trim() || null;
-  } catch { return null; }
-  finally { clearTimeout(t); }
+  if (isWebSocketUrl(cdpUrl)) return cdpUrl;
+  const version = await fetchChromeVersion(cdpUrl, timeoutMs, authToken);
+  const wsUrl = String(version?.webSocketDebuggerUrl ?? '').trim();
+  if (!wsUrl) return null;
+  return normalizeCdpWsUrl(wsUrl, cdpUrl);
 }
 
 export async function isChromeCdpReady(cdpUrl: string, timeoutMs = 500, handshakeTimeoutMs = 800): Promise<boolean> {

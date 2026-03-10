@@ -22,6 +22,12 @@ export type BrowserNavigationPolicyOptions = {
   ssrfPolicy?: SsrfPolicy;
 };
 
+/** Playwright-compatible request interface for redirect chain inspection. */
+export type BrowserNavigationRequestLike = {
+  url(): string;
+  redirectedFrom(): BrowserNavigationRequestLike | null;
+};
+
 /** Build a BrowserNavigationPolicyOptions from an SsrfPolicy. */
 export function withBrowserNavigationPolicy(ssrfPolicy?: SsrfPolicy): BrowserNavigationPolicyOptions {
   return { ssrfPolicy };
@@ -30,6 +36,24 @@ export function withBrowserNavigationPolicy(ssrfPolicy?: SsrfPolicy): BrowserNav
 // Only http: and https: are permitted for navigation; about:blank is the sole non-network exception.
 const NETWORK_NAVIGATION_PROTOCOLS = new Set(['http:', 'https:']);
 const SAFE_NON_NETWORK_URLS = new Set(['about:blank']);
+
+const PROXY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];
+
+function isAllowedNonNetworkNavigationUrl(parsed: URL): boolean {
+  return SAFE_NON_NETWORK_URLS.has(parsed.href);
+}
+
+function isPrivateNetworkAllowedByPolicy(policy?: SsrfPolicy): boolean {
+  return policy?.dangerouslyAllowPrivateNetwork === true || policy?.allowPrivateNetwork === true;
+}
+
+function hasProxyEnvConfigured(env: Record<string, string | undefined> = process.env): boolean {
+  for (const key of PROXY_ENV_KEYS) {
+    const value = env[key];
+    if (typeof value === 'string' && value.trim().length > 0) return true;
+  }
+  return false;
+}
 
 /**
  * Assert that a URL is allowed for browser navigation under the given SSRF policy.
@@ -50,8 +74,16 @@ export async function assertBrowserNavigationAllowed(opts: {
 
   // Block non-network protocols (file:, data:, javascript:, etc.) — only http/https allowed.
   if (!NETWORK_NAVIGATION_PROTOCOLS.has(parsed.protocol)) {
-    if (SAFE_NON_NETWORK_URLS.has(parsed.href)) return;
+    if (isAllowedNonNetworkNavigationUrl(parsed)) return;
     throw new InvalidBrowserNavigationUrlError(`Navigation blocked: unsupported protocol "${parsed.protocol}"`);
+  }
+
+  // Fail closed when proxy env vars are set — SSRF checks cannot be reliably enforced
+  // because the browser's actual network path may differ from DNS resolution.
+  if (hasProxyEnvConfigured() && !isPrivateNetworkAllowedByPolicy(opts.ssrfPolicy)) {
+    throw new InvalidBrowserNavigationUrlError(
+      'Navigation blocked: strict browser SSRF policy cannot be enforced while env proxy variables are set'
+    );
   }
 
   const policy = opts.ssrfPolicy;
@@ -409,7 +441,35 @@ export async function assertBrowserNavigationResultAllowed(opts: {
     return;
   }
 
-  if (NETWORK_NAVIGATION_PROTOCOLS.has(parsed.protocol) || SAFE_NON_NETWORK_URLS.has(parsed.href)) {
+  if (NETWORK_NAVIGATION_PROTOCOLS.has(parsed.protocol) || isAllowedNonNetworkNavigationUrl(parsed)) {
     await assertBrowserNavigationAllowed(opts);
   }
+}
+
+/**
+ * Walk the full redirect chain and validate each hop against the SSRF policy.
+ * Call this after `page.goto()` with `response?.request()` to catch intermediate
+ * redirects that resolve to private/internal addresses.
+ */
+export async function assertBrowserNavigationRedirectChainAllowed(opts: {
+  request?: BrowserNavigationRequestLike | null;
+  lookupFn?: LookupFn;
+} & BrowserNavigationPolicyOptions): Promise<void> {
+  const chain: string[] = [];
+  let current = opts.request ?? null;
+  while (current) {
+    chain.push(current.url());
+    current = current.redirectedFrom();
+  }
+  for (const url of [...chain].reverse()) {
+    await assertBrowserNavigationAllowed({ url, lookupFn: opts.lookupFn, ssrfPolicy: opts.ssrfPolicy });
+  }
+}
+
+/**
+ * Returns true if the SSRF policy requires redirect chain inspection
+ * (i.e. strict mode where private network is blocked).
+ */
+export function requiresInspectableBrowserNavigationRedirects(ssrfPolicy?: SsrfPolicy): boolean {
+  return !isPrivateNetworkAllowedByPolicy(ssrfPolicy);
 }

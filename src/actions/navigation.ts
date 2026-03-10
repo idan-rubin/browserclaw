@@ -1,5 +1,5 @@
 import { connectBrowser, getPageForTargetId, ensurePageState, pageTargetId, findPageByTargetId, getAllPages, normalizeTimeoutMs } from '../connection.js';
-import { assertBrowserNavigationAllowed, assertBrowserNavigationResultAllowed } from '../security.js';
+import { assertBrowserNavigationAllowed, assertBrowserNavigationResultAllowed, assertBrowserNavigationRedirectChainAllowed, withBrowserNavigationPolicy } from '../security.js';
 import type { BrowserTab, SsrfPolicy } from '../types.js';
 
 export async function navigateViaPlaywright(opts: {
@@ -17,7 +17,8 @@ export async function navigateViaPlaywright(opts: {
   await assertBrowserNavigationAllowed({ url, ssrfPolicy: policy });
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
-  await page.goto(url, { timeout: normalizeTimeoutMs(opts.timeoutMs, 20000) });
+  const response = await page.goto(url, { timeout: normalizeTimeoutMs(opts.timeoutMs, 20000) });
+  await assertBrowserNavigationRedirectChainAllowed({ request: response?.request(), ...withBrowserNavigationPolicy(policy) });
   const finalUrl = page.url();
   await assertBrowserNavigationResultAllowed({ url: finalUrl, ssrfPolicy: policy });
   return { url: finalUrl };
@@ -56,7 +57,9 @@ export async function createPageViaPlaywright(opts: {
   const page = await context.newPage();
   ensurePageState(page);
   if (targetUrl !== 'about:blank') {
-    await page.goto(targetUrl, { timeout: normalizeTimeoutMs(undefined, 20000) });
+    const navigationPolicy = withBrowserNavigationPolicy(policy);
+    const response = await page.goto(targetUrl, { timeout: normalizeTimeoutMs(undefined, 20000) });
+    await assertBrowserNavigationRedirectChainAllowed({ request: response?.request(), ...navigationPolicy });
     await assertBrowserNavigationResultAllowed({ url: page.url(), ssrfPolicy: policy });
   }
   const tid = await pageTargetId(page).catch(() => null);
