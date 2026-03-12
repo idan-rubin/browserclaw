@@ -2,9 +2,9 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/browserclaw"><img src="https://img.shields.io/npm/v/browserclaw.svg" alt="npm version" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
   <a href="https://www.npmjs.com/package/browserclaw"><img src="https://img.shields.io/npm/dw/browserclaw" alt="npm downloads" /></a>
   <a href="https://github.com/idan-rubin/browserclaw/stargazers"><img src="https://img.shields.io/github/stars/idan-rubin/browserclaw" alt="GitHub stars" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
 </p>
 
 Extracted and refined from [OpenClaw](https://github.com/openclaw/openclaw)'s browser automation module. A standalone, typed library for AI-friendly browser control with **snapshot + ref targeting** — no CSS selectors, no XPath, no vision, just numbered refs that map to interactive elements.

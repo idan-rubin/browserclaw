@@ -58,7 +58,7 @@ export async function createPageViaPlaywright(opts: {
   ensurePageState(page);
   if (targetUrl !== 'about:blank') {
     const navigationPolicy = withBrowserNavigationPolicy(policy);
-    const response = await page.goto(targetUrl, { timeout: normalizeTimeoutMs(undefined, 20000) });
+    const response = await page.goto(targetUrl, { timeout: normalizeTimeoutMs(undefined, 20000) }).catch(() => null);
     await assertBrowserNavigationRedirectChainAllowed({ request: response?.request(), ...navigationPolicy });
     await assertBrowserNavigationResultAllowed({ url: page.url(), ssrfPolicy: policy });
   }
