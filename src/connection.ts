@@ -1,6 +1,6 @@
 import { chromium } from 'playwright-core';
 import type { Browser, Page, BrowserContext } from 'playwright-core';
-import { getChromeWebSocketUrl } from './chrome-launcher.js';
+import { getChromeWebSocketUrl, normalizeCdpHttpBaseForJsonEndpoints } from './chrome-launcher.js';
 import type { PageState, RoleRefs } from './types.js';
 
 /** Page extended with Playwright's private `_snapshotForAI` method. */
@@ -302,7 +302,7 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
   // Fallback: match by URL from /json/list
   if (cdpUrl) {
     try {
-      const listUrl = `${cdpUrl.replace(/\/+$/, '').replace(/^ws:/, 'http:').replace(/\/cdp$/, '')}/json/list`;
+      const listUrl = `${normalizeCdpHttpBaseForJsonEndpoints(cdpUrl)}/json/list`;
       const headers: Record<string, string> = {};
       if (cached?.authToken) headers['Authorization'] = `Bearer ${cached.authToken}`;
       const response = await fetch(listUrl, { headers });
