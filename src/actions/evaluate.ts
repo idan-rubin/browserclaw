@@ -3,6 +3,8 @@ import {
   ensurePageState,
   restoreRoleRefsForTarget,
   refLocator,
+  normalizeTimeoutMs,
+  forceDisconnectPlaywrightForTarget,
 } from '../connection.js';
 
 export interface FrameEvalResult {
@@ -58,6 +60,65 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
 }
 
 /**
+ * Race an eval promise against an abort promise.
+ */
+async function awaitEvalWithAbort(evalPromise: Promise<unknown>, abortPromise?: Promise<never>): Promise<unknown> {
+  if (!abortPromise) return await evalPromise;
+  try {
+    return await Promise.race([evalPromise, abortPromise]);
+  } catch (err) {
+    // Suppress unhandled rejection from the eval promise if abort won the race
+    evalPromise.catch(() => {});
+    throw err;
+  }
+}
+
+// Browser-side evaluator that wraps async results with a timeout via Promise.race.
+// This runs inside the browser sandbox (not Node.js) — `new Function` is the standard
+// pattern for browser-context evaluation with timeout, matching OpenClaw's implementation.
+// eslint-disable-next-line no-new-func
+const BROWSER_EVALUATOR = new Function('args', `
+  "use strict";
+  var fnBody = args.fnBody, timeoutMs = args.timeoutMs;
+  try {
+    var candidate = eval("(" + fnBody + ")");
+    var result = typeof candidate === "function" ? candidate() : candidate;
+    if (result && typeof result.then === "function") {
+      return Promise.race([
+        result,
+        new Promise(function(_, reject) {
+          setTimeout(function() { reject(new Error("evaluate timed out after " + timeoutMs + "ms")); }, timeoutMs);
+        })
+      ]);
+    }
+    return result;
+  } catch (err) {
+    throw new Error("Invalid evaluate function: " + (err && err.message ? err.message : String(err)));
+  }
+`);
+
+// eslint-disable-next-line no-new-func
+const ELEMENT_EVALUATOR = new Function('el', 'args', `
+  "use strict";
+  var fnBody = args.fnBody, timeoutMs = args.timeoutMs;
+  try {
+    var candidate = eval("(" + fnBody + ")");
+    var result = typeof candidate === "function" ? candidate(el) : candidate;
+    if (result && typeof result.then === "function") {
+      return Promise.race([
+        result,
+        new Promise(function(_, reject) {
+          setTimeout(function() { reject(new Error("evaluate timed out after " + timeoutMs + "ms")); }, timeoutMs);
+        })
+      ]);
+    }
+    return result;
+  } catch (err) {
+    throw new Error("Invalid evaluate function: " + (err && err.message ? err.message : String(err)));
+  }
+`);
+
+/**
  * Evaluate JavaScript in the browser page context.
  * This is intentionally using eval() to execute user-provided browser-side code,
  * which is the core purpose of this function — running arbitrary JS in the page.
@@ -78,47 +139,59 @@ export async function evaluateViaPlaywright(opts: {
   ensurePageState(page);
   restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
 
-  const timeout = opts.timeoutMs != null ? opts.timeoutMs : undefined;
+  const outerTimeout = normalizeTimeoutMs(opts.timeoutMs, 20000);
+  let evaluateTimeout = Math.max(1000, Math.min(120000, outerTimeout - 500));
+  evaluateTimeout = Math.min(evaluateTimeout, outerTimeout);
 
-  if (opts.ref) {
-    const locator = refLocator(page, opts.ref);
-    // Runs in the browser page context (sandboxed), not in Node.js
-    return await locator.evaluate(
-      // eslint-disable-next-line no-eval
-      (el: Element, fnBody: string) => {
-        'use strict';
-        try {
-          const candidate = (0, eval)('(' + fnBody + ')');
-          return typeof candidate === 'function' ? candidate(el) : candidate;
-        } catch (err: unknown) {
-          throw new Error('Invalid evaluate function: ' + (err instanceof Error ? err.message : String(err)));
-        }
-      },
-      fnText,
-      { timeout },
-    );
+  const signal = opts.signal;
+  let abortListener: (() => void) | undefined;
+  let abortReject: ((reason: unknown) => void) | undefined;
+  let abortPromise: Promise<never> | undefined;
+
+  if (signal) {
+    abortPromise = new Promise<never>((_, reject) => {
+      abortReject = reject;
+    });
+    abortPromise.catch(() => {});
   }
 
-  // Runs in the browser page context (sandboxed), not in Node.js
-  const evalPromise = page.evaluate(
-    // eslint-disable-next-line no-eval
-    (fnBody: string) => {
-      'use strict';
-      try {
-        const candidate = (0, eval)('(' + fnBody + ')');
-        return typeof candidate === 'function' ? candidate() : candidate;
-      } catch (err: unknown) {
-        throw new Error('Invalid evaluate function: ' + (err instanceof Error ? err.message : String(err)));
-      }
-    },
-    fnText,
-  );
+  if (signal) {
+    const disconnect = () => {
+      forceDisconnectPlaywrightForTarget({
+        cdpUrl: opts.cdpUrl,
+        targetId: opts.targetId,
+        reason: 'evaluate aborted',
+      }).catch(() => {});
+    };
+    if (signal.aborted) {
+      disconnect();
+      throw signal.reason ?? new Error('aborted');
+    }
+    abortListener = () => {
+      disconnect();
+      abortReject?.(signal.reason ?? new Error('aborted'));
+    };
+    signal.addEventListener('abort', abortListener, { once: true });
+    if (signal.aborted) {
+      abortListener();
+      throw signal.reason ?? new Error('aborted');
+    }
+  }
 
-  if (!opts.signal) return evalPromise;
-  return Promise.race([
-    evalPromise,
-    new Promise<never>((_, reject) => {
-      opts.signal!.addEventListener('abort', () => reject(new Error('Evaluate aborted')), { once: true });
-    }),
-  ]);
+  try {
+    if (opts.ref) {
+      const locator = refLocator(page, opts.ref);
+      return await awaitEvalWithAbort(
+        locator.evaluate(ELEMENT_EVALUATOR as any, { fnBody: fnText, timeoutMs: evaluateTimeout }),
+        abortPromise,
+      );
+    }
+
+    return await awaitEvalWithAbort(
+      page.evaluate(BROWSER_EVALUATOR as any, { fnBody: fnText, timeoutMs: evaluateTimeout }),
+      abortPromise,
+    );
+  } finally {
+    if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+  }
 }

@@ -1,8 +1,10 @@
+import { dirname } from 'node:path';
 import {
   getPageForTargetId,
   ensurePageState,
+  ensureContextState,
 } from '../connection.js';
-import { assertSafeOutputPath } from '../security.js';
+import { assertSafeOutputPath, writeViaSiblingTempPath } from '../security.js';
 
 export async function traceStartViaPlaywright(opts: {
   cdpUrl: string;
@@ -14,11 +16,18 @@ export async function traceStartViaPlaywright(opts: {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
   const context = page.context();
+  const ctxState = ensureContextState(context);
+
+  if (ctxState.traceActive) {
+    throw new Error('Trace already running. Stop the current trace before starting a new one.');
+  }
+
   await context.tracing.start({
     screenshots: opts.screenshots ?? true,
     snapshots: opts.snapshots ?? true,
-    sources: opts.sources,
+    sources: opts.sources ?? false,
   });
+  ctxState.traceActive = true;
 }
 
 export async function traceStopViaPlaywright(opts: {
@@ -31,5 +40,18 @@ export async function traceStopViaPlaywright(opts: {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
   const context = page.context();
-  await context.tracing.stop({ path: opts.path });
+  const ctxState = ensureContextState(context);
+
+  if (!ctxState.traceActive) {
+    throw new Error('No active trace. Start a trace before stopping it.');
+  }
+
+  await writeViaSiblingTempPath({
+    rootDir: dirname(opts.path),
+    targetPath: opts.path,
+    writeTemp: async (tempPath) => {
+      await context.tracing.stop({ path: tempPath });
+    },
+  });
+  ctxState.traceActive = false;
 }

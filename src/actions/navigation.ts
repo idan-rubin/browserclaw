@@ -1,6 +1,11 @@
-import { connectBrowser, getPageForTargetId, ensurePageState, pageTargetId, findPageByTargetId, getAllPages, normalizeTimeoutMs } from '../connection.js';
+import { connectBrowser, getPageForTargetId, ensurePageState, ensureContextState, pageTargetId, findPageByTargetId, getAllPages, normalizeTimeoutMs, forceDisconnectPlaywrightForTarget } from '../connection.js';
 import { assertBrowserNavigationAllowed, assertBrowserNavigationResultAllowed, assertBrowserNavigationRedirectChainAllowed, withBrowserNavigationPolicy } from '../security.js';
 import type { BrowserTab, SsrfPolicy } from '../types.js';
+
+function isRetryableNavigateError(err: unknown): boolean {
+  const msg = typeof err === 'string' ? err.toLowerCase() : err instanceof Error ? err.message.toLowerCase() : '';
+  return msg.includes('frame has been detached') || msg.includes('target page, context or browser has been closed');
+}
 
 export async function navigateViaPlaywright(opts: {
   cdpUrl: string;
@@ -14,13 +19,32 @@ export async function navigateViaPlaywright(opts: {
   const url = String(opts.url ?? '').trim();
   if (!url) throw new Error('url is required');
   const policy = opts.allowInternal ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
-  await assertBrowserNavigationAllowed({ url, ssrfPolicy: policy });
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  await assertBrowserNavigationAllowed({ url, ...withBrowserNavigationPolicy(policy) });
+
+  const timeout = Math.max(1000, Math.min(120000, opts.timeoutMs ?? 20000));
+  let page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
-  const response = await page.goto(url, { timeout: normalizeTimeoutMs(opts.timeoutMs, 20000) });
+
+  const navigate = async () => await page.goto(url, { timeout });
+
+  let response;
+  try {
+    response = await navigate();
+  } catch (err) {
+    if (!isRetryableNavigateError(err)) throw err;
+    await forceDisconnectPlaywrightForTarget({
+      cdpUrl: opts.cdpUrl,
+      targetId: opts.targetId,
+      reason: 'retry navigate after detached frame',
+    }).catch(() => {});
+    page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+    ensurePageState(page);
+    response = await navigate();
+  }
+
   await assertBrowserNavigationRedirectChainAllowed({ request: response?.request(), ...withBrowserNavigationPolicy(policy) });
   const finalUrl = page.url();
-  await assertBrowserNavigationResultAllowed({ url: finalUrl, ssrfPolicy: policy });
+  await assertBrowserNavigationResultAllowed({ url: finalUrl, ...withBrowserNavigationPolicy(policy) });
   return { url: finalUrl };
 }
 
@@ -54,11 +78,12 @@ export async function createPageViaPlaywright(opts: {
   }
   const { browser } = await connectBrowser(opts.cdpUrl);
   const context = browser.contexts()[0] ?? await browser.newContext();
+  ensureContextState(context);
   const page = await context.newPage();
   ensurePageState(page);
   if (targetUrl !== 'about:blank') {
     const navigationPolicy = withBrowserNavigationPolicy(policy);
-    const response = await page.goto(targetUrl, { timeout: normalizeTimeoutMs(undefined, 20000) });
+    const response = await page.goto(targetUrl, { timeout: 30000 }).catch(() => null);
     await assertBrowserNavigationRedirectChainAllowed({ request: response?.request(), ...navigationPolicy });
     await assertBrowserNavigationResultAllowed({ url: page.url(), ssrfPolicy: policy });
   }
@@ -77,6 +102,7 @@ export async function closePageViaPlaywright(opts: {
   targetId?: string;
 }): Promise<void> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  ensurePageState(page);
   await page.close();
 }
 

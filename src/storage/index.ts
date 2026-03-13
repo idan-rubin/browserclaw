@@ -22,8 +22,8 @@ export async function cookiesSetViaPlaywright(opts: {
   const cookie = opts.cookie;
   if (!cookie.name || cookie.value === undefined) throw new Error('cookie name and value are required');
   const hasUrl = typeof cookie.url === 'string' && cookie.url.trim();
-  const hasDomain = typeof cookie.domain === 'string' && cookie.domain.trim();
-  if (!hasUrl && !hasDomain) throw new Error('cookie requires url or domain');
+  const hasDomainPath = typeof cookie.domain === 'string' && cookie.domain.trim() && typeof cookie.path === 'string' && cookie.path.trim();
+  if (!hasUrl && !hasDomainPath) throw new Error('cookie requires url, or domain+path');
   await page.context().addCookies([cookie]);
 }
 

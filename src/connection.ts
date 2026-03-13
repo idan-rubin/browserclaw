@@ -1,7 +1,7 @@
 import { chromium } from 'playwright-core';
 import type { Browser, Page, BrowserContext } from 'playwright-core';
 import { getChromeWebSocketUrl, normalizeCdpHttpBaseForJsonEndpoints } from './chrome-launcher.js';
-import type { PageState, RoleRefs } from './types.js';
+import type { PageState, ContextState, RoleRefs } from './types.js';
 
 /** Page extended with Playwright's private `_snapshotForAI` method. */
 export type PageWithAI = Page & {
@@ -14,8 +14,38 @@ let cached: { browser: Browser; cdpUrl: string; authToken?: string } | null = nu
 const connectingByUrl = new Map<string, Promise<{ browser: Browser; cdpUrl: string; authToken?: string }>>();
 
 const pageStates = new WeakMap<Page, PageState>();
+const contextStates = new WeakMap<BrowserContext, ContextState>();
 const observedContexts = new WeakSet<BrowserContext>();
 const observedPages = new WeakSet<Page>();
+
+// ── Arm ID Counters ──
+
+let nextUploadArmId = 0;
+let nextDialogArmId = 0;
+let nextDownloadArmId = 0;
+
+export function bumpUploadArmId(): number {
+  nextUploadArmId += 1;
+  return nextUploadArmId;
+}
+export function bumpDialogArmId(): number {
+  nextDialogArmId += 1;
+  return nextDialogArmId;
+}
+export function bumpDownloadArmId(): number {
+  nextDownloadArmId += 1;
+  return nextDownloadArmId;
+}
+
+// ── Context State Management ──
+
+export function ensureContextState(context: BrowserContext): ContextState {
+  const existing = contextStates.get(context);
+  if (existing) return existing;
+  const state: ContextState = { traceActive: false };
+  contextStates.set(context, state);
+  return state;
+}
 
 // Ref cache: keyed by "cdpUrl::targetId"
 const roleRefsByTarget = new Map<string, {
@@ -49,6 +79,9 @@ export function ensurePageState(page: Page): PageState {
     requests: [],
     requestIds: new WeakMap(),
     nextRequestId: 0,
+    armIdUpload: 0,
+    armIdDialog: 0,
+    armIdDownload: 0,
   };
   pageStates.set(page, state);
 
@@ -138,6 +171,7 @@ function applyStealthToPage(page: Page): void {
 function observeContext(context: BrowserContext): void {
   if (observedContexts.has(context)) return;
   observedContexts.add(context);
+  ensureContextState(context);
 
   context.addInitScript(STEALTH_SCRIPT).catch((e) => {
     if (process.env.DEBUG) console.warn('[browserclaw] stealth initScript failed:', e.message);
@@ -252,6 +286,48 @@ export async function disconnectBrowser(): Promise<void> {
   const cur = cached;
   cached = null;
   if (cur) await cur.browser.close().catch(() => {});
+}
+
+/**
+ * Force-disconnect a Playwright browser connection for a given CDP target.
+ * Clears the connection cache, sends Runtime.terminateExecution via CDP
+ * session to kill stuck evals, and closes the browser.
+ */
+export async function forceDisconnectPlaywrightForTarget(opts: {
+  cdpUrl: string;
+  targetId?: string;
+  reason?: string;
+}): Promise<void> {
+  const normalized = normalizeCdpUrl(opts.cdpUrl);
+  const cur = cached;
+  if (!cur || cur.cdpUrl !== normalized) return;
+
+  cached = null;
+  connectingByUrl.delete(normalized);
+
+  // Attempt to terminate execution in the target page via CDP
+  const targetId = opts.targetId?.trim() || '';
+  if (targetId) {
+    try {
+      const pages = await getAllPages(cur.browser);
+      for (const page of pages) {
+        const tid = await pageTargetId(page).catch(() => null);
+        if (tid === targetId) {
+          const session = await page.context().newCDPSession(page);
+          try {
+            await session.send('Runtime.terminateExecution');
+          } finally {
+            await session.detach().catch(() => {});
+          }
+          break;
+        }
+      }
+    } catch {
+      // Best effort — don't block disconnect
+    }
+  }
+
+  cur.browser.close().catch(() => {});
 }
 
 // ── Page Lookup ──

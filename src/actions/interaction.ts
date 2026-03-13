@@ -5,6 +5,8 @@ import {
   refLocator,
   toAIFriendlyError,
   normalizeTimeoutMs,
+  bumpUploadArmId,
+  bumpDialogArmId,
 } from '../connection.js';
 import { assertSafeUploadPaths } from '../security.js';
 import type { FormField } from '../types.js';
@@ -141,14 +143,15 @@ export async function fillFormViaPlaywright(opts: {
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 8000, 60000);
 
-  for (let i = 0; i < opts.fields.length; i++) {
-    const field = opts.fields[i]!;
+  for (const field of opts.fields) {
     const ref = field.ref.trim();
     const type = (typeof field.type === 'string' ? field.type.trim() : '') || 'text';
     const rawValue = field.value;
-    const value = rawValue == null ? '' : String(rawValue);
+    const value = typeof rawValue === 'string' ? rawValue
+      : typeof rawValue === 'number' || typeof rawValue === 'boolean' ? String(rawValue)
+      : '';
 
-    if (!ref) throw new Error(`fill(): field at index ${i} has empty ref`);
+    if (!ref) continue;
     const locator = refLocator(page, ref);
 
     if (type === 'checkbox' || type === 'radio') {
@@ -215,19 +218,36 @@ export async function setInputFilesViaPlaywright(opts: {
   ensurePageState(page);
   restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
 
-  const locator = opts.ref
-    ? refLocator(page, opts.ref)
-    : opts.element
-      ? page.locator(opts.element).first()
-      : null;
-  if (!locator) throw new Error('Either ref or element is required for setInputFiles');
+  if (!opts.paths.length) throw new Error('paths are required');
+
+  const inputRef = typeof opts.ref === 'string' ? opts.ref.trim() : '';
+  const element = typeof opts.element === 'string' ? opts.element.trim() : '';
+  if (inputRef && element) throw new Error('ref and element are mutually exclusive');
+  if (!inputRef && !element) throw new Error('Either ref or element is required for setInputFiles');
+
+  const locator = inputRef
+    ? refLocator(page, inputRef)
+    : page.locator(element).first();
 
   await assertSafeUploadPaths(opts.paths);
 
   try {
     await locator.setInputFiles(opts.paths);
   } catch (err) {
-    throw toAIFriendlyError(err, opts.ref ?? opts.element ?? 'unknown');
+    throw toAIFriendlyError(err, inputRef || element);
+  }
+
+  // Dispatch input+change events for frameworks that listen on these
+  try {
+    const handle = await locator.elementHandle();
+    if (handle) {
+      await handle.evaluate((el: Element) => {
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+    }
+  } catch {
+    // Best effort
   }
 }
 
@@ -239,32 +259,17 @@ export async function armDialogViaPlaywright(opts: {
   timeoutMs?: number;
 }): Promise<void> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
+  const state = ensurePageState(page);
 
-  const timeout = normalizeTimeoutMs(opts.timeoutMs, 30000, 120000);
+  const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
+  state.armIdDialog = bumpDialogArmId();
+  const armId = state.armIdDialog;
 
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      page.removeListener('dialog', handler);
-      reject(new Error(`No dialog appeared within ${timeout}ms`));
-    }, timeout);
-
-    const handler = async (dialog: { accept: (text?: string) => Promise<void>; dismiss: () => Promise<void> }) => {
-      clearTimeout(timer);
-      try {
-        if (opts.accept) {
-          await dialog.accept(opts.promptText);
-        } else {
-          await dialog.dismiss();
-        }
-        resolve();
-      } catch (err) {
-        reject(err);
-      }
-    };
-
-    page.once('dialog', handler);
-  });
+  page.waitForEvent('dialog', { timeout }).then(async (dialog) => {
+    if (state.armIdDialog !== armId) return;
+    if (opts.accept) await dialog.accept(opts.promptText);
+    else await dialog.dismiss();
+  }).catch(() => {});
 }
 
 export async function armFileUploadViaPlaywright(opts: {
@@ -274,28 +279,37 @@ export async function armFileUploadViaPlaywright(opts: {
   timeoutMs?: number;
 }): Promise<void> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
+  const state = ensurePageState(page);
 
-  const timeout = normalizeTimeoutMs(opts.timeoutMs, 30000, 120000);
+  const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
+  state.armIdUpload = bumpUploadArmId();
+  const armId = state.armIdUpload;
 
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      page.removeListener('filechooser', handler);
-      reject(new Error(`No file chooser appeared within ${timeout}ms`));
-    }, timeout);
+  page.waitForEvent('filechooser', { timeout }).then(async (fileChooser) => {
+    if (state.armIdUpload !== armId) return;
 
-    const handler = async (fc: { setFiles: (files: string[]) => Promise<void> }) => {
-      clearTimeout(timer);
-      try {
-        const paths = opts.paths ?? [];
-        if (paths.length > 0) await assertSafeUploadPaths(paths);
-        await fc.setFiles(paths);
-        resolve();
-      } catch (err) {
-        reject(err);
+    if (!opts.paths?.length) {
+      try { await page.keyboard.press('Escape'); } catch {}
+      return;
+    }
+
+    try {
+      await assertSafeUploadPaths(opts.paths);
+    } catch {
+      try { await page.keyboard.press('Escape'); } catch {}
+      return;
+    }
+    await fileChooser.setFiles(opts.paths);
+
+    // Dispatch input+change events
+    try {
+      const input = typeof fileChooser.element === 'function' ? await Promise.resolve(fileChooser.element()) : null;
+      if (input) {
+        await (input as any).evaluate((el: Element) => {
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        });
       }
-    };
-
-    page.once('filechooser', handler);
-  });
+    } catch {}
+  }).catch(() => {});
 }

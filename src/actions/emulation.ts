@@ -20,30 +20,48 @@ export async function setDeviceViaPlaywright(opts: {
   targetId?: string;
   name: string;
 }): Promise<void> {
-  const device = devices[opts.name];
+  const name = String(opts.name ?? '').trim();
+  if (!name) throw new Error('device name is required');
+
+  const device = devices[name];
   if (!device) {
-    const available = Object.keys(devices).slice(0, 10).join(', ');
-    throw new Error(`Unknown device "${opts.name}". Some available devices: ${available}...`);
+    throw new Error(`Unknown device "${name}".`);
   }
 
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
 
   if (device.viewport) {
-    await page.setViewportSize(device.viewport);
+    await page.setViewportSize({
+      width: device.viewport.width,
+      height: device.viewport.height,
+    });
   }
-  if (device.userAgent) {
-    const context = page.context();
-    // Playwright doesn't expose setUserAgent on context directly via CDP,
-    // so we use CDP Emulation.setUserAgentOverride
-    const session = await context.newCDPSession(page);
-    try {
+
+  const session = await page.context().newCDPSession(page);
+  try {
+    const locale = (device as any).locale as string | undefined;
+    if (device.userAgent || locale) {
       await session.send('Emulation.setUserAgentOverride', {
-        userAgent: device.userAgent,
+        userAgent: device.userAgent ?? '',
+        acceptLanguage: locale ?? undefined,
       });
-    } finally {
-      await session.detach().catch(() => {});
     }
+    if (device.viewport) {
+      await session.send('Emulation.setDeviceMetricsOverride', {
+        mobile: Boolean(device.isMobile),
+        width: device.viewport.width,
+        height: device.viewport.height,
+        deviceScaleFactor: device.deviceScaleFactor ?? 1,
+        screenWidth: device.viewport.width,
+        screenHeight: device.viewport.height,
+      });
+    }
+    if (device.hasTouch) {
+      await session.send('Emulation.setTouchEmulationEnabled', { enabled: true });
+    }
+  } finally {
+    await session.detach().catch(() => {});
   }
 }
 
@@ -54,7 +72,7 @@ export async function setExtraHTTPHeadersViaPlaywright(opts: {
 }): Promise<void> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
-  await page.setExtraHTTPHeaders(opts.headers);
+  await page.context().setExtraHTTPHeaders(opts.headers);
 }
 
 export async function setGeolocationViaPlaywright(opts: {
@@ -72,20 +90,24 @@ export async function setGeolocationViaPlaywright(opts: {
 
   if (opts.clear) {
     await context.setGeolocation(null);
-    await context.clearPermissions();
+    await context.clearPermissions().catch(() => {});
     return;
   }
 
-  if (opts.latitude === undefined || opts.longitude === undefined) {
+  if (typeof opts.latitude !== 'number' || typeof opts.longitude !== 'number') {
     throw new Error('latitude and longitude are required (or set clear=true)');
   }
 
-  await context.grantPermissions(['geolocation'], opts.origin ? { origin: opts.origin } : undefined);
   await context.setGeolocation({
     latitude: opts.latitude,
     longitude: opts.longitude,
-    accuracy: opts.accuracy,
+    accuracy: typeof opts.accuracy === 'number' ? opts.accuracy : undefined,
   });
+
+  const origin = opts.origin?.trim() || (() => {
+    try { return new URL(page.url()).origin; } catch { return ''; }
+  })();
+  if (origin) await context.grantPermissions(['geolocation'], { origin }).catch(() => {});
 }
 
 /**
@@ -103,17 +125,17 @@ export async function setHttpCredentialsViaPlaywright(opts: {
 }): Promise<void> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
-  const context = page.context();
 
   if (opts.clear) {
-    await context.setHTTPCredentials({ username: '', password: '' });
+    await page.context().setHTTPCredentials(null as any);
     return;
   }
 
-  await context.setHTTPCredentials({
-    username: opts.username ?? '',
-    password: opts.password ?? '',
-  });
+  const username = String(opts.username ?? '');
+  const password = String(opts.password ?? '');
+  if (!username) throw new Error('username is required (or set clear=true)');
+
+  await page.context().setHTTPCredentials({ username, password });
 }
 
 export async function setLocaleViaPlaywright(opts: {
@@ -124,9 +146,17 @@ export async function setLocaleViaPlaywright(opts: {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
 
+  const locale = String(opts.locale ?? '').trim();
+  if (!locale) throw new Error('locale is required');
+
   const session = await page.context().newCDPSession(page);
   try {
-    await session.send('Emulation.setLocaleOverride', { locale: opts.locale });
+    try {
+      await session.send('Emulation.setLocaleOverride', { locale });
+    } catch (err) {
+      if (String(err).includes('Another locale override is already in effect')) return;
+      throw err;
+    }
   } finally {
     await session.detach().catch(() => {});
   }
@@ -150,9 +180,19 @@ export async function setTimezoneViaPlaywright(opts: {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
 
+  const timezoneId = String(opts.timezoneId ?? '').trim();
+  if (!timezoneId) throw new Error('timezoneId is required');
+
   const session = await page.context().newCDPSession(page);
   try {
-    await session.send('Emulation.setTimezoneOverride', { timezoneId: opts.timezoneId });
+    try {
+      await session.send('Emulation.setTimezoneOverride', { timezoneId });
+    } catch (err) {
+      const msg = String(err);
+      if (msg.includes('Timezone override is already in effect')) return;
+      if (msg.includes('Invalid timezone')) throw new Error(`Invalid timezone ID: ${timezoneId}`, { cause: err });
+      throw err;
+    }
   } finally {
     await session.detach().catch(() => {});
   }

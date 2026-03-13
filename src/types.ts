@@ -472,6 +472,13 @@ export interface HttpCredentials {
   clear?: boolean;
 }
 
+// ── Context State (internal) ──
+
+/** @internal */
+export interface ContextState {
+  traceActive: boolean;
+}
+
 // ── Page State (internal) ──
 
 /** @internal */
@@ -484,4 +491,16 @@ export interface PageState {
   roleRefs?: RoleRefs;
   roleRefsFrameSelector?: string;
   roleRefsMode?: 'role' | 'aria';
+  armIdUpload: number;
+  armIdDialog: number;
+  armIdDownload: number;
+}
+
+// ── DNS Pinning ──
+
+/** Result of DNS pinning resolution — hostname locked to resolved addresses. */
+export interface PinnedHostname {
+  hostname: string;
+  addresses: string[];
+  lookup: typeof import('node:dns').lookup;
 }

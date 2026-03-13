@@ -7,8 +7,13 @@ export {
   assertBrowserNavigationResultAllowed,
   assertBrowserNavigationRedirectChainAllowed,
   requiresInspectableBrowserNavigationRedirects,
+  sanitizeUntrustedFileName,
+  createPinnedLookup,
+  resolvePinnedHostnameWithPolicy,
+  writeViaSiblingTempPath,
 } from './security.js';
 export type { BrowserNavigationPolicyOptions, BrowserNavigationRequestLike, LookupFn } from './security.js';
+export { ensureContextState, forceDisconnectPlaywrightForTarget } from './connection.js';
 export type { FrameEvalResult } from './actions/evaluate.js';
 export type {
   SsrfPolicy,
@@ -42,4 +47,6 @@ export type {
   ColorScheme,
   GeolocationOptions,
   HttpCredentials,
+  ContextState,
+  PinnedHostname,
 } from './types.js';

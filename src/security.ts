@@ -1,9 +1,12 @@
-import { resolve, normalize, dirname, sep } from 'node:path';
-import { lookup } from 'node:dns/promises';
-import { lstat, realpath } from 'node:fs/promises';
-import type { SsrfPolicy } from './types.js';
+import { resolve, normalize, dirname, basename, join, sep, relative, posix, win32 } from 'node:path';
+import { lookup as dnsLookup } from 'node:dns/promises';
+import { lookup as dnsLookupCb } from 'node:dns';
+import { lstat, realpath, rename, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import * as ipaddr from 'ipaddr.js';
+import type { SsrfPolicy, PinnedHostname } from './types.js';
 
-export type LookupFn = typeof lookup;
+export type LookupFn = typeof dnsLookup;
 
 /**
  * Thrown when a navigation URL is blocked by SSRF policy.
@@ -39,6 +42,12 @@ const SAFE_NON_NETWORK_URLS = new Set(['about:blank']);
 
 const PROXY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];
 
+const BLOCKED_HOSTNAMES = new Set([
+  'localhost',
+  'localhost.localdomain',
+  'metadata.google.internal',
+]);
+
 function isAllowedNonNetworkNavigationUrl(parsed: URL): boolean {
   return SAFE_NON_NETWORK_URLS.has(parsed.href);
 }
@@ -53,6 +62,310 @@ function hasProxyEnvConfigured(env: Record<string, string | undefined> = process
     if (typeof value === 'string' && value.trim().length > 0) return true;
   }
   return false;
+}
+
+// ── Hostname normalization & blocking ──
+
+function normalizeHostname(hostname: string): string {
+  let h = String(hostname ?? '').trim().toLowerCase();
+  // Strip IPv6 brackets
+  if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);
+  // Strip trailing dot (FQDN)
+  if (h.endsWith('.')) h = h.slice(0, -1);
+  return h;
+}
+
+function isBlockedHostnameNormalized(normalized: string): boolean {
+  if (BLOCKED_HOSTNAMES.has(normalized)) return true;
+  return normalized.endsWith('.localhost') || normalized.endsWith('.local') || normalized.endsWith('.internal');
+}
+
+// ── IP address checking via ipaddr.js ──
+
+/**
+ * Validate a single IPv4 octet string: must be a plain decimal integer 0-255
+ * with no leading zeros, hex prefixes, or other non-standard forms.
+ */
+function isStrictDecimalOctet(part: string): boolean {
+  if (!/^[0-9]+$/.test(part)) return false;
+  const n = parseInt(part, 10);
+  if (n < 0 || n > 255) return false;
+  if (String(n) !== part) return false;
+  return true;
+}
+
+/**
+ * Returns true if the string looks like a legacy/non-standard IPv4 literal
+ * that should be treated as internal and blocked (fail closed).
+ */
+function isUnsupportedIPv4Literal(ip: string): boolean {
+  if (/^[0-9]+$/.test(ip)) return true;
+  const parts = ip.split('.');
+  if (parts.length !== 4) return true;
+  if (!parts.every(isStrictDecimalOctet)) return true;
+  return false;
+}
+
+const BLOCKED_IPV4_RANGES = new Set([
+  'unspecified', 'broadcast', 'multicast', 'linkLocal',
+  'loopback', 'carrierGradeNat', 'private', 'reserved',
+]);
+
+const BLOCKED_IPV6_RANGES = new Set([
+  'unspecified', 'loopback', 'linkLocal', 'uniqueLocal', 'multicast',
+]);
+
+const RFC2544_BENCHMARK_PREFIX: [ipaddr.IPv4, number] = [ipaddr.IPv4.parse('198.18.0.0'), 15];
+
+type IsPrivateIpOpts = { allowRfc2544BenchmarkRange?: boolean };
+
+function isBlockedSpecialUseIpv4Address(address: ipaddr.IPv4, opts?: IsPrivateIpOpts): boolean {
+  const inRfc2544 = address.match(RFC2544_BENCHMARK_PREFIX);
+  if (inRfc2544 && opts?.allowRfc2544BenchmarkRange === true) return false;
+  return BLOCKED_IPV4_RANGES.has(address.range()) || inRfc2544;
+}
+
+function isBlockedSpecialUseIpv6Address(address: ipaddr.IPv6): boolean {
+  if (BLOCKED_IPV6_RANGES.has(address.range())) return true;
+  // Deprecated site-local range (fec0::/10) — may not be caught by ipaddr.js range()
+  return (address.parts[0] & 0xffc0) === 0xfec0;
+}
+
+/**
+ * Extract embedded IPv4 from IPv6 transition formats (IPv4-mapped, NAT64, 6to4, Teredo)
+ * and check if the embedded IPv4 is blocked. Returns null if not a transition format.
+ */
+function extractEmbeddedIpv4FromIpv6(v6: ipaddr.IPv6, opts?: IsPrivateIpOpts): boolean | null {
+  // IPv4-mapped (::ffff:a.b.c.d)
+  if (v6.isIPv4MappedAddress()) {
+    return isBlockedSpecialUseIpv4Address(v6.toIPv4Address(), opts);
+  }
+
+  const parts = v6.parts; // 8 x 16-bit groups
+
+  // NAT64 well-known prefix: 64:ff9b::/96
+  if (parts[0] === 0x0064 && parts[1] === 0xff9b &&
+      parts[2] === 0x0000 && parts[3] === 0x0000 &&
+      parts[4] === 0x0000 && parts[5] === 0x0000) {
+    const ip4str = `${(parts[6] >> 8) & 0xff}.${parts[6] & 0xff}.${(parts[7] >> 8) & 0xff}.${parts[7] & 0xff}`;
+    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
+  }
+
+  // NAT64 local-use prefix: 64:ff9b:1::/48
+  if (parts[0] === 0x0064 && parts[1] === 0xff9b && parts[2] === 0x0001) {
+    const ip4str = `${(parts[6] >> 8) & 0xff}.${parts[6] & 0xff}.${(parts[7] >> 8) & 0xff}.${parts[7] & 0xff}`;
+    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
+  }
+
+  // 6to4 prefix: 2002::/16
+  if (parts[0] === 0x2002) {
+    const ip4str = `${(parts[1] >> 8) & 0xff}.${parts[1] & 0xff}.${(parts[2] >> 8) & 0xff}.${parts[2] & 0xff}`;
+    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
+  }
+
+  // Teredo prefix: 2001:0000::/32 — client IPv4 is in last 32 bits XOR'd with 0xFFFF
+  if (parts[0] === 0x2001 && parts[1] === 0x0000) {
+    const hiXored = parts[6] ^ 0xffff;
+    const loXored = parts[7] ^ 0xffff;
+    const ip4str = `${(hiXored >> 8) & 0xff}.${hiXored & 0xff}.${(loXored >> 8) & 0xff}.${loXored & 0xff}`;
+    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
+  }
+
+  return null; // not a known transition format
+}
+
+/**
+ * Check whether an IP address string is private/internal/loopback.
+ * Uses ipaddr.js for proper CIDR matching.
+ */
+function isPrivateIpAddress(address: string, opts?: IsPrivateIpOpts): boolean {
+  let normalized = address.trim().toLowerCase();
+  if (normalized.startsWith('[') && normalized.endsWith(']')) normalized = normalized.slice(1, -1);
+  if (!normalized) return false;
+
+  // Try strict parse via ipaddr.js
+  try {
+    const parsed = ipaddr.parse(normalized);
+    if (parsed.kind() === 'ipv4') {
+      return isBlockedSpecialUseIpv4Address(parsed as ipaddr.IPv4, opts);
+    }
+    // IPv6
+    const v6 = parsed as ipaddr.IPv6;
+    if (isBlockedSpecialUseIpv6Address(v6)) return true;
+    // Check for embedded IPv4 in transition formats
+    const embeddedV4 = extractEmbeddedIpv4FromIpv6(v6, opts);
+    if (embeddedV4 !== null) return embeddedV4;
+    return false;
+  } catch {
+    // Parse failed
+  }
+
+  // Defense-in-depth: legacy IPv4 literal check (fail closed)
+  if (!normalized.includes(':') && isUnsupportedIPv4Literal(normalized)) return true;
+
+  // Unparseable IPv6-looking address — fail closed
+  if (normalized.includes(':')) return true;
+
+  return false;
+}
+
+// ── URL-level checks ──
+
+/**
+ * Check whether a URL targets a loopback or private/internal network address.
+ * Synchronous hostname-based check. Used to prevent SSRF attacks.
+ */
+export function isInternalUrl(url: string, opts?: IsPrivateIpOpts): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return true;
+  }
+
+  const hostname = normalizeHostname(parsed.hostname);
+  if (isBlockedHostnameNormalized(hostname)) return true;
+  if (isPrivateIpAddress(hostname, opts)) return true;
+
+  return false;
+}
+
+// ── DNS pinning (prevents TOCTOU rebinding) ──
+
+function dedupeAndPreferIpv4(results: { address: string; family: number }[]): string[] {
+  const seen = new Set<string>();
+  const ipv4: string[] = [];
+  const ipv6: string[] = [];
+  for (const r of results) {
+    if (seen.has(r.address)) continue;
+    seen.add(r.address);
+    if (r.family === 4) ipv4.push(r.address);
+    else ipv6.push(r.address);
+  }
+  return [...ipv4, ...ipv6];
+}
+
+/**
+ * Create a pinned DNS lookup function that always resolves to the pre-resolved
+ * addresses for the given hostname. Falls back to real DNS for other hostnames.
+ */
+export function createPinnedLookup(params: {
+  hostname: string;
+  addresses: string[];
+  fallback?: typeof dnsLookupCb;
+}): typeof dnsLookupCb {
+  const normalizedHost = normalizeHostname(params.hostname);
+  const fallback = params.fallback ?? dnsLookupCb;
+  const records = params.addresses.map((address) => ({
+    address,
+    family: address.includes(':') ? 6 as const : 4 as const,
+  }));
+  let index = 0;
+
+  return ((host: string, options: any, callback?: any) => {
+    const cb = typeof options === 'function' ? options : callback;
+    if (!cb) return;
+
+    const normalized = normalizeHostname(host);
+    if (!normalized || normalized !== normalizedHost) {
+      if (typeof options === 'function' || options === undefined) return (fallback as any)(host, cb);
+      return (fallback as any)(host, options, cb);
+    }
+
+    const opts = typeof options === 'object' && options !== null ? options : {};
+    const requestedFamily = typeof options === 'number' ? options : typeof opts.family === 'number' ? opts.family : 0;
+    const candidates = requestedFamily === 4 || requestedFamily === 6
+      ? records.filter((entry) => entry.family === requestedFamily)
+      : records;
+    const usable = candidates.length > 0 ? candidates : records;
+
+    if (opts.all) {
+      cb(null, usable);
+      return;
+    }
+    const chosen = usable[index % usable.length];
+    index += 1;
+    cb(null, chosen.address, chosen.family);
+  }) as typeof dnsLookupCb;
+}
+
+/**
+ * Resolve DNS for a hostname and validate resolved addresses against SSRF policy.
+ * Returns a PinnedHostname with pre-resolved addresses and a pinned lookup function.
+ */
+export async function resolvePinnedHostnameWithPolicy(hostname: string, params: {
+  lookupFn?: LookupFn;
+  policy?: SsrfPolicy;
+} = {}): Promise<PinnedHostname> {
+  const normalized = normalizeHostname(hostname);
+  if (!normalized) throw new InvalidBrowserNavigationUrlError(`Invalid hostname: "${hostname}"`);
+
+  const allowPrivateNetwork = isPrivateNetworkAllowedByPolicy(params.policy);
+
+  const allowedHostnames = [
+    ...(params.policy?.allowedHostnames ?? []),
+    ...(params.policy?.hostnameAllowlist ?? []),
+  ].map(h => normalizeHostname(h));
+
+  const isExplicitlyAllowed = allowedHostnames.some(h => h === normalized);
+  const skipPrivateNetworkChecks = allowPrivateNetwork || isExplicitlyAllowed;
+
+  // Check hostname itself
+  if (!skipPrivateNetworkChecks) {
+    if (isBlockedHostnameNormalized(normalized)) {
+      throw new InvalidBrowserNavigationUrlError(
+        `Navigation to internal/loopback address blocked: "${hostname}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
+      );
+    }
+    const ipOpts: IsPrivateIpOpts = { allowRfc2544BenchmarkRange: params.policy?.allowRfc2544BenchmarkRange };
+    if (isPrivateIpAddress(normalized, ipOpts)) {
+      throw new InvalidBrowserNavigationUrlError(
+        `Navigation to internal/loopback address blocked: "${hostname}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
+      );
+    }
+  }
+
+  // Resolve DNS
+  const lookupFn = params.lookupFn ?? dnsLookup;
+  let results: { address: string; family: number }[];
+  try {
+    results = await lookupFn(normalized, { all: true }) as unknown as { address: string; family: number }[];
+  } catch {
+    throw new InvalidBrowserNavigationUrlError(
+      `Navigation to internal/loopback address blocked: unable to resolve "${hostname}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
+    );
+  }
+
+  if (!results || results.length === 0) {
+    throw new InvalidBrowserNavigationUrlError(
+      `Navigation to internal/loopback address blocked: unable to resolve "${hostname}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
+    );
+  }
+
+  // Validate resolved addresses
+  if (!skipPrivateNetworkChecks) {
+    const ipOpts: IsPrivateIpOpts = { allowRfc2544BenchmarkRange: params.policy?.allowRfc2544BenchmarkRange };
+    for (const r of results) {
+      if (isPrivateIpAddress(r.address, ipOpts)) {
+        throw new InvalidBrowserNavigationUrlError(
+          `Navigation to internal/loopback address blocked: "${hostname}" resolves to "${r.address}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
+        );
+      }
+    }
+  }
+
+  const addresses = dedupeAndPreferIpv4(results);
+  if (addresses.length === 0) {
+    throw new InvalidBrowserNavigationUrlError(
+      `Navigation to internal/loopback address blocked: unable to resolve "${hostname}".`
+    );
+  }
+
+  return {
+    hostname: normalized,
+    addresses,
+    lookup: createPinnedLookup({ hostname: normalized, addresses }),
+  };
 }
 
 /**
@@ -79,7 +392,6 @@ export async function assertBrowserNavigationAllowed(opts: {
   }
 
   // Fail closed when proxy env vars are set — SSRF checks cannot be reliably enforced
-  // because the browser's actual network path may differ from DNS resolution.
   if (hasProxyEnvConfigured() && !isPrivateNetworkAllowedByPolicy(opts.ssrfPolicy)) {
     throw new InvalidBrowserNavigationUrlError(
       'Navigation blocked: strict browser SSRF policy cannot be enforced while env proxy variables are set'
@@ -90,33 +402,14 @@ export async function assertBrowserNavigationAllowed(opts: {
 
   if (policy?.dangerouslyAllowPrivateNetwork ?? policy?.allowPrivateNetwork ?? true) return;
 
-  const allowedHostnames = [
-    ...(policy?.allowedHostnames ?? []),
-    ...(policy?.hostnameAllowlist ?? []),
-  ];
-
-  if (allowedHostnames.length) {
-    const hostname = parsed.hostname.toLowerCase();
-    if (allowedHostnames.some(h => h.toLowerCase() === hostname)) return;
-  }
-
-  const ipOpts: IsInternalIPOpts = { allowRfc2544BenchmarkRange: policy?.allowRfc2544BenchmarkRange };
-  if (await isInternalUrlResolved(rawUrl, opts.lookupFn, ipOpts)) {
-    throw new InvalidBrowserNavigationUrlError(
-      `Navigation to internal/loopback address blocked: "${rawUrl}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
-    );
-  }
+  await resolvePinnedHostnameWithPolicy(parsed.hostname, {
+    lookupFn: opts.lookupFn,
+    policy,
+  });
 }
 
 /**
  * Validate that an output file path is safe — no directory traversal or escape.
- * Rejects paths containing `..` segments or relative paths that could escape
- * the intended output directory.
- *
- * @param path - The output path to validate
- * @param allowedRoots - Optional list of allowed root directories. If provided,
- *   the resolved path must be within one of these roots.
- * @throws If the path is unsafe
  */
 export async function assertSafeOutputPath(path: string, allowedRoots?: string[]): Promise<void> {
   if (!path || typeof path !== 'string') {
@@ -125,7 +418,6 @@ export async function assertSafeOutputPath(path: string, allowedRoots?: string[]
 
   const normalized = normalize(path);
 
-  // Reject paths with traversal segments
   if (normalized.includes('..')) {
     throw new Error(`Unsafe output path: directory traversal detected in "${path}".`);
   }
@@ -133,7 +425,6 @@ export async function assertSafeOutputPath(path: string, allowedRoots?: string[]
   if (allowedRoots?.length) {
     const resolved = resolve(normalized);
 
-    // Resolve the parent directory via realpath to detect symlink-parent escapes
     let parentReal: string;
     try {
       parentReal = await realpath(dirname(resolved));
@@ -141,7 +432,6 @@ export async function assertSafeOutputPath(path: string, allowedRoots?: string[]
       throw new Error(`Unsafe output path: parent directory is inaccessible for "${path}".`);
     }
 
-    // If the target already exists, ensure it is not a symlink
     try {
       const targetStat = await lstat(resolved);
       if (targetStat.isSymbolicLink()) {
@@ -151,7 +441,6 @@ export async function assertSafeOutputPath(path: string, allowedRoots?: string[]
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
     }
 
-    // Verify the resolved parent is within one of the allowed roots
     const results = await Promise.all(
       allowedRoots.map(async (root) => {
         try {
@@ -171,209 +460,7 @@ export async function assertSafeOutputPath(path: string, allowedRoots?: string[]
 }
 
 /**
- * Expand an IPv6 address (with optional :: abbreviation) to full 8-group
- * colon-separated hex form. Returns null for invalid input.
- */
-function expandIPv6(ip: string): string | null {
-  let normalized = ip;
-
-  // Handle embedded IPv4 literal at end (e.g., 64:ff9b::192.168.1.1)
-  const v4Match = normalized.match(/^(.+:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (v4Match) {
-    const octets = v4Match[2].split('.').map(Number);
-    if (octets.some(o => o > 255)) return null;
-    const hexHi = ((octets[0] << 8) | octets[1]).toString(16).padStart(4, '0');
-    const hexLo = ((octets[2] << 8) | octets[3]).toString(16).padStart(4, '0');
-    normalized = v4Match[1] + hexHi + ':' + hexLo;
-  }
-
-  const halves = normalized.split('::');
-  if (halves.length > 2) return null;  // multiple :: is invalid
-
-  if (halves.length === 2) {
-    const left = halves[0] !== '' ? halves[0].split(':') : [];
-    const right = halves[1] !== '' ? halves[1].split(':') : [];
-    const needed = 8 - left.length - right.length;
-    if (needed < 0) return null;
-    const groups = [...left, ...Array(needed).fill('0'), ...right];
-    if (groups.length !== 8) return null;
-    return groups.map(g => g.padStart(4, '0')).join(':');
-  }
-
-  const groups = normalized.split(':');
-  if (groups.length !== 8) return null;
-  return groups.map(g => g.padStart(4, '0')).join(':');
-}
-
-/**
- * Convert two 16-bit hex group strings to a dotted-decimal IPv4 string.
- */
-function hexToIPv4(hiHex: string, loHex: string): string {
-  const hi = parseInt(hiHex, 16);
-  const lo = parseInt(loHex, 16);
-  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-}
-
-/**
- * Attempt to extract an IPv4 address embedded in an IPv6 transition address.
- * Handles: IPv4-mapped (::ffff:), NAT64 (64:ff9b::/96, 64:ff9b:1::/48),
- * 6to4 (2002::/16), and Teredo (2001:0000::/32).
- *
- * Returns:
- *   - The embedded IPv4 string if found
- *   - null if the address is not a known transition format
- *   - '' (empty string) on parse error — callers MUST treat this as internal (fail closed)
- */
-function extractEmbeddedIPv4(lower: string): string | null {
-  // IPv4-mapped: ::ffff:a.b.c.d (most common transition form)
-  if (lower.startsWith('::ffff:')) {
-    return lower.slice(7);
-  }
-
-  // For NAT64, 6to4, and Teredo we need to fully expand the address
-  const expanded = expandIPv6(lower);
-  if (expanded === null) return '';  // fail closed on invalid IPv6
-
-  const groups = expanded.split(':');
-  if (groups.length !== 8) return '';  // fail closed
-
-  // NAT64 well-known prefix: 64:ff9b::/96
-  // Expanded form: 0064:ff9b:0000:0000:0000:0000:wwxx:yyzz → IPv4 = ww.xx.yy.zz
-  if (
-    groups[0] === '0064' && groups[1] === 'ff9b' &&
-    groups[2] === '0000' && groups[3] === '0000' &&
-    groups[4] === '0000' && groups[5] === '0000'
-  ) {
-    return hexToIPv4(groups[6], groups[7]);
-  }
-
-  // NAT64 local-use prefix: 64:ff9b:1::/48
-  // Expanded form: 0064:ff9b:0001:xxxx:xxxx:xxxx:wwxx:yyzz → IPv4 = ww.xx.yy.zz
-  if (groups[0] === '0064' && groups[1] === 'ff9b' && groups[2] === '0001') {
-    return hexToIPv4(groups[6], groups[7]);
-  }
-
-  // 6to4 prefix: 2002::/16
-  // Expanded form: 2002:aabb:ccdd:xxxx:xxxx:xxxx:xxxx:xxxx → IPv4 = aa.bb.cc.dd
-  if (groups[0] === '2002') {
-    return hexToIPv4(groups[1], groups[2]);
-  }
-
-  // Teredo prefix: 2001:0000::/32
-  // Expanded form: 2001:0000:...:...:...:...:~ww~xx:~yy~zz
-  // Client IPv4 is in the last 32 bits XOR'd with 0xFFFFFFFF
-  if (groups[0] === '2001' && groups[1] === '0000') {
-    const hiXored = (parseInt(groups[6], 16) ^ 0xffff).toString(16).padStart(4, '0');
-    const loXored = (parseInt(groups[7], 16) ^ 0xffff).toString(16).padStart(4, '0');
-    return hexToIPv4(hiXored, loXored);
-  }
-
-  return null;  // not a known transition format
-}
-
-/**
- * Validate a single IPv4 octet string: must be a plain decimal integer 0-255
- * with no leading zeros, hex prefixes, or other non-standard forms.
- * Returns false for any octet that doesn't round-trip cleanly.
- */
-function isStrictDecimalOctet(part: string): boolean {
-  if (!/^[0-9]+$/.test(part)) return false;
-  const n = parseInt(part, 10);
-  if (n < 0 || n > 255) return false;
-  // Reject leading zeros (e.g. "0177" would be octal in some parsers)
-  if (String(n) !== part) return false;
-  return true;
-}
-
-/**
- * Returns true if the string looks like a legacy/non-standard IPv4 literal
- * that should be treated as internal and blocked (fail closed).
- * Catches octal (0177.0.0.1), hex (0xff.0.0.1), short (127.1),
- * and packed decimal (2130706433) forms.
- */
-function isUnsupportedIPv4Literal(ip: string): boolean {
-  // Packed decimal: single integer with no dots
-  if (/^[0-9]+$/.test(ip)) return true;
-
-  const parts = ip.split('.');
-  // Must be exactly 4 dotted parts
-  if (parts.length !== 4) return true;
-  // Each part must be a strict decimal octet
-  if (!parts.every(isStrictDecimalOctet)) return true;
-
-  return false;
-}
-
-type IsInternalIPOpts = { allowRfc2544BenchmarkRange?: boolean };
-
-/**
- * Check whether an IP address string is internal/private/loopback.
- */
-function isInternalIP(ip: string, opts?: IsInternalIPOpts): boolean {
-  // Reject non-standard IPv4 literals before any range checks (fail closed)
-  if (!ip.includes(':') && isUnsupportedIPv4Literal(ip)) return true;
-
-  // IPv4
-  if (/^127\./.test(ip)) return true;
-  if (/^10\./.test(ip)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
-  if (/^192\.168\./.test(ip)) return true;
-  if (/^169\.254\./.test(ip)) return true;
-  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip)) return true;
-  if (ip === '0.0.0.0') return true;
-  // RFC 2544 benchmark testing range (198.18.0.0/15 = 198.18.x.x - 198.19.x.x)
-  if (!opts?.allowRfc2544BenchmarkRange && /^198\.1[89]\./.test(ip)) return true;
-
-  // IPv6
-  const lower = ip.toLowerCase();
-  if (lower === '::1') return true;
-  if (lower.startsWith('fe80:')) return true;  // link-local
-  if (lower.startsWith('fc') || lower.startsWith('fd')) return true;  // ULA
-  if (lower.startsWith('ff')) return true;  // multicast (ff00::/8)
-
-  // IPv6 transition addresses: NAT64, 6to4, Teredo, IPv4-mapped
-  const embedded = extractEmbeddedIPv4(lower);
-  if (embedded !== null) {
-    if (embedded === '') return true;  // parse error — fail closed
-    return isInternalIP(embedded, opts);
-  }
-
-  return false;
-}
-
-/**
- * Check whether a URL targets a loopback or private/internal network address.
- * Synchronous hostname-based check. Used to prevent SSRF attacks.
- */
-export function isInternalUrl(url: string, opts?: IsInternalIPOpts): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    // Fail closed: treat unparseable URLs as internal/blocked
-    return true;
-  }
-
-  const hostname = parsed.hostname.toLowerCase();
-
-  // Direct hostname checks
-  // Note: URL.hostname strips IPv6 brackets, so [::1] becomes ::1
-  if (hostname === 'localhost') return true;
-
-  // Check if hostname is an IP literal
-  if (isInternalIP(hostname, opts)) return true;
-
-  // .local, .internal, .localhost TLDs
-  if (hostname.endsWith('.local') || hostname.endsWith('.internal') || hostname.endsWith('.localhost')) {
-    return true;
-  }
-
-  return false;
-}
-
-/**
- * Validate upload file paths immediately before use — rejects symlinks,
- * missing files, and non-regular files to prevent TOCTOU path-swap attacks.
+ * Validate upload file paths immediately before use.
  */
 export async function assertSafeUploadPaths(paths: string[]): Promise<void> {
   for (const filePath of paths) {
@@ -392,40 +479,84 @@ export async function assertSafeUploadPaths(paths: string[]): Promise<void> {
   }
 }
 
+// ── Atomic file write utilities ──
+
 /**
- * Async version that also resolves DNS to catch rebinding attacks
- * where a public hostname resolves to an internal IP.
+ * Sanitize an untrusted file name (e.g. from a download) to prevent path traversal.
  */
-export async function isInternalUrlResolved(url: string, lookupFn: LookupFn = lookup, opts?: IsInternalIPOpts): Promise<boolean> {
-  // First do the fast synchronous check
-  if (isInternalUrl(url, opts)) return true;
+export function sanitizeUntrustedFileName(fileName: string, fallbackName: string): string {
+  const trimmed = String(fileName ?? '').trim();
+  if (!trimmed) return fallbackName;
 
-  // Then resolve DNS to catch rebinding
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return true;
+  let base = posix.basename(trimmed);
+  base = win32.basename(base);
+
+  // Strip control characters
+  let cleaned = '';
+  for (let i = 0; i < base.length; i++) {
+    const code = base.charCodeAt(i);
+    if (code < 32 || code === 127) continue;
+    cleaned += base[i];
+  }
+  base = cleaned.trim();
+
+  if (!base || base === '.' || base === '..') return fallbackName;
+  if (base.length > 200) base = base.slice(0, 200);
+  return base;
+}
+
+/**
+ * Build a sibling temp path for atomic writes.
+ */
+function buildSiblingTempPath(targetPath: string): string {
+  const id = randomUUID();
+  const safeTail = sanitizeUntrustedFileName(basename(targetPath), 'output.bin');
+  return join(dirname(targetPath), `.browserclaw-output-${id}-${safeTail}.part`);
+}
+
+/**
+ * Write a file atomically via a sibling temp path.
+ * The writeTemp callback should write the content to tempPath.
+ * After writeTemp completes, the temp file is renamed to the target path.
+ */
+export async function writeViaSiblingTempPath(params: {
+  rootDir: string;
+  targetPath: string;
+  writeTemp: (tempPath: string) => Promise<void>;
+}): Promise<void> {
+  const rootDir = await realpath(resolve(params.rootDir)).catch(() => resolve(params.rootDir));
+  const requestedTargetPath = resolve(params.targetPath);
+  const targetPath = await realpath(dirname(requestedTargetPath))
+    .then((realDir) => join(realDir, basename(requestedTargetPath)))
+    .catch(() => requestedTargetPath);
+
+  const relativeTargetPath = relative(rootDir, targetPath);
+  if (
+    !relativeTargetPath ||
+    relativeTargetPath === '..' ||
+    relativeTargetPath.startsWith(`..${sep}`) ||
+    isAbsolute(relativeTargetPath)
+  ) {
+    throw new Error('Target path is outside the allowed root');
   }
 
+  const tempPath = buildSiblingTempPath(targetPath);
+  let renameSucceeded = false;
   try {
-    const { address } = await lookupFn(parsed.hostname);
-    if (isInternalIP(address, opts)) return true;
-  } catch {
-    // DNS resolution failed — fail closed
-    return true;
+    await params.writeTemp(tempPath);
+    await rename(tempPath, targetPath);
+    renameSucceeded = true;
+  } finally {
+    if (!renameSucceeded) await rm(tempPath, { force: true }).catch(() => {});
   }
+}
 
-  return false;
+function isAbsolute(p: string): boolean {
+  return p.startsWith('/') || /^[a-zA-Z]:/.test(p);
 }
 
 /**
  * Best-effort post-navigation guard for the final page URL.
- * Only validates http/https URLs and about:blank — swallows errors on
- * unparseable URLs and non-network protocols (e.g. chrome-error://) to avoid
- * false positives on browser-internal error pages.
- *
- * Call this after `page.goto()` to catch redirect-based SSRF bypasses.
  */
 export async function assertBrowserNavigationResultAllowed(opts: {
   url: string;
@@ -448,8 +579,6 @@ export async function assertBrowserNavigationResultAllowed(opts: {
 
 /**
  * Walk the full redirect chain and validate each hop against the SSRF policy.
- * Call this after `page.goto()` with `response?.request()` to catch intermediate
- * redirects that resolve to private/internal addresses.
  */
 export async function assertBrowserNavigationRedirectChainAllowed(opts: {
   request?: BrowserNavigationRequestLike | null;
@@ -467,8 +596,7 @@ export async function assertBrowserNavigationRedirectChainAllowed(opts: {
 }
 
 /**
- * Returns true if the SSRF policy requires redirect chain inspection
- * (i.e. strict mode where private network is blocked).
+ * Returns true if the SSRF policy requires redirect chain inspection.
  */
 export function requiresInspectableBrowserNavigationRedirects(ssrfPolicy?: SsrfPolicy): boolean {
   return !isPrivateNetworkAllowedByPolicy(ssrfPolicy);
