@@ -68,7 +68,6 @@ function hasProxyEnvConfigured(env: Record<string, string | undefined> = process
 
 function normalizeHostname(hostname: string): string {
   let h = String(hostname ?? '').trim().toLowerCase();
-  // Strip IPv6 brackets
   if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);
   // Strip trailing dot (FQDN)
   if (h.endsWith('.')) h = h.slice(0, -1);
@@ -81,30 +80,6 @@ function isBlockedHostnameNormalized(normalized: string): boolean {
 }
 
 // ── IP address checking via ipaddr.js ──
-
-/**
- * Validate a single IPv4 octet string: must be a plain decimal integer 0-255
- * with no leading zeros, hex prefixes, or other non-standard forms.
- */
-function isStrictDecimalOctet(part: string): boolean {
-  if (!/^[0-9]+$/.test(part)) return false;
-  const n = parseInt(part, 10);
-  if (n < 0 || n > 255) return false;
-  if (String(n) !== part) return false;
-  return true;
-}
-
-/**
- * Returns true if the string looks like a legacy/non-standard IPv4 literal
- * that should be treated as internal and blocked (fail closed).
- */
-function isUnsupportedIPv4Literal(ip: string): boolean {
-  if (/^[0-9]+$/.test(ip)) return true;
-  const parts = ip.split('.');
-  if (parts.length !== 4) return true;
-  if (!parts.every(isStrictDecimalOctet)) return true;
-  return false;
-}
 
 const BLOCKED_IPV4_RANGES = new Set([
   'unspecified', 'broadcast', 'multicast', 'linkLocal',
@@ -119,6 +94,117 @@ const RFC2544_BENCHMARK_PREFIX: [ipaddr.IPv4, number] = [ipaddr.IPv4.parse('198.
 
 type IsPrivateIpOpts = { allowRfc2544BenchmarkRange?: boolean };
 
+const EMBEDDED_IPV4_SENTINEL_RULES: {
+  matches: (parts: number[]) => boolean;
+  toHextets: (parts: number[]) => [number, number];
+}[] = [
+  // IPv4-compatible (::a.b.c.d)
+  {
+    matches: (parts) => parts[0] === 0 && parts[1] === 0 && parts[2] === 0 && parts[3] === 0 && parts[4] === 0 && parts[5] === 0,
+    toHextets: (parts) => [parts[6], parts[7]],
+  },
+  // NAT64 local-use (64:ff9b:1::/48)
+  {
+    matches: (parts) => parts[0] === 100 && parts[1] === 65435 && parts[2] === 1 && parts[3] === 0 && parts[4] === 0 && parts[5] === 0,
+    toHextets: (parts) => [parts[6], parts[7]],
+  },
+  // 6to4 (2002::/16)
+  {
+    matches: (parts) => parts[0] === 0x2002,
+    toHextets: (parts) => [parts[1], parts[2]],
+  },
+  // Teredo (2001:0000::/32) — IPv4 XOR'd
+  {
+    matches: (parts) => parts[0] === 0x2001 && parts[1] === 0x0000,
+    toHextets: (parts) => [parts[6] ^ 0xffff, parts[7] ^ 0xffff],
+  },
+  // ISATAP — sentinel in parts[4-5]: 0x0000:0x5efe or 0x0200:0x5efe
+  {
+    matches: (parts) => (parts[4] & 0xfcff) === 0 && parts[5] === 0x5efe,
+    toHextets: (parts) => [parts[6], parts[7]],
+  },
+];
+
+function stripIpv6Brackets(value: string): string {
+  if (value.startsWith('[') && value.endsWith(']')) return value.slice(1, -1);
+  return value;
+}
+
+function isNumericIpv4LiteralPart(value: string): boolean {
+  return /^[0-9]+$/.test(value) || /^0x[0-9a-f]+$/i.test(value);
+}
+
+function parseIpv6WithEmbeddedIpv4(raw: string): ipaddr.IPv6 | undefined {
+  if (!raw.includes(':') || !raw.includes('.')) return;
+  const match = /^(.*:)([^:%]+(?:\.[^:%]+){3})(%[0-9A-Za-z]+)?$/i.exec(raw);
+  if (!match) return;
+  const [, prefix, embeddedIpv4, zoneSuffix = ''] = match;
+  if (!ipaddr.IPv4.isValidFourPartDecimal(embeddedIpv4)) return;
+  const octets = embeddedIpv4.split('.').map((part) => Number.parseInt(part, 10));
+  const normalizedIpv6 = `${prefix}${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}${zoneSuffix}`;
+  if (!ipaddr.IPv6.isValid(normalizedIpv6)) return;
+  return ipaddr.IPv6.parse(normalizedIpv6);
+}
+
+function normalizeIpParseInput(raw: string | undefined | null): string | undefined {
+  const trimmed = raw?.trim();
+  if (!trimmed) return;
+  return stripIpv6Brackets(trimmed);
+}
+
+function parseCanonicalIpAddress(raw: string): ipaddr.IPv4 | ipaddr.IPv6 | undefined {
+  const normalized = normalizeIpParseInput(raw);
+  if (!normalized) return;
+  if (ipaddr.IPv4.isValid(normalized)) {
+    if (!ipaddr.IPv4.isValidFourPartDecimal(normalized)) return;
+    return ipaddr.IPv4.parse(normalized);
+  }
+  if (ipaddr.IPv6.isValid(normalized)) return ipaddr.IPv6.parse(normalized);
+  return parseIpv6WithEmbeddedIpv4(normalized);
+}
+
+function parseLooseIpAddress(raw: string): ipaddr.IPv4 | ipaddr.IPv6 | undefined {
+  const normalized = normalizeIpParseInput(raw);
+  if (!normalized) return;
+  if (ipaddr.isValid(normalized)) return ipaddr.parse(normalized);
+  return parseIpv6WithEmbeddedIpv4(normalized);
+}
+
+function isCanonicalDottedDecimalIPv4(raw: string): boolean {
+  const trimmed = raw?.trim();
+  if (!trimmed) return false;
+  const normalized = stripIpv6Brackets(trimmed);
+  if (!normalized) return false;
+  return ipaddr.IPv4.isValidFourPartDecimal(normalized);
+}
+
+function isLegacyIpv4Literal(raw: string): boolean {
+  const trimmed = raw?.trim();
+  if (!trimmed) return false;
+  const normalized = stripIpv6Brackets(trimmed);
+  if (!normalized || normalized.includes(':')) return false;
+  if (isCanonicalDottedDecimalIPv4(normalized)) return false;
+  const parts = normalized.split('.');
+  if (parts.length === 0 || parts.length > 4) return false;
+  if (parts.some((part) => part.length === 0)) return false;
+  if (!parts.every((part) => isNumericIpv4LiteralPart(part))) return false;
+  return true;
+}
+
+function looksLikeUnsupportedIpv4Literal(address: string): boolean {
+  const parts = address.split('.');
+  if (parts.length === 0 || parts.length > 4) return false;
+  if (parts.some((part) => part.length === 0)) return true;
+  return parts.every((part) => /^[0-9]+$/.test(part) || /^0x/i.test(part));
+}
+
+function normalizeIpv4MappedAddress(address: ipaddr.IPv4 | ipaddr.IPv6): ipaddr.IPv4 | ipaddr.IPv6 {
+  if (address.kind() !== 'ipv6') return address;
+  const v6 = address as ipaddr.IPv6;
+  if (!v6.isIPv4MappedAddress()) return address;
+  return v6.toIPv4Address();
+}
+
 function isBlockedSpecialUseIpv4Address(address: ipaddr.IPv4, opts?: IsPrivateIpOpts): boolean {
   const inRfc2544 = address.match(RFC2544_BENCHMARK_PREFIX);
   if (inRfc2544 && opts?.allowRfc2544BenchmarkRange === true) return false;
@@ -127,103 +213,60 @@ function isBlockedSpecialUseIpv4Address(address: ipaddr.IPv4, opts?: IsPrivateIp
 
 function isBlockedSpecialUseIpv6Address(address: ipaddr.IPv6): boolean {
   if (BLOCKED_IPV6_RANGES.has(address.range())) return true;
-  // Deprecated site-local range (fec0::/10) — may not be caught by ipaddr.js range()
   return (address.parts[0] & 0xffc0) === 0xfec0;
 }
 
-/**
- * Extract embedded IPv4 from IPv6 transition formats (IPv4-mapped, NAT64, 6to4, Teredo)
- * and check if the embedded IPv4 is blocked. Returns null if not a transition format.
- */
-function extractEmbeddedIpv4FromIpv6(v6: ipaddr.IPv6, opts?: IsPrivateIpOpts): boolean | null {
-  // IPv4-mapped (::ffff:a.b.c.d)
-  if (v6.isIPv4MappedAddress()) {
-    return isBlockedSpecialUseIpv4Address(v6.toIPv4Address(), opts);
-  }
-
-  const parts = v6.parts; // 8 x 16-bit groups
-
-  // NAT64 well-known prefix: 64:ff9b::/96
-  if (parts[0] === 0x0064 && parts[1] === 0xff9b &&
-      parts[2] === 0x0000 && parts[3] === 0x0000 &&
-      parts[4] === 0x0000 && parts[5] === 0x0000) {
-    const ip4str = `${(parts[6] >> 8) & 0xff}.${parts[6] & 0xff}.${(parts[7] >> 8) & 0xff}.${parts[7] & 0xff}`;
-    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
-  }
-
-  // NAT64 local-use prefix: 64:ff9b:1::/48
-  if (parts[0] === 0x0064 && parts[1] === 0xff9b && parts[2] === 0x0001) {
-    const ip4str = `${(parts[6] >> 8) & 0xff}.${parts[6] & 0xff}.${(parts[7] >> 8) & 0xff}.${parts[7] & 0xff}`;
-    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
-  }
-
-  // 6to4 prefix: 2002::/16
-  if (parts[0] === 0x2002) {
-    const ip4str = `${(parts[1] >> 8) & 0xff}.${parts[1] & 0xff}.${(parts[2] >> 8) & 0xff}.${parts[2] & 0xff}`;
-    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
-  }
-
-  // Teredo prefix: 2001:0000::/32 — client IPv4 is in last 32 bits XOR'd with 0xFFFF
-  if (parts[0] === 0x2001 && parts[1] === 0x0000) {
-    const hiXored = parts[6] ^ 0xffff;
-    const loXored = parts[7] ^ 0xffff;
-    const ip4str = `${(hiXored >> 8) & 0xff}.${hiXored & 0xff}.${(loXored >> 8) & 0xff}.${loXored & 0xff}`;
-    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
-  }
-
-  // SIIT/stateless translation prefix (::ffff:0:a.b.c.d) — rfc6145, parts[4]=0xffff, parts[0-3]=0, parts[5]=0
-  if (parts[0] === 0 && parts[1] === 0 && parts[2] === 0 && parts[3] === 0 && parts[4] === 0xffff && parts[5] === 0) {
-    const ip4str = `${(parts[6] >> 8) & 0xff}.${parts[6] & 0xff}.${(parts[7] >> 8) & 0xff}.${parts[7] & 0xff}`;
-    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
-  }
-
-  // IPv4-compatible address (deprecated ::a.b.c.d) — parts[0-5] all zero, embedded IPv4 in parts[6-7]
-  if (parts[0] === 0 && parts[1] === 0 && parts[2] === 0 && parts[3] === 0 && parts[4] === 0 && parts[5] === 0) {
-    const ip4str = `${(parts[6] >> 8) & 0xff}.${parts[6] & 0xff}.${(parts[7] >> 8) & 0xff}.${parts[7] & 0xff}`;
-    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
-  }
-
-  // ISATAP — embedded IPv4 in parts[6-7], sentinel in parts[4-5]: 0x0000:0x5efe or 0x0200:0x5efe
-  if ((parts[4] & 0xfdff) === 0 && parts[5] === 0x5efe) {
-    const ip4str = `${(parts[6] >> 8) & 0xff}.${parts[6] & 0xff}.${(parts[7] >> 8) & 0xff}.${parts[7] & 0xff}`;
-    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
-  }
-
-  return null; // not a known transition format
+function decodeIpv4FromHextets(high: number, low: number): ipaddr.IPv4 {
+  const octets = [
+    (high >>> 8) & 0xff,
+    high & 0xff,
+    (low >>> 8) & 0xff,
+    low & 0xff,
+  ];
+  return ipaddr.IPv4.parse(octets.join('.'));
 }
 
-/**
- * Check whether an IP address string is private/internal/loopback.
- * Uses ipaddr.js for proper CIDR matching.
- */
-function isPrivateIpAddress(address: string, opts?: IsPrivateIpOpts): boolean {
+function extractEmbeddedIpv4FromIpv6(address: ipaddr.IPv6): ipaddr.IPv4 | undefined {
+  if (address.isIPv4MappedAddress()) return address.toIPv4Address();
+  if (address.range() === 'rfc6145') return decodeIpv4FromHextets(address.parts[6], address.parts[7]);
+  if (address.range() === 'rfc6052') return decodeIpv4FromHextets(address.parts[6], address.parts[7]);
+  for (const rule of EMBEDDED_IPV4_SENTINEL_RULES) {
+    if (!rule.matches(address.parts)) continue;
+    const [high, low] = rule.toHextets(address.parts);
+    return decodeIpv4FromHextets(high, low);
+  }
+}
+
+function resolveIpv4SpecialUseBlockOptions(policy?: SsrfPolicy): IsPrivateIpOpts {
+  return { allowRfc2544BenchmarkRange: policy?.allowRfc2544BenchmarkRange === true };
+}
+
+function isBlockedHostnameOrIp(hostname: string, policy?: SsrfPolicy): boolean {
+  const normalized = normalizeHostname(hostname);
+  if (!normalized) return false;
+  return isBlockedHostnameNormalized(normalized) || isPrivateIpAddress(normalized, policy);
+}
+
+function isPrivateIpAddress(address: string, policy?: SsrfPolicy): boolean {
   let normalized = address.trim().toLowerCase();
   if (normalized.startsWith('[') && normalized.endsWith(']')) normalized = normalized.slice(1, -1);
   if (!normalized) return false;
 
-  // Try strict parse via ipaddr.js
-  try {
-    const parsed = ipaddr.parse(normalized);
-    if (parsed.kind() === 'ipv4') {
-      return isBlockedSpecialUseIpv4Address(parsed as ipaddr.IPv4, opts);
-    }
-    // IPv6
-    const v6 = parsed as ipaddr.IPv6;
+  const blockOptions = resolveIpv4SpecialUseBlockOptions(policy);
+
+  const strictIp = parseCanonicalIpAddress(normalized);
+  if (strictIp) {
+    if (strictIp.kind() === 'ipv4') return isBlockedSpecialUseIpv4Address(strictIp as ipaddr.IPv4, blockOptions);
+    const v6 = strictIp as ipaddr.IPv6;
     if (isBlockedSpecialUseIpv6Address(v6)) return true;
-    // Check for embedded IPv4 in transition formats
-    const embeddedV4 = extractEmbeddedIpv4FromIpv6(v6, opts);
-    if (embeddedV4 !== null) return embeddedV4;
+    const embeddedIpv4 = extractEmbeddedIpv4FromIpv6(v6);
+    if (embeddedIpv4) return isBlockedSpecialUseIpv4Address(embeddedIpv4, blockOptions);
     return false;
-  } catch {
-    // Parse failed
   }
 
-  // Defense-in-depth: legacy IPv4 literal check (fail closed)
-  if (!normalized.includes(':') && isUnsupportedIPv4Literal(normalized)) return true;
-
-  // Unparseable IPv6-looking address — fail closed
-  if (normalized.includes(':')) return true;
-
+  if (normalized.includes(':') && !parseLooseIpAddress(normalized)) return true;
+  if (!isCanonicalDottedDecimalIPv4(normalized) && isLegacyIpv4Literal(normalized)) return true;
+  if (looksLikeUnsupportedIpv4Literal(normalized)) return true;
   return false;
 }
 
@@ -233,7 +276,7 @@ function isPrivateIpAddress(address: string, opts?: IsPrivateIpOpts): boolean {
  * Check whether a URL targets a loopback or private/internal network address.
  * Synchronous hostname-based check. Used to prevent SSRF attacks.
  */
-export function isInternalUrl(url: string, opts?: IsPrivateIpOpts): boolean {
+export function isInternalUrl(url: string, policy?: SsrfPolicy): boolean {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -243,7 +286,7 @@ export function isInternalUrl(url: string, opts?: IsPrivateIpOpts): boolean {
 
   const hostname = normalizeHostname(parsed.hostname);
   if (isBlockedHostnameNormalized(hostname)) return true;
-  if (isPrivateIpAddress(hostname, opts)) return true;
+  if (isPrivateIpAddress(hostname, policy)) return true;
 
   return false;
 }
@@ -363,22 +406,14 @@ export async function resolvePinnedHostnameWithPolicy(hostname: string, params: 
     );
   }
 
-  // Check hostname itself
   if (!skipPrivateNetworkChecks) {
-    if (isBlockedHostnameNormalized(normalized)) {
-      throw new InvalidBrowserNavigationUrlError(
-        `Navigation to internal/loopback address blocked: "${hostname}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
-      );
-    }
-    const ipOpts: IsPrivateIpOpts = { allowRfc2544BenchmarkRange: params.policy?.allowRfc2544BenchmarkRange };
-    if (isPrivateIpAddress(normalized, ipOpts)) {
+    if (isBlockedHostnameOrIp(normalized, params.policy)) {
       throw new InvalidBrowserNavigationUrlError(
         `Navigation to internal/loopback address blocked: "${hostname}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
       );
     }
   }
 
-  // Resolve DNS
   const lookupFn = params.lookupFn ?? dnsLookup;
   let results: { address: string; family: number }[];
   try {
@@ -395,11 +430,9 @@ export async function resolvePinnedHostnameWithPolicy(hostname: string, params: 
     );
   }
 
-  // Validate resolved addresses
   if (!skipPrivateNetworkChecks) {
-    const ipOpts: IsPrivateIpOpts = { allowRfc2544BenchmarkRange: params.policy?.allowRfc2544BenchmarkRange };
     for (const r of results) {
-      if (isPrivateIpAddress(r.address, ipOpts)) {
+      if (isBlockedHostnameOrIp(r.address, params.policy)) {
         throw new InvalidBrowserNavigationUrlError(
           `Navigation to internal/loopback address blocked: "${hostname}" resolves to "${r.address}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
         );
@@ -430,6 +463,7 @@ export async function assertBrowserNavigationAllowed(opts: {
   lookupFn?: LookupFn;
 } & BrowserNavigationPolicyOptions): Promise<void> {
   const rawUrl = String(opts.url ?? '').trim();
+  if (!rawUrl) throw new InvalidBrowserNavigationUrlError('url is required');
 
   let parsed: URL;
   try {
@@ -540,7 +574,6 @@ export function sanitizeUntrustedFileName(fileName: string, fallbackName: string
   let base = posix.basename(trimmed);
   base = win32.basename(base);
 
-  // Strip control characters
   let cleaned = '';
   for (let i = 0; i < base.length; i++) {
     const code = base.charCodeAt(i);

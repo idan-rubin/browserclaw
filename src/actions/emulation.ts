@@ -169,7 +169,7 @@ export async function setOfflineViaPlaywright(opts: {
 }): Promise<void> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
-  await page.context().setOffline(opts.offline);
+  await page.context().setOffline(Boolean(opts.offline));
 }
 
 export async function setTimezoneViaPlaywright(opts: {

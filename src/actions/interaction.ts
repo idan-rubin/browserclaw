@@ -1,3 +1,4 @@
+import type { Page } from 'playwright-core';
 import {
   getPageForTargetId,
   ensurePageState,
@@ -23,22 +24,44 @@ function resolveBoundedDelayMs(value: number | undefined, label: string, maxMs: 
   return normalized;
 }
 
+function resolveInteractionTimeoutMs(timeoutMs?: number): number {
+  return Math.max(500, Math.min(60000, Math.floor(timeoutMs ?? 8000)));
+}
+
+function requireRefOrSelector(ref?: string, selector?: string): { ref?: string; selector?: string } {
+  const trimmedRef = typeof ref === 'string' ? ref.trim() : '';
+  const trimmedSelector = typeof selector === 'string' ? selector.trim() : '';
+  if (!trimmedRef && !trimmedSelector) throw new Error('ref or selector is required');
+  return { ref: trimmedRef || undefined, selector: trimmedSelector || undefined };
+}
+
+function resolveLocator(page: Page, resolved: { ref?: string; selector?: string }) {
+  return resolved.ref ? refLocator(page, resolved.ref) : page.locator(resolved.selector!);
+}
+
+async function getRestoredPageForTarget(opts: { cdpUrl: string; targetId?: string }): Promise<Page> {
+  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  ensurePageState(page);
+  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
+  return page;
+}
+
 export async function clickViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
-  ref: string;
+  ref?: string;
+  selector?: string;
   doubleClick?: boolean;
   button?: MouseButton;
   modifiers?: KeyModifier[];
   delayMs?: number;
   timeoutMs?: number;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
-
-  const locator = refLocator(page, opts.ref);
-  const timeout = normalizeTimeoutMs(opts.timeoutMs, 8000, 60000);
+  const resolved = requireRefOrSelector(opts.ref, opts.selector);
+  const page = await getRestoredPageForTarget(opts);
+  const label = resolved.ref ?? resolved.selector!;
+  const locator = resolveLocator(page, resolved);
+  const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
 
   try {
     const delayMs = resolveBoundedDelayMs(opts.delayMs, 'click delayMs', MAX_CLICK_DELAY_MS);
@@ -52,45 +75,45 @@ export async function clickViaPlaywright(opts: {
       await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
     }
   } catch (err) {
-    throw toAIFriendlyError(err, opts.ref);
+    throw toAIFriendlyError(err, label);
   }
 }
 
 export async function hoverViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
-  ref: string;
+  ref?: string;
+  selector?: string;
   timeoutMs?: number;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
+  const resolved = requireRefOrSelector(opts.ref, opts.selector);
+  const page = await getRestoredPageForTarget(opts);
+  const label = resolved.ref ?? resolved.selector!;
+  const locator = resolveLocator(page, resolved);
 
   try {
-    await refLocator(page, opts.ref).hover({
-      timeout: normalizeTimeoutMs(opts.timeoutMs, 8000, 60000),
-    });
+    await locator.hover({ timeout: resolveInteractionTimeoutMs(opts.timeoutMs) });
   } catch (err) {
-    throw toAIFriendlyError(err, opts.ref);
+    throw toAIFriendlyError(err, label);
   }
 }
 
 export async function typeViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
-  ref: string;
+  ref?: string;
+  selector?: string;
   text: string;
   submit?: boolean;
   slowly?: boolean;
   timeoutMs?: number;
 }): Promise<void> {
+  const resolved = requireRefOrSelector(opts.ref, opts.selector);
   const text = String(opts.text ?? '');
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
-
-  const locator = refLocator(page, opts.ref);
-  const timeout = normalizeTimeoutMs(opts.timeoutMs, 8000, 60000);
+  const page = await getRestoredPageForTarget(opts);
+  const label = resolved.ref ?? resolved.selector!;
+  const locator = resolveLocator(page, resolved);
+  const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
 
   try {
     if (opts.slowly) {
@@ -101,48 +124,52 @@ export async function typeViaPlaywright(opts: {
     }
     if (opts.submit) await locator.press('Enter', { timeout });
   } catch (err) {
-    throw toAIFriendlyError(err, opts.ref);
+    throw toAIFriendlyError(err, label);
   }
 }
 
 export async function selectOptionViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
-  ref: string;
+  ref?: string;
+  selector?: string;
   values: string[];
   timeoutMs?: number;
 }): Promise<void> {
+  const resolved = requireRefOrSelector(opts.ref, opts.selector);
   if (!opts.values?.length) throw new Error('values are required');
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
+  const page = await getRestoredPageForTarget(opts);
+  const label = resolved.ref ?? resolved.selector!;
+  const locator = resolveLocator(page, resolved);
 
   try {
-    await refLocator(page, opts.ref).selectOption(opts.values, {
-      timeout: normalizeTimeoutMs(opts.timeoutMs, 8000, 60000),
-    });
+    await locator.selectOption(opts.values, { timeout: resolveInteractionTimeoutMs(opts.timeoutMs) });
   } catch (err) {
-    throw toAIFriendlyError(err, opts.ref);
+    throw toAIFriendlyError(err, label);
   }
 }
 
 export async function dragViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
-  startRef: string;
-  endRef: string;
+  startRef?: string;
+  startSelector?: string;
+  endRef?: string;
+  endSelector?: string;
   timeoutMs?: number;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
+  const resolvedStart = requireRefOrSelector(opts.startRef, opts.startSelector);
+  const resolvedEnd = requireRefOrSelector(opts.endRef, opts.endSelector);
+  const page = await getRestoredPageForTarget(opts);
+  const startLocator = resolveLocator(page, resolvedStart);
+  const endLocator = resolveLocator(page, resolvedEnd);
+  const startLabel = resolvedStart.ref ?? resolvedStart.selector!;
+  const endLabel = resolvedEnd.ref ?? resolvedEnd.selector!;
 
   try {
-    await refLocator(page, opts.startRef).dragTo(refLocator(page, opts.endRef), {
-      timeout: normalizeTimeoutMs(opts.timeoutMs, 8000, 60000),
-    });
+    await startLocator.dragTo(endLocator, { timeout: resolveInteractionTimeoutMs(opts.timeoutMs) });
   } catch (err) {
-    throw toAIFriendlyError(err, `${opts.startRef} -> ${opts.endRef}`);
+    throw toAIFriendlyError(err, `${startLabel} -> ${endLabel}`);
   }
 }
 
@@ -152,11 +179,8 @@ export async function fillFormViaPlaywright(opts: {
   fields: FormField[];
   timeoutMs?: number;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
-
-  const timeout = normalizeTimeoutMs(opts.timeoutMs, 8000, 60000);
+  const page = await getRestoredPageForTarget(opts);
+  const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
 
   for (const field of opts.fields) {
     const ref = field.ref.trim();
@@ -190,19 +214,19 @@ export async function fillFormViaPlaywright(opts: {
 export async function scrollIntoViewViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
-  ref: string;
+  ref?: string;
+  selector?: string;
   timeoutMs?: number;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
+  const resolved = requireRefOrSelector(opts.ref, opts.selector);
+  const page = await getRestoredPageForTarget(opts);
+  const label = resolved.ref ?? resolved.selector!;
+  const locator = resolveLocator(page, resolved);
 
   try {
-    await refLocator(page, opts.ref).scrollIntoViewIfNeeded({
-      timeout: normalizeTimeoutMs(opts.timeoutMs, 20000),
-    });
+    await locator.scrollIntoViewIfNeeded({ timeout: normalizeTimeoutMs(opts.timeoutMs, 20000) });
   } catch (err) {
-    throw toAIFriendlyError(err, opts.ref);
+    throw toAIFriendlyError(err, label);
   }
 }
 
@@ -211,9 +235,7 @@ export async function highlightViaPlaywright(opts: {
   targetId?: string;
   ref: string;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
+  const page = await getRestoredPageForTarget(opts);
 
   try {
     await refLocator(page, opts.ref).highlight();
@@ -229,9 +251,7 @@ export async function setInputFilesViaPlaywright(opts: {
   element?: string;
   paths: string[];
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
+  const page = await getRestoredPageForTarget(opts);
 
   if (!opts.paths.length) throw new Error('paths are required');
 
@@ -252,7 +272,6 @@ export async function setInputFilesViaPlaywright(opts: {
     throw toAIFriendlyError(err, inputRef || element);
   }
 
-  // Dispatch input+change events for frameworks that listen on these
   try {
     const handle = await locator.elementHandle();
     if (handle) {
@@ -261,9 +280,7 @@ export async function setInputFilesViaPlaywright(opts: {
         el.dispatchEvent(new Event('change', { bubbles: true }));
       });
     }
-  } catch {
-    // Best effort
-  }
+  } catch {}
 }
 
 export async function armDialogViaPlaywright(opts: {
@@ -316,7 +333,6 @@ export async function armFileUploadViaPlaywright(opts: {
     }
     await fileChooser.setFiles(opts.paths);
 
-    // Dispatch input+change events
     try {
       const input = typeof fileChooser.element === 'function' ? await Promise.resolve(fileChooser.element()) : null;
       if (input) {

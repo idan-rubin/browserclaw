@@ -2,6 +2,13 @@ import { getPageForTargetId, ensurePageState, normalizeTimeoutMs } from '../conn
 
 const MAX_WAIT_TIME_MS = 30000;
 
+function resolveBoundedDelayMs(value: number | undefined, label: string, maxMs: number): number {
+  const normalized = Math.floor(value ?? 0);
+  if (!Number.isFinite(normalized) || normalized < 0) throw new Error(`${label} must be >= 0`);
+  if (normalized > maxMs) throw new Error(`${label} exceeds maximum of ${maxMs}ms`);
+  return normalized;
+}
+
 export async function waitForViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
@@ -19,8 +26,7 @@ export async function waitForViaPlaywright(opts: {
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 20000);
 
   if (typeof opts.timeMs === 'number' && Number.isFinite(opts.timeMs)) {
-    const bounded = Math.max(0, Math.min(MAX_WAIT_TIME_MS, Math.floor(opts.timeMs)));
-    await page.waitForTimeout(bounded);
+    await page.waitForTimeout(resolveBoundedDelayMs(opts.timeMs, 'wait timeMs', MAX_WAIT_TIME_MS));
   }
   if (opts.text) {
     await page.getByText(opts.text).first().waitFor({ state: 'visible', timeout });

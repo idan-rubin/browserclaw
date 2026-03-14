@@ -1,6 +1,6 @@
 import { chromium } from 'playwright-core';
 import type { Browser, Page, BrowserContext } from 'playwright-core';
-import { getChromeWebSocketUrl, normalizeCdpHttpBaseForJsonEndpoints } from './chrome-launcher.js';
+import { getChromeWebSocketUrl, normalizeCdpHttpBaseForJsonEndpoints, normalizeCdpWsUrl } from './chrome-launcher.js';
 import type { PageState, ContextState, RoleRefs } from './types.js';
 
 /** Page extended with Playwright's private `_snapshotForAI` method. */
@@ -10,8 +10,8 @@ export type PageWithAI = Page & {
 
 // ── Persistent Connection Cache ──
 
-let cached: { browser: Browser; cdpUrl: string; authToken?: string } | null = null;
-const connectingByUrl = new Map<string, Promise<{ browser: Browser; cdpUrl: string; authToken?: string }>>();
+let cached: { browser: Browser; cdpUrl: string; authToken?: string; onDisconnected?: () => void } | null = null;
+const connectingByUrl = new Map<string, Promise<{ browser: Browser; cdpUrl: string; authToken?: string; onDisconnected?: () => void }>>();
 
 const pageStates = new WeakMap<Page, PageState>();
 const contextStates = new WeakMap<BrowserContext, ContextState>();
@@ -238,7 +238,7 @@ export function restoreRoleRefsForTarget(opts: {
 
 // ── Connect to Browser ──
 
-export async function connectBrowser(cdpUrl: string, authToken?: string): Promise<{ browser: Browser; cdpUrl: string; authToken?: string }> {
+export async function connectBrowser(cdpUrl: string, authToken?: string): Promise<{ browser: Browser; cdpUrl: string; authToken?: string; onDisconnected?: () => void }> {
   const normalized = normalizeCdpUrl(cdpUrl);
   if (cached?.cdpUrl === normalized) return cached;
 
@@ -254,15 +254,16 @@ export async function connectBrowser(cdpUrl: string, authToken?: string): Promis
         const headers: Record<string, string> = {};
         if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
         const browser = await chromium.connectOverCDP(endpoint, { timeout, headers });
-        const connected = { browser, cdpUrl: normalized, authToken };
-        cached = connected;
-        observeBrowser(browser);
-        browser.on('disconnected', () => {
+        const onDisconnected = () => {
           if (cached?.browser === browser) cached = null;
           for (const key of roleRefsByTarget.keys()) {
             if (key.startsWith(normalized + '::')) roleRefsByTarget.delete(key);
           }
-        });
+        };
+        const connected = { browser, cdpUrl: normalized, authToken, onDisconnected };
+        cached = connected;
+        observeBrowser(browser);
+        browser.on('disconnected', onDisconnected);
         return connected;
       } catch (err) {
         lastErr = err;
@@ -289,9 +290,19 @@ export async function disconnectBrowser(): Promise<void> {
   if (cur) await cur.browser.close().catch(() => {});
 }
 
+function cdpSocketNeedsAttach(wsUrl: string): boolean {
+  try {
+    const pathname = new URL(wsUrl).pathname;
+    return pathname === '/cdp' || pathname.endsWith('/cdp') || pathname.includes('/devtools/browser/') || pathname === '/';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Best-effort termination of stuck page operations via raw CDP websocket.
  * Bypasses Playwright entirely — important because Playwright may be stuck.
+ * If the wsUrl is a browser-level endpoint, attaches to the target first.
  */
 async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string): Promise<void> {
   const httpBase = normalizeCdpHttpBaseForJsonEndpoints(cdpUrl);
@@ -307,18 +318,37 @@ async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string): Pr
 
   if (!Array.isArray(targets)) return;
   const target = targets.find((entry: any) => String(entry?.id ?? '').trim() === targetId);
-  const wsUrl = String(target?.webSocketDebuggerUrl ?? '').trim();
-  if (!wsUrl) return;
+  const wsUrlRaw = String(target?.webSocketDebuggerUrl ?? '').trim();
+  if (!wsUrlRaw) return;
+
+  const wsUrl = normalizeCdpWsUrl(wsUrlRaw, httpBase);
+  const needsAttach = cdpSocketNeedsAttach(wsUrl);
 
   await new Promise<void>((resolve) => {
     let done = false;
     const finish = () => { if (done) return; done = true; clearTimeout(timer); try { ws.close(); } catch {} resolve(); };
-    const timer = setTimeout(finish, 2000);
+    const timer = setTimeout(finish, 3000);
     let ws: WebSocket;
+    let nextId = 1;
     try { ws = new WebSocket(wsUrl); } catch { finish(); return; }
     ws.onopen = () => {
-      try { ws.send(JSON.stringify({ id: 1, method: 'Runtime.terminateExecution' })); } catch {}
-      setTimeout(finish, 300);
+      if (needsAttach) {
+        ws.send(JSON.stringify({ id: nextId++, method: 'Target.attachToTarget', params: { targetId, flatten: true } }));
+      } else {
+        ws.send(JSON.stringify({ id: nextId++, method: 'Runtime.terminateExecution' }));
+        setTimeout(finish, 300);
+      }
+    };
+    ws.onmessage = (event) => {
+      if (!needsAttach) return;
+      try {
+        const msg = JSON.parse(String(event.data));
+        if (msg.id && msg.result?.sessionId) {
+          ws.send(JSON.stringify({ id: nextId++, sessionId: msg.result.sessionId, method: 'Runtime.terminateExecution' }));
+          try { ws.send(JSON.stringify({ id: nextId++, method: 'Target.detachFromTarget', params: { sessionId: msg.result.sessionId } })); } catch {}
+          setTimeout(finish, 300);
+        }
+      } catch {}
     };
     ws.onerror = () => finish();
     ws.onclose = () => finish();
@@ -341,6 +371,10 @@ export async function forceDisconnectPlaywrightForTarget(opts: {
 
   cached = null;
   connectingByUrl.delete(normalized);
+
+  if (cur.onDisconnected && typeof cur.browser.off === 'function') {
+    cur.browser.off('disconnected', cur.onDisconnected);
+  }
 
   const targetId = opts.targetId?.trim() || '';
   if (targetId) {

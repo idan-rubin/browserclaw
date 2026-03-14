@@ -244,7 +244,6 @@ export function resolveBrowserExecutable(opts?: { executablePath?: string }): Ch
     return { kind: 'custom', path: opts.executablePath };
   }
   const platform = process.platform;
-  // Try default browser first
   if (platform === 'darwin') return detectDefaultChromiumMac() ?? findChromeMac();
   if (platform === 'linux') return detectDefaultChromiumLinux() ?? findChromeLinux();
   if (platform === 'win32') return findChromeWindows();
@@ -361,7 +360,7 @@ function isLoopbackHost(hostname: string): boolean {
  * external CDP host/port. Handles wildcard binds (`0.0.0.0`, `[::]`),
  * protocol upgrades (HTTP→WSS), and auth/search param inheritance.
  */
-function normalizeCdpWsUrl(wsUrl: string, cdpUrl: string): string {
+export function normalizeCdpWsUrl(wsUrl: string, cdpUrl: string): string {
   const ws = new URL(wsUrl);
   const cdp = new URL(cdpUrl);
   const isWildcardBind = ws.hostname === '0.0.0.0' || ws.hostname === '[::]';
@@ -574,15 +573,12 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
     }
   }
 
-  // Decorate profile
   try {
     decorateProfile(userDataDir, profileName, opts.profileColor ?? DEFAULT_PROFILE_COLOR);
   } catch {}
 
-  // Ensure clean exit state
   try { ensureCleanExit(userDataDir); } catch {}
 
-  // Launch for real
   const proc = spawnChrome();
   const cdpUrl = `http://127.0.0.1:${cdpPort}`;
 
@@ -591,7 +587,6 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   const onStderr = (chunk: Buffer) => { stderrChunks.push(chunk); };
   proc.stderr?.on('data', onStderr);
 
-  // Wait for Chrome to be ready
   const readyDeadline = Date.now() + 15000;
   while (Date.now() < readyDeadline) {
     if (await isChromeReachable(cdpUrl, 500)) break;
