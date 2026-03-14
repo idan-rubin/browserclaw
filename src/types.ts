@@ -253,6 +253,8 @@ export interface ClickOptions {
   button?: 'left' | 'right' | 'middle';
   /** Modifier keys to hold during click */
   modifiers?: ('Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift')[];
+  /** Delay in ms between hover and click (hovers first, waits, then clicks). Max: `5000` */
+  delayMs?: number;
   /** Timeout in milliseconds. Default: `8000` */
   timeoutMs?: number;
 }

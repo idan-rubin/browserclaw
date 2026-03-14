@@ -266,6 +266,7 @@ export async function connectBrowser(cdpUrl: string, authToken?: string): Promis
         return connected;
       } catch (err) {
         lastErr = err;
+        if ((err instanceof Error ? err.message : String(err)).includes('rate limit')) break;
         await new Promise(r => setTimeout(r, 250 + attempt * 250));
       }
     }
@@ -289,9 +290,45 @@ export async function disconnectBrowser(): Promise<void> {
 }
 
 /**
+ * Best-effort termination of stuck page operations via raw CDP websocket.
+ * Bypasses Playwright entirely — important because Playwright may be stuck.
+ */
+async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string): Promise<void> {
+  const httpBase = normalizeCdpHttpBaseForJsonEndpoints(cdpUrl);
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 2000);
+  let targets: any[];
+  try {
+    const res = await fetch(`${httpBase}/json/list`, { signal: ctrl.signal });
+    if (!res.ok) return;
+    targets = await res.json();
+  } catch { return; }
+  finally { clearTimeout(t); }
+
+  if (!Array.isArray(targets)) return;
+  const target = targets.find((entry: any) => String(entry?.id ?? '').trim() === targetId);
+  const wsUrl = String(target?.webSocketDebuggerUrl ?? '').trim();
+  if (!wsUrl) return;
+
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; clearTimeout(timer); try { ws.close(); } catch {} resolve(); };
+    const timer = setTimeout(finish, 2000);
+    let ws: WebSocket;
+    try { ws = new WebSocket(wsUrl); } catch { finish(); return; }
+    ws.onopen = () => {
+      try { ws.send(JSON.stringify({ id: 1, method: 'Runtime.terminateExecution' })); } catch {}
+      setTimeout(finish, 300);
+    };
+    ws.onerror = () => finish();
+    ws.onclose = () => finish();
+  });
+}
+
+/**
  * Force-disconnect a Playwright browser connection for a given CDP target.
- * Clears the connection cache, sends Runtime.terminateExecution via CDP
- * session to kill stuck evals, and closes the browser.
+ * Clears the connection cache, sends Runtime.terminateExecution via raw CDP
+ * websocket to kill stuck evals (bypassing Playwright), and closes the browser.
  */
 export async function forceDisconnectPlaywrightForTarget(opts: {
   cdpUrl: string;
@@ -305,26 +342,9 @@ export async function forceDisconnectPlaywrightForTarget(opts: {
   cached = null;
   connectingByUrl.delete(normalized);
 
-  // Attempt to terminate execution in the target page via CDP
   const targetId = opts.targetId?.trim() || '';
   if (targetId) {
-    try {
-      const pages = await getAllPages(cur.browser);
-      for (const page of pages) {
-        const tid = await pageTargetId(page).catch(() => null);
-        if (tid === targetId) {
-          const session = await page.context().newCDPSession(page);
-          try {
-            await session.send('Runtime.terminateExecution');
-          } finally {
-            await session.detach().catch(() => {});
-          }
-          break;
-        }
-      }
-    } catch {
-      // Best effort — don't block disconnect
-    }
+    await tryTerminateExecutionViaCdp(normalized, targetId).catch(() => {});
   }
 
   cur.browser.close().catch(() => {});
@@ -369,36 +389,37 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
     }
     if (tid && tid === targetId) return page;
   }
-  // Extension relays can block CDP attachment APIs entirely. If that happens and
-  // Playwright only exposes one page, return it as the best available mapping.
-  if (!resolvedViaCdp && pages.length === 1) {
-    return pages[0];
-  }
-
-  // Fallback: match by URL from /json/list
+  // Fallback: match by URL from /json/list (more accurate than single-page guess)
   if (cdpUrl) {
     try {
       const listUrl = `${normalizeCdpHttpBaseForJsonEndpoints(cdpUrl)}/json/list`;
       const headers: Record<string, string> = {};
       if (cached?.authToken) headers['Authorization'] = `Bearer ${cached.authToken}`;
-      const response = await fetch(listUrl, { headers });
-      if (response.ok) {
-        const targets = await response.json() as CdpTarget[];
-        const target = targets.find(t => t.id === targetId);
-        if (target) {
-          const urlMatch = pages.filter(p => p.url() === target.url);
-          if (urlMatch.length === 1) return urlMatch[0];
-          if (urlMatch.length > 1) {
-            const sameUrlTargets = targets.filter(t => t.url === target.url);
-            if (sameUrlTargets.length === urlMatch.length) {
-              const idx = sameUrlTargets.findIndex(t => t.id === targetId);
-              if (idx >= 0 && idx < urlMatch.length) return urlMatch[idx];
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 2000);
+      try {
+        const response = await fetch(listUrl, { headers, signal: ctrl.signal });
+        if (response.ok) {
+          const targets = await response.json() as CdpTarget[];
+          const target = targets.find(entry => entry.id === targetId);
+          if (target) {
+            const urlMatch = pages.filter(p => p.url() === target.url);
+            if (urlMatch.length === 1) return urlMatch[0];
+            if (urlMatch.length > 1) {
+              const sameUrlTargets = targets.filter(entry => entry.url === target.url);
+              if (sameUrlTargets.length === urlMatch.length) {
+                const idx = sameUrlTargets.findIndex(entry => entry.id === targetId);
+                if (idx >= 0 && idx < urlMatch.length) return urlMatch[idx];
+              }
             }
           }
         }
-      }
+      } finally { clearTimeout(t); }
     } catch {}
   }
+
+  // Last resort: if CDP sessions failed for all pages and there's only one, return it
+  if (!resolvedViaCdp && pages.length === 1) return pages[0];
   return null;
 }
 

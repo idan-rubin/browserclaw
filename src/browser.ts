@@ -151,6 +151,7 @@ export class CrawlPage {
       doubleClick: opts?.doubleClick,
       button: opts?.button,
       modifiers: opts?.modifiers,
+      delayMs: opts?.delayMs,
       timeoutMs: opts?.timeoutMs,
     });
   }

@@ -1,6 +1,8 @@
 import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget, normalizeTimeoutMs } from '../connection.js';
+import type { PageWithAI } from '../connection.js';
 import {
   buildRoleSnapshotFromAriaSnapshot,
+  buildRoleSnapshotFromAiSnapshot,
   getRoleSnapshotStats,
 } from './ref-map.js';
 import type { SnapshotResult, AriaSnapshotResult, AriaNode } from '../types.js';
@@ -8,6 +10,9 @@ import type { SnapshotResult, AriaSnapshotResult, AriaNode } from '../types.js';
 /**
  * Take a role-based snapshot using Playwright's ariaSnapshot().
  * This produces a tree with ref IDs that can be targeted by actions.
+ *
+ * When `refsMode === 'aria'`, uses Playwright's `_snapshotForAI()` instead
+ * and stores refs in aria mode (resolved via aria-ref locators).
  */
 export async function snapshotRole(opts: {
   cdpUrl: string;
@@ -26,6 +31,40 @@ export async function snapshotRole(opts: {
   ensurePageState(page);
 
   const sourceUrl = page.url();
+
+  // refs=aria sub-path: use _snapshotForAI instead of ariaSnapshot
+  if (opts.refsMode === 'aria') {
+    if (opts.selector?.trim() || opts.frameSelector?.trim()) {
+      throw new Error('refs=aria does not support selector/frame snapshots yet.');
+    }
+    const maybe = page as PageWithAI;
+    if (!maybe._snapshotForAI) {
+      throw new Error('refs=aria requires Playwright _snapshotForAI support.');
+    }
+    const result = await maybe._snapshotForAI({ timeout: 5000, track: 'response' });
+    const built = buildRoleSnapshotFromAiSnapshot(String(result?.full ?? ''), opts.options);
+
+    storeRoleRefsForTarget({
+      page,
+      cdpUrl: opts.cdpUrl,
+      targetId: opts.targetId,
+      refs: built.refs,
+      mode: 'aria',
+    });
+
+    return {
+      snapshot: built.snapshot,
+      refs: built.refs,
+      stats: getRoleSnapshotStats(built.snapshot, built.refs),
+      untrusted: true,
+      contentMeta: {
+        sourceUrl,
+        contentType: 'browser-snapshot',
+        capturedAt: new Date().toISOString(),
+      },
+    };
+  }
+
   const frameSelector = opts.frameSelector?.trim() || '';
   const selector = opts.selector?.trim() || '';
   const locator = frameSelector
@@ -45,7 +84,7 @@ export async function snapshotRole(opts: {
     targetId: opts.targetId,
     refs: built.refs,
     frameSelector: frameSelector || undefined,
-    mode: opts.refsMode ?? 'role',
+    mode: 'role',
   });
 
   return {

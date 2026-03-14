@@ -14,6 +14,15 @@ import type { FormField } from '../types.js';
 type MouseButton = 'left' | 'right' | 'middle';
 type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
 
+const MAX_CLICK_DELAY_MS = 5000;
+
+function resolveBoundedDelayMs(value: number | undefined, label: string, maxMs: number): number {
+  const normalized = Math.floor(value ?? 0);
+  if (!Number.isFinite(normalized) || normalized < 0) throw new Error(`${label} must be >= 0`);
+  if (normalized > maxMs) throw new Error(`${label} exceeds maximum of ${maxMs}ms`);
+  return normalized;
+}
+
 export async function clickViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
@@ -21,6 +30,7 @@ export async function clickViaPlaywright(opts: {
   doubleClick?: boolean;
   button?: MouseButton;
   modifiers?: KeyModifier[];
+  delayMs?: number;
   timeoutMs?: number;
 }): Promise<void> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
@@ -31,6 +41,11 @@ export async function clickViaPlaywright(opts: {
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 8000, 60000);
 
   try {
+    const delayMs = resolveBoundedDelayMs(opts.delayMs, 'click delayMs', MAX_CLICK_DELAY_MS);
+    if (delayMs > 0) {
+      await locator.hover({ timeout });
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
     if (opts.doubleClick) {
       await locator.dblclick({ timeout, button: opts.button, modifiers: opts.modifiers });
     } else {

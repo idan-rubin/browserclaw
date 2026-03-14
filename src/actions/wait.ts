@@ -1,5 +1,7 @@
 import { getPageForTargetId, ensurePageState, normalizeTimeoutMs } from '../connection.js';
 
+const MAX_WAIT_TIME_MS = 30000;
+
 export async function waitForViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
@@ -17,7 +19,8 @@ export async function waitForViaPlaywright(opts: {
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 20000);
 
   if (typeof opts.timeMs === 'number' && Number.isFinite(opts.timeMs)) {
-    await page.waitForTimeout(Math.max(0, opts.timeMs));
+    const bounded = Math.max(0, Math.min(MAX_WAIT_TIME_MS, Math.floor(opts.timeMs)));
+    await page.waitForTimeout(bounded);
   }
   if (opts.text) {
     await page.getByText(opts.text).first().waitFor({ state: 'visible', timeout });

@@ -33,7 +33,7 @@ export type BrowserNavigationRequestLike = {
 
 /** Build a BrowserNavigationPolicyOptions from an SsrfPolicy. */
 export function withBrowserNavigationPolicy(ssrfPolicy?: SsrfPolicy): BrowserNavigationPolicyOptions {
-  return { ssrfPolicy };
+  return ssrfPolicy ? { ssrfPolicy } : {};
 }
 
 // Only http: and https: are permitted for navigation; about:blank is the sole non-network exception.
@@ -171,6 +171,24 @@ function extractEmbeddedIpv4FromIpv6(v6: ipaddr.IPv6, opts?: IsPrivateIpOpts): b
     try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
   }
 
+  // SIIT/stateless translation prefix (::ffff:0:a.b.c.d) — rfc6145, parts[4]=0xffff, parts[0-3]=0, parts[5]=0
+  if (parts[0] === 0 && parts[1] === 0 && parts[2] === 0 && parts[3] === 0 && parts[4] === 0xffff && parts[5] === 0) {
+    const ip4str = `${(parts[6] >> 8) & 0xff}.${parts[6] & 0xff}.${(parts[7] >> 8) & 0xff}.${parts[7] & 0xff}`;
+    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
+  }
+
+  // IPv4-compatible address (deprecated ::a.b.c.d) — parts[0-5] all zero, embedded IPv4 in parts[6-7]
+  if (parts[0] === 0 && parts[1] === 0 && parts[2] === 0 && parts[3] === 0 && parts[4] === 0 && parts[5] === 0) {
+    const ip4str = `${(parts[6] >> 8) & 0xff}.${parts[6] & 0xff}.${(parts[7] >> 8) & 0xff}.${parts[7] & 0xff}`;
+    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
+  }
+
+  // ISATAP — embedded IPv4 in parts[6-7], sentinel in parts[4-5]: 0x0000:0x5efe or 0x0200:0x5efe
+  if ((parts[4] & 0xfdff) === 0 && parts[5] === 0x5efe) {
+    const ip4str = `${(parts[6] >> 8) & 0xff}.${parts[6] & 0xff}.${(parts[7] >> 8) & 0xff}.${parts[7] & 0xff}`;
+    try { return isBlockedSpecialUseIpv4Address(ipaddr.IPv4.parse(ip4str), opts); } catch { return true; }
+  }
+
   return null; // not a known transition format
 }
 
@@ -228,6 +246,38 @@ export function isInternalUrl(url: string, opts?: IsPrivateIpOpts): boolean {
   if (isPrivateIpAddress(hostname, opts)) return true;
 
   return false;
+}
+
+// ── Hostname allowlist with wildcard pattern support ──
+
+function normalizeHostnameSet(values?: string[]): Set<string> {
+  if (!values || values.length === 0) return new Set();
+  return new Set(values.map((v) => normalizeHostname(v)).filter(Boolean));
+}
+
+function normalizeHostnameAllowlist(values?: string[]): string[] {
+  if (!values || values.length === 0) return [];
+  return Array.from(
+    new Set(
+      values
+        .map((v) => normalizeHostname(v))
+        .filter((v) => v !== '*' && v !== '*.' && v.length > 0)
+    )
+  );
+}
+
+function isHostnameAllowedByPattern(hostname: string, pattern: string): boolean {
+  if (pattern.startsWith('*.')) {
+    const suffix = pattern.slice(2);
+    if (!suffix || hostname === suffix) return false;
+    return hostname.endsWith(`.${suffix}`);
+  }
+  return hostname === pattern;
+}
+
+function matchesHostnameAllowlist(hostname: string, allowlist: string[]): boolean {
+  if (allowlist.length === 0) return true; // empty allowlist = no restriction
+  return allowlist.some((pattern) => isHostnameAllowedByPattern(hostname, pattern));
 }
 
 // ── DNS pinning (prevents TOCTOU rebinding) ──
@@ -301,14 +351,17 @@ export async function resolvePinnedHostnameWithPolicy(hostname: string, params: 
   if (!normalized) throw new InvalidBrowserNavigationUrlError(`Invalid hostname: "${hostname}"`);
 
   const allowPrivateNetwork = isPrivateNetworkAllowedByPolicy(params.policy);
-
-  const allowedHostnames = [
-    ...(params.policy?.allowedHostnames ?? []),
-    ...(params.policy?.hostnameAllowlist ?? []),
-  ].map(h => normalizeHostname(h));
-
-  const isExplicitlyAllowed = allowedHostnames.some(h => h === normalized);
+  const allowedHostnames = normalizeHostnameSet(params.policy?.allowedHostnames);
+  const hostnameAllowlist = normalizeHostnameAllowlist(params.policy?.hostnameAllowlist);
+  const isExplicitlyAllowed = allowedHostnames.has(normalized);
   const skipPrivateNetworkChecks = allowPrivateNetwork || isExplicitlyAllowed;
+
+  // hostnameAllowlist is a restriction: if specified, hostname must match a pattern
+  if (!matchesHostnameAllowlist(normalized, hostnameAllowlist)) {
+    throw new InvalidBrowserNavigationUrlError(
+      `Navigation blocked: hostname "${hostname}" is not in the allowlist.`
+    );
+  }
 
   // Check hostname itself
   if (!skipPrivateNetworkChecks) {
@@ -398,13 +451,9 @@ export async function assertBrowserNavigationAllowed(opts: {
     );
   }
 
-  const policy = opts.ssrfPolicy;
-
-  if (policy?.dangerouslyAllowPrivateNetwork ?? policy?.allowPrivateNetwork ?? true) return;
-
   await resolvePinnedHostnameWithPolicy(parsed.hostname, {
     lookupFn: opts.lookupFn,
-    policy,
+    policy: opts.ssrfPolicy,
   });
 }
 
