@@ -438,6 +438,12 @@ npx tsx examples/basic.ts
 
 No need to install Playwright browsers — browserclaw uses your system's existing Chrome installation via CDP.
 
+## Try It Live — Or On Your Machine
+
+[browserclaw.org](https://browserclaw.org) is an open-source playground where you can type a prompt and watch an AI agent use browserclaw in a real browser — live. No setup, no API keys, just a text box and a browser stream.
+
+Want to run it yourself? The source is at [github.com/idan-rubin/browserclaw.org](https://github.com/idan-rubin/browserclaw.org) — spin it up with Docker or Node.js. Supports Groq, Gemini, and OpenAI out of the box.
+
 ## Contributing
 
 Contributions welcome! Please:
