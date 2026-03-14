@@ -81,6 +81,12 @@ When you're running the same multi-step workflow hundreds of times — filling f
 - **Reliability**: Ref-based targeting is deterministic. Same page state → same refs → same result. No coordinate guessing, no LLM re-interpretation.
 - **Simplicity**: No framework opinions, no agent loop, no hosted platform. Just `snapshot()` → read refs → act. Compose it into whatever agent architecture you want.
 
+## Try It Live — Or On Your Machine
+
+[browserclaw.org](https://browserclaw.org) is an open-source playground where you can type a prompt and watch an AI agent use browserclaw in a real browser — live. No setup, no API keys, just a text box and a browser stream.
+
+Want to run it yourself? The source is at [github.com/idan-rubin/browserclaw.org](https://github.com/idan-rubin/browserclaw.org) — spin it up with Docker or Node.js. Supports Groq, Gemini, and OpenAI out of the box.
+
 ## Install
 
 ```bash
@@ -437,12 +443,6 @@ npx tsx examples/basic.ts
 - **playwright-core** >= 1.50 (installed automatically as a dependency)
 
 No need to install Playwright browsers — browserclaw uses your system's existing Chrome installation via CDP.
-
-## Try It Live — Or On Your Machine
-
-[browserclaw.org](https://browserclaw.org) is an open-source playground where you can type a prompt and watch an AI agent use browserclaw in a real browser — live. No setup, no API keys, just a text box and a browser stream.
-
-Want to run it yourself? The source is at [github.com/idan-rubin/browserclaw.org](https://github.com/idan-rubin/browserclaw.org) — spin it up with Docker or Node.js. Supports Groq, Gemini, and OpenAI out of the box.
 
 ## Contributing
 
