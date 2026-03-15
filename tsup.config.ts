@@ -9,4 +9,5 @@ export default defineConfig({
   splitting: false,
   treeshake: true,
   outDir: 'dist',
+  noExternal: ['ipaddr.js'],
 });
