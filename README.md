@@ -1,6 +1,7 @@
 <h2 align="center">🦞 BrowserClaw — Standalone OpenClaw browser module</h2>
 
 <p align="center">
+  <a href="https://browserclaw.agent"><img src="https://img.shields.io/badge/Live-browserclaw.agent-orange" alt="Live" /></a>
   <a href="https://www.npmjs.com/package/browserclaw"><img src="https://img.shields.io/npm/v/browserclaw.svg" alt="npm version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
   <a href="https://www.npmjs.com/package/browserclaw"><img src="https://img.shields.io/npm/dw/browserclaw" alt="npm downloads" /></a>
@@ -83,9 +84,9 @@ When you're running the same multi-step workflow hundreds of times — filling f
 
 ## Try It Live — Or On Your Machine
 
-[browserclaw.org](https://browserclaw.org) is an open-source playground where you can type a prompt and watch an AI agent use browserclaw in a real browser — live. No setup, no API keys, just a text box and a browser stream.
+[browserclaw.agent](https://browserclaw.agent) is an open-source playground where you can type a prompt and watch an AI agent use browserclaw in a real browser — live. No setup, no API keys, just a text box and a browser stream.
 
-Want to run it yourself? The source is at [github.com/idan-rubin/browserclaw.org](https://github.com/idan-rubin/browserclaw.org) — spin it up with Docker or Node.js. Supports Groq, Gemini, and OpenAI out of the box.
+Want to run it yourself? The source is at [github.com/idan-rubin/browserclaw.agent](https://github.com/idan-rubin/browserclaw.agent) — spin it up with Docker or Node.js. Supports Groq, Gemini, OpenAI, and Anthropic out of the box.
 
 ## Install
 
