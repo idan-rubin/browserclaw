@@ -84,7 +84,7 @@ When you're running the same multi-step workflow hundreds of times — filling f
 
 ## Try It Live — Or On Your Machine
 
-[browserclaw.agent](https://browserclaw.agent) is an open-source playground where you can type a prompt and watch an AI agent use browserclaw in a real browser — live. No setup, no API keys, just a text box and a browser stream.
+[browserclaw.org](https://browserclaw.org) is an open-source playground where you can type a prompt and watch an AI agent use browserclaw in a real browser — live. No setup, no API keys, just a text box and a browser stream.
 
 Want to run it yourself? The source is at [github.com/idan-rubin/browserclaw.agent](https://github.com/idan-rubin/browserclaw.agent) — spin it up with Docker or Node.js. Supports Groq, Gemini, OpenAI, and Anthropic out of the box.
 
