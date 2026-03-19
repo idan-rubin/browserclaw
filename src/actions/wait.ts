@@ -47,6 +47,6 @@ export async function waitForViaPlaywright(opts: {
   }
   if (opts.fn) {
     const fn = String(opts.fn).trim();
-    if (fn) await page.waitForFunction(fn, undefined, { timeout });
+    if (fn) await page.waitForFunction(fn, { timeout });
   }
 }
