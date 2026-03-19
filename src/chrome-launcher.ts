@@ -351,8 +351,12 @@ function isWebSocketUrl(url: string): boolean {
   } catch { return false; }
 }
 
-function isLoopbackHost(hostname: string): boolean {
+export function isLoopbackHost(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
+}
+
+export function hasProxyEnvConfigured(): boolean {
+  return !!(process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.https_proxy);
 }
 
 /**
