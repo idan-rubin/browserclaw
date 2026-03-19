@@ -2,6 +2,7 @@ import { devices } from 'playwright-core';
 import {
   getPageForTargetId,
   ensurePageState,
+  withPageScopedCdpClient,
 } from '../connection.js';
 import type { ColorScheme } from '../types.js';
 
@@ -38,31 +39,33 @@ export async function setDeviceViaPlaywright(opts: {
     });
   }
 
-  const session = await page.context().newCDPSession(page);
-  try {
-    const locale = (device as any).locale as string | undefined;
-    if (device.userAgent || locale) {
-      await session.send('Emulation.setUserAgentOverride', {
-        userAgent: device.userAgent ?? '',
-        acceptLanguage: locale ?? undefined,
-      });
-    }
-    if (device.viewport) {
-      await session.send('Emulation.setDeviceMetricsOverride', {
-        mobile: Boolean(device.isMobile),
-        width: device.viewport.width,
-        height: device.viewport.height,
-        deviceScaleFactor: device.deviceScaleFactor ?? 1,
-        screenWidth: device.viewport.width,
-        screenHeight: device.viewport.height,
-      });
-    }
-    if (device.hasTouch) {
-      await session.send('Emulation.setTouchEmulationEnabled', { enabled: true });
-    }
-  } finally {
-    await session.detach().catch(() => {});
-  }
+  await withPageScopedCdpClient({
+    cdpUrl: opts.cdpUrl,
+    page,
+    targetId: opts.targetId,
+    fn: async (send) => {
+      const locale = (device as any).locale as string | undefined;
+      if (device.userAgent || locale) {
+        await send('Emulation.setUserAgentOverride', {
+          userAgent: device.userAgent ?? '',
+          acceptLanguage: locale ?? undefined,
+        });
+      }
+      if (device.viewport) {
+        await send('Emulation.setDeviceMetricsOverride', {
+          mobile: Boolean(device.isMobile),
+          width: device.viewport.width,
+          height: device.viewport.height,
+          deviceScaleFactor: device.deviceScaleFactor ?? 1,
+          screenWidth: device.viewport.width,
+          screenHeight: device.viewport.height,
+        });
+      }
+      if (device.hasTouch) {
+        await send('Emulation.setTouchEmulationEnabled', { enabled: true });
+      }
+    },
+  });
 }
 
 export async function setExtraHTTPHeadersViaPlaywright(opts: {
@@ -149,17 +152,19 @@ export async function setLocaleViaPlaywright(opts: {
   const locale = String(opts.locale ?? '').trim();
   if (!locale) throw new Error('locale is required');
 
-  const session = await page.context().newCDPSession(page);
-  try {
-    try {
-      await session.send('Emulation.setLocaleOverride', { locale });
-    } catch (err) {
-      if (String(err).includes('Another locale override is already in effect')) return;
-      throw err;
-    }
-  } finally {
-    await session.detach().catch(() => {});
-  }
+  await withPageScopedCdpClient({
+    cdpUrl: opts.cdpUrl,
+    page,
+    targetId: opts.targetId,
+    fn: async (send) => {
+      try {
+        await send('Emulation.setLocaleOverride', { locale });
+      } catch (err) {
+        if (String(err).includes('Another locale override is already in effect')) return;
+        throw err;
+      }
+    },
+  });
 }
 
 export async function setOfflineViaPlaywright(opts: {
@@ -183,17 +188,19 @@ export async function setTimezoneViaPlaywright(opts: {
   const timezoneId = String(opts.timezoneId ?? '').trim();
   if (!timezoneId) throw new Error('timezoneId is required');
 
-  const session = await page.context().newCDPSession(page);
-  try {
-    try {
-      await session.send('Emulation.setTimezoneOverride', { timezoneId });
-    } catch (err) {
-      const msg = String(err);
-      if (msg.includes('Timezone override is already in effect')) return;
-      if (msg.includes('Invalid timezone')) throw new Error(`Invalid timezone ID: ${timezoneId}`, { cause: err });
-      throw err;
-    }
-  } finally {
-    await session.detach().catch(() => {});
-  }
+  await withPageScopedCdpClient({
+    cdpUrl: opts.cdpUrl,
+    page,
+    targetId: opts.targetId,
+    fn: async (send) => {
+      try {
+        await send('Emulation.setTimezoneOverride', { timezoneId });
+      } catch (err) {
+        const msg = String(err);
+        if (msg.includes('Timezone override is already in effect')) return;
+        if (msg.includes('Invalid timezone')) throw new Error(`Invalid timezone ID: ${timezoneId}`, { cause: err });
+        throw err;
+      }
+    },
+  });
 }

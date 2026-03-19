@@ -4,6 +4,7 @@ import {
   restoreRoleRefsForTarget,
   refLocator,
 } from '../connection.js';
+import type { RoleRefs } from '../types.js';
 
 export async function takeScreenshotViaPlaywright(opts: {
   cdpUrl: string;
@@ -32,57 +33,115 @@ export async function takeScreenshotViaPlaywright(opts: {
 export async function screenshotWithLabelsViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
-  refs: string[];
+  refs: RoleRefs;
   maxLabels?: number;
   type?: 'png' | 'jpeg';
-}): Promise<{ buffer: Buffer; labels: Array<{ ref: string; index: number; box: { x: number; y: number; width: number; height: number } }>; skipped: string[] }> {
+}): Promise<{ buffer: Buffer; labels: number; skipped: number }> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
   restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
 
-  const maxLabels = opts.maxLabels ?? 50;
   const type = opts.type ?? 'png';
-  const refs = opts.refs.slice(0, maxLabels);
-  const skipped = opts.refs.slice(maxLabels);
+  const maxLabels = typeof opts.maxLabels === 'number' && Number.isFinite(opts.maxLabels)
+    ? Math.max(1, Math.floor(opts.maxLabels)) : 150;
 
-  const labels: Array<{ ref: string; index: number; box: { x: number; y: number; width: number; height: number } }> = [];
-  for (let i = 0; i < refs.length; i++) {
-    const ref = refs[i]!;
+  const viewport = await page.evaluate(() => ({
+    scrollX: window.scrollX || 0,
+    scrollY: window.scrollY || 0,
+    width: window.innerWidth || 0,
+    height: window.innerHeight || 0,
+  }));
+
+  const refIds = Object.keys(opts.refs ?? {});
+  const boxes: Array<{ ref: string; x: number; y: number; w: number; h: number }> = [];
+  let skipped = 0;
+
+  for (const ref of refIds) {
+    if (boxes.length >= maxLabels) {
+      skipped += 1;
+      continue;
+    }
     try {
-      const locator = refLocator(page, ref);
-      const box = await locator.boundingBox({ timeout: 2000 });
-      if (box) {
-        labels.push({ ref, index: i + 1, box });
-      } else {
-        skipped.push(ref);
+      const box = await refLocator(page, ref).boundingBox();
+      if (!box) {
+        skipped += 1;
+        continue;
       }
+      const x0 = box.x;
+      const y0 = box.y;
+      const x1 = box.x + box.width;
+      const y1 = box.y + box.height;
+      const vx0 = viewport.scrollX;
+      const vy0 = viewport.scrollY;
+      const vx1 = viewport.scrollX + viewport.width;
+      const vy1 = viewport.scrollY + viewport.height;
+      if (x1 < vx0 || x0 > vx1 || y1 < vy0 || y0 > vy1) {
+        skipped += 1;
+        continue;
+      }
+      boxes.push({
+        ref,
+        x: x0 - viewport.scrollX,
+        y: y0 - viewport.scrollY,
+        w: Math.max(1, box.width),
+        h: Math.max(1, box.height),
+      });
     } catch {
-      skipped.push(ref);
+      skipped += 1;
     }
   }
 
-  await page.evaluate((labelData: Array<{ index: number; box: { x: number; y: number; width: number; height: number } }>) => {
-    const container = document.createElement('div');
-    container.id = '__browserclaw_labels__';
-    container.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2147483647;';
-    for (const { index, box } of labelData) {
-      const border = document.createElement('div');
-      border.style.cssText = `position:absolute;left:${box.x}px;top:${box.y}px;width:${box.width}px;height:${box.height}px;border:2px solid #FF4500;box-sizing:border-box;`;
-      container.appendChild(border);
-      const badge = document.createElement('div');
-      badge.textContent = String(index);
-      badge.style.cssText = `position:absolute;left:${box.x}px;top:${Math.max(0, box.y - 18)}px;background:#FF4500;color:#fff;font:bold 12px/16px monospace;padding:0 4px;border-radius:2px;`;
-      container.appendChild(badge);
+  try {
+    if (boxes.length > 0) {
+      await page.evaluate((labels) => {
+        document.querySelectorAll('[data-openclaw-labels]').forEach((el) => el.remove());
+        const root = document.createElement('div');
+        root.setAttribute('data-openclaw-labels', '1');
+        root.style.position = 'fixed';
+        root.style.left = '0';
+        root.style.top = '0';
+        root.style.zIndex = '2147483647';
+        root.style.pointerEvents = 'none';
+        root.style.fontFamily = '"SF Mono","SFMono-Regular",Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace';
+        const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+        for (const label of labels) {
+          const box = document.createElement('div');
+          box.setAttribute('data-openclaw-labels', '1');
+          box.style.position = 'absolute';
+          box.style.left = `${label.x}px`;
+          box.style.top = `${label.y}px`;
+          box.style.width = `${label.w}px`;
+          box.style.height = `${label.h}px`;
+          box.style.border = '2px solid #ffb020';
+          box.style.boxSizing = 'border-box';
+          const tag = document.createElement('div');
+          tag.setAttribute('data-openclaw-labels', '1');
+          tag.textContent = label.ref;
+          tag.style.position = 'absolute';
+          tag.style.left = `${label.x}px`;
+          tag.style.top = `${clamp(label.y - 18, 0, 20000)}px`;
+          tag.style.background = '#ffb020';
+          tag.style.color = '#1a1a1a';
+          tag.style.fontSize = '12px';
+          tag.style.lineHeight = '14px';
+          tag.style.padding = '1px 4px';
+          tag.style.borderRadius = '3px';
+          tag.style.boxShadow = '0 1px 2px rgba(0,0,0,0.35)';
+          tag.style.whiteSpace = 'nowrap';
+          root.appendChild(box);
+          root.appendChild(tag);
+        }
+        document.documentElement.appendChild(root);
+      }, boxes);
     }
-    document.body.appendChild(container);
-  }, labels.map(l => ({ index: l.index, box: l.box })));
-
-  const buffer = await page.screenshot({ type });
-
-  await page.evaluate(() => {
-    const el = document.getElementById('__browserclaw_labels__');
-    if (el) el.remove();
-  }).catch(() => {});
-
-  return { buffer, labels, skipped };
+    return {
+      buffer: await page.screenshot({ type }),
+      labels: boxes.length,
+      skipped,
+    };
+  } finally {
+    await page.evaluate(() => {
+      document.querySelectorAll('[data-openclaw-labels]').forEach((el) => el.remove());
+    }).catch(() => {});
+  }
 }

@@ -3,6 +3,8 @@ import { connectBrowser, disconnectBrowser, getPageForTargetId, ensurePageState,
 import { snapshotAi } from './snapshot/ai-snapshot.js';
 import { snapshotRole, snapshotAria } from './snapshot/aria-snapshot.js';
 import { clickViaPlaywright, hoverViaPlaywright, typeViaPlaywright, selectOptionViaPlaywright, dragViaPlaywright, fillFormViaPlaywright, scrollIntoViewViaPlaywright, highlightViaPlaywright, setInputFilesViaPlaywright, armDialogViaPlaywright, armFileUploadViaPlaywright } from './actions/interaction.js';
+import { batchViaPlaywright } from './actions/batch.js';
+import type { BatchAction, BatchActionResult } from './actions/batch.js';
 import { pressKeyViaPlaywright } from './actions/keyboard.js';
 import { navigateViaPlaywright, listPagesViaPlaywright, createPageViaPlaywright, closePageByTargetIdViaPlaywright, focusPageByTargetIdViaPlaywright, resizeViewportViaPlaywright } from './actions/navigation.js';
 import { waitForViaPlaywright } from './actions/wait.js';
@@ -353,6 +355,23 @@ export class CrawlPage {
     });
   }
 
+  /**
+   * Execute multiple browser actions in sequence.
+   *
+   * @param actions - Array of actions to execute
+   * @param opts - Options (stopOnError: stop on first failure, default true)
+   * @returns Array of per-action results
+   */
+  async batch(actions: BatchAction[], opts?: { stopOnError?: boolean; evaluateEnabled?: boolean }): Promise<{ results: BatchActionResult[] }> {
+    return batchViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this.targetId,
+      actions,
+      stopOnError: opts?.stopOnError,
+      evaluateEnabled: opts?.evaluateEnabled,
+    });
+  }
+
   // ── Keyboard ─────────────────────────────────────────────────
 
   /**
@@ -583,13 +602,16 @@ export class CrawlPage {
    */
   async screenshotWithLabels(refs: string[], opts?: { maxLabels?: number; type?: 'png' | 'jpeg' }): Promise<{
     buffer: Buffer;
-    labels: Array<{ ref: string; index: number; box: { x: number; y: number; width: number; height: number } }>;
-    skipped: string[];
+    labels: number;
+    skipped: number;
   }> {
+    // Convert string[] to RoleRefs map for the underlying implementation
+    const refsMap: Record<string, { role: string }> = {};
+    for (const ref of refs) refsMap[ref] = { role: 'generic' };
     return screenshotWithLabelsViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this.targetId,
-      refs,
+      refs: refsMap,
       maxLabels: opts?.maxLabels,
       type: opts?.type,
     });

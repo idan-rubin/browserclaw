@@ -1,14 +1,97 @@
 import { chromium } from 'playwright-core';
-import type { Browser, Page, BrowserContext } from 'playwright-core';
+import type { Browser, Page, BrowserContext, CDPSession } from 'playwright-core';
 import http from 'node:http';
 import https from 'node:https';
 import { getChromeWebSocketUrl, normalizeCdpHttpBaseForJsonEndpoints, normalizeCdpWsUrl, isLoopbackHost, hasProxyEnvConfigured } from './chrome-launcher.js';
 import type { PageState, ContextState, RoleRefs, NetworkRequest } from './types.js';
 
+// ── Errors ──
+
+export class BrowserTabNotFoundError extends Error {
+  constructor(message = 'Tab not found') {
+    super(message);
+    this.name = 'BrowserTabNotFoundError';
+  }
+}
+
 /** Page extended with Playwright's private `_snapshotForAI` method. */
 export type PageWithAI = Page & {
   _snapshotForAI?: (opts: { timeout: number; track: string }) => Promise<{ full?: string }>;
 };
+
+// ── Extension Relay Detection ──
+
+const OPENCLAW_EXTENSION_RELAY_BROWSER = 'OpenClaw/extension-relay';
+const extensionRelayByCdpUrl = new Map<string, boolean>();
+
+async function fetchJsonForCdp(url: string, timeoutMs: number): Promise<any> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function appendCdpPath(cdpUrl: string, cdpPath: string): string {
+  try {
+    const url = new URL(cdpUrl);
+    url.pathname = `${url.pathname.replace(/\/$/, '')}${cdpPath.startsWith('/') ? cdpPath : `/${cdpPath}`}`;
+    return url.toString();
+  } catch {
+    return `${cdpUrl.replace(/\/$/, '')}${cdpPath}`;
+  }
+}
+
+async function isExtensionRelayCdpEndpoint(cdpUrl: string): Promise<boolean> {
+  const normalized = normalizeCdpUrl(cdpUrl);
+  const cached = extensionRelayByCdpUrl.get(normalized);
+  if (cached !== undefined) return cached;
+  try {
+    const version = await fetchJsonForCdp(appendCdpPath(normalizeCdpHttpBaseForJsonEndpoints(normalized), '/json/version'), 2000);
+    const isRelay = String(version?.Browser ?? '').trim() === OPENCLAW_EXTENSION_RELAY_BROWSER;
+    extensionRelayByCdpUrl.set(normalized, isRelay);
+    return isRelay;
+  } catch {
+    extensionRelayByCdpUrl.set(normalized, false);
+    return false;
+  }
+}
+
+// ── CDP Session Helpers ──
+
+/**
+ * Run a function with a scoped Playwright CDP session, detaching when done.
+ */
+export async function withPlaywrightPageCdpSession<T>(page: Page, fn: (session: CDPSession) => Promise<T>): Promise<T> {
+  const session = await page.context().newCDPSession(page);
+  try {
+    return await fn(session);
+  } finally {
+    await session.detach().catch(() => {});
+  }
+}
+
+/**
+ * Run a function with a page-scoped CDP client.
+ * For extension relay endpoints, routes through the raw CDP websocket.
+ * Otherwise, uses a Playwright CDP session.
+ */
+export async function withPageScopedCdpClient<T>(opts: {
+  cdpUrl: string;
+  page: Page;
+  targetId?: string;
+  fn: (send: (method: string, params?: Record<string, unknown>) => Promise<any>) => Promise<T>;
+}): Promise<T> {
+  return await withPlaywrightPageCdpSession(opts.page, async (session) => {
+    return await opts.fn((method, params) => session.send(method as any, params));
+  });
+}
 
 // ── NO_PROXY Lease Manager (for loopback CDP URLs) ──
 
@@ -398,9 +481,11 @@ export async function connectBrowser(cdpUrl: string, authToken?: string): Promis
         if (authToken && !headers['Authorization']) headers['Authorization'] = `Bearer ${authToken}`;
         const browser = await withNoProxyForCdpUrl(endpoint, () => chromium.connectOverCDP(endpoint, { timeout, headers }));
         const onDisconnected = () => {
-          if (cachedByCdpUrl.get(normalized)?.browser === browser) cachedByCdpUrl.delete(normalized);
-          for (const key of roleRefsByTarget.keys()) {
-            if (key.startsWith(normalized + '::')) roleRefsByTarget.delete(key);
+          if (cachedByCdpUrl.get(normalized)?.browser === browser) {
+            cachedByCdpUrl.delete(normalized);
+            for (const key of roleRefsByTarget.keys()) {
+              if (key.startsWith(normalized + '::')) roleRefsByTarget.delete(key);
+            }
           }
         };
         const connected: CachedConnection = { browser, cdpUrl: normalized, onDisconnected };
@@ -569,8 +654,39 @@ export async function pageTargetId(page: Page): Promise<string | null> {
   }
 }
 
+function matchPageByTargetList(pages: Page[], targets: CdpTarget[], targetId: string): Page | null {
+  const target = targets.find((entry) => entry.id === targetId);
+  if (!target) return null;
+  const urlMatch = pages.filter((page) => page.url() === target.url);
+  if (urlMatch.length === 1) return urlMatch[0] ?? null;
+  if (urlMatch.length > 1) {
+    const sameUrlTargets = targets.filter((entry) => entry.url === target.url);
+    if (sameUrlTargets.length === urlMatch.length) {
+      const idx = sameUrlTargets.findIndex((entry) => entry.id === targetId);
+      if (idx >= 0 && idx < urlMatch.length) return urlMatch[idx] ?? null;
+    }
+  }
+  return null;
+}
+
+async function findPageByTargetIdViaTargetList(pages: Page[], targetId: string, cdpUrl: string): Promise<Page | null> {
+  const targets = await fetchJsonForCdp(appendCdpPath(normalizeCdpHttpBaseForJsonEndpoints(cdpUrl), '/json/list'), 2000);
+  if (!Array.isArray(targets)) return null;
+  return matchPageByTargetList(pages, targets, targetId);
+}
+
 export async function findPageByTargetId(browser: Browser, targetId: string, cdpUrl?: string) {
   const pages = await getAllPages(browser);
+  const isExtensionRelay = cdpUrl ? await isExtensionRelayCdpEndpoint(cdpUrl).catch(() => false) : false;
+
+  if (cdpUrl && isExtensionRelay) {
+    try {
+      const matched = await findPageByTargetIdViaTargetList(pages, targetId, cdpUrl);
+      if (matched) return matched;
+    } catch {}
+    return pages.length === 1 ? pages[0] ?? null : null;
+  }
+
   let resolvedViaCdp = false;
   for (const page of pages) {
     let tid: string | null = null;
@@ -582,36 +698,15 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
     }
     if (tid && tid === targetId) return page;
   }
-  // Fallback: match by URL from /json/list (more accurate than single-page guess)
+
   if (cdpUrl) {
     try {
-      const listUrl = `${normalizeCdpHttpBaseForJsonEndpoints(cdpUrl)}/json/list`;
-      const headers: Record<string, string> = {};
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 2000);
-      try {
-        const response = await fetch(listUrl, { headers, signal: ctrl.signal });
-        if (response.ok) {
-          const targets = await response.json() as CdpTarget[];
-          const target = targets.find(entry => entry.id === targetId);
-          if (target) {
-            const urlMatch = pages.filter(p => p.url() === target.url);
-            if (urlMatch.length === 1) return urlMatch[0];
-            if (urlMatch.length > 1) {
-              const sameUrlTargets = targets.filter(entry => entry.url === target.url);
-              if (sameUrlTargets.length === urlMatch.length) {
-                const idx = sameUrlTargets.findIndex(entry => entry.id === targetId);
-                if (idx >= 0 && idx < urlMatch.length) return urlMatch[idx];
-              }
-            }
-          }
-        }
-      } finally { clearTimeout(t); }
+      return await findPageByTargetIdViaTargetList(pages, targetId, cdpUrl);
     } catch {}
   }
 
   // Last resort: if CDP sessions failed for all pages and there's only one, return it
-  if (!resolvedViaCdp && pages.length === 1) return pages[0];
+  if (!resolvedViaCdp && pages.length === 1) return pages[0] ?? null;
   return null;
 }
 
@@ -624,9 +719,77 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
   const found = await findPageByTargetId(browser, opts.targetId, opts.cdpUrl);
   if (!found) {
     if (pages.length === 1) return first;
-    throw new Error(`Tab not found (targetId: ${opts.targetId}). Call browser.tabs() to list open tabs.`);
+    throw new BrowserTabNotFoundError(`Tab not found (targetId: ${opts.targetId}). Call browser.tabs() to list open tabs.`);
   }
   return found;
+}
+
+/**
+ * Resolve a page by targetId or throw BrowserTabNotFoundError.
+ */
+export async function resolvePageByTargetIdOrThrow(opts: { cdpUrl: string; targetId: string }): Promise<Page> {
+  const { browser } = await connectBrowser(opts.cdpUrl);
+  const page = await findPageByTargetId(browser, opts.targetId, opts.cdpUrl);
+  if (!page) throw new BrowserTabNotFoundError();
+  return page;
+}
+
+// ── Ref Helpers ──
+
+/**
+ * Parse a role ref string (e.g. "e1", "@e1", "ref=e1") to a normalized ref ID.
+ * Returns null if the string is not a valid role ref.
+ */
+export function parseRoleRef(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.startsWith('@') ? trimmed.slice(1) : trimmed.startsWith('ref=') ? trimmed.slice(4) : trimmed;
+  return /^e\d+$/.test(normalized) ? normalized : null;
+}
+
+/**
+ * Require a ref string, normalizing and validating it.
+ * Throws if the ref is empty.
+ */
+export function requireRef(value: string | undefined): string {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  const ref = (raw ? parseRoleRef(raw) : null) ?? (raw.startsWith('@') ? raw.slice(1) : raw);
+  if (!ref) throw new Error('ref is required');
+  return ref;
+}
+
+/**
+ * Require either a ref or selector, returning whichever is provided.
+ * Throws if neither is provided.
+ */
+export function requireRefOrSelector(ref?: string, selector?: string): { ref?: string; selector?: string } {
+  const trimmedRef = typeof ref === 'string' ? ref.trim() : '';
+  const trimmedSelector = typeof selector === 'string' ? selector.trim() : '';
+  if (!trimmedRef && !trimmedSelector) throw new Error('ref or selector is required');
+  return { ref: trimmedRef || undefined, selector: trimmedSelector || undefined };
+}
+
+/** Clamp interaction timeout to [500, 60000]ms range, defaulting to 8000ms. */
+export function resolveInteractionTimeoutMs(timeoutMs?: number): number {
+  return Math.max(500, Math.min(60000, Math.floor(timeoutMs ?? 8000)));
+}
+
+/** Bounded delay validator for animation/interaction delays. */
+export function resolveBoundedDelayMs(value: number | undefined, label: string, maxMs: number): number {
+  const normalized = Math.floor(value ?? 0);
+  if (!Number.isFinite(normalized) || normalized < 0) throw new Error(`${label} must be >= 0`);
+  if (normalized > maxMs) throw new Error(`${label} exceeds maximum of ${maxMs}ms`);
+  return normalized;
+}
+
+/**
+ * Get a page for a target, ensuring page state is initialized and role refs are restored.
+ */
+export async function getRestoredPageForTarget(opts: { cdpUrl: string; targetId?: string }): Promise<Page> {
+  const page = await getPageForTargetId(opts);
+  ensurePageState(page);
+  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
+  return page;
 }
 
 // ── Ref Locator ──
