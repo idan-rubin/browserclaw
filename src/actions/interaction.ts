@@ -1,15 +1,18 @@
-import type { Page } from 'playwright-core';
 import {
   getPageForTargetId,
   ensurePageState,
-  restoreRoleRefsForTarget,
   refLocator,
   toAIFriendlyError,
   normalizeTimeoutMs,
   bumpUploadArmId,
   bumpDialogArmId,
+  requireRef,
+  requireRefOrSelector,
+  resolveInteractionTimeoutMs,
+  resolveBoundedDelayMs,
+  getRestoredPageForTarget,
 } from '../connection.js';
-import { assertSafeUploadPaths } from '../security.js';
+import { resolveStrictExistingUploadPaths } from '../security.js';
 import type { FormField } from '../types.js';
 
 type MouseButton = 'left' | 'right' | 'middle';
@@ -17,33 +20,8 @@ type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
 
 const MAX_CLICK_DELAY_MS = 5000;
 
-function resolveBoundedDelayMs(value: number | undefined, label: string, maxMs: number): number {
-  const normalized = Math.floor(value ?? 0);
-  if (!Number.isFinite(normalized) || normalized < 0) throw new Error(`${label} must be >= 0`);
-  if (normalized > maxMs) throw new Error(`${label} exceeds maximum of ${maxMs}ms`);
-  return normalized;
-}
-
-function resolveInteractionTimeoutMs(timeoutMs?: number): number {
-  return Math.max(500, Math.min(60000, Math.floor(timeoutMs ?? 8000)));
-}
-
-function requireRefOrSelector(ref?: string, selector?: string): { ref?: string; selector?: string } {
-  const trimmedRef = typeof ref === 'string' ? ref.trim() : '';
-  const trimmedSelector = typeof selector === 'string' ? selector.trim() : '';
-  if (!trimmedRef && !trimmedSelector) throw new Error('ref or selector is required');
-  return { ref: trimmedRef || undefined, selector: trimmedSelector || undefined };
-}
-
-function resolveLocator(page: Page, resolved: { ref?: string; selector?: string }) {
+function resolveLocator(page: import('playwright-core').Page, resolved: { ref?: string; selector?: string }) {
   return resolved.ref ? refLocator(page, resolved.ref) : page.locator(resolved.selector!);
-}
-
-async function getRestoredPageForTarget(opts: { cdpUrl: string; targetId?: string }): Promise<Page> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
-  return page;
 }
 
 export async function clickViaPlaywright(opts: {
@@ -118,7 +96,7 @@ export async function typeViaPlaywright(opts: {
   try {
     if (opts.slowly) {
       await locator.click({ timeout });
-      await locator.pressSequentially(text, { timeout, delay: 75 });
+      await locator.type(text, { timeout, delay: 75 });
     } else {
       await locator.fill(text, { timeout });
     }
@@ -236,11 +214,12 @@ export async function highlightViaPlaywright(opts: {
   ref: string;
 }): Promise<void> {
   const page = await getRestoredPageForTarget(opts);
+  const ref = requireRef(opts.ref);
 
   try {
-    await refLocator(page, opts.ref).highlight();
+    await refLocator(page, ref).highlight();
   } catch (err) {
-    throw toAIFriendlyError(err, opts.ref);
+    throw toAIFriendlyError(err, ref);
   }
 }
 
@@ -264,10 +243,15 @@ export async function setInputFilesViaPlaywright(opts: {
     ? refLocator(page, inputRef)
     : page.locator(element).first();
 
-  await assertSafeUploadPaths(opts.paths);
+  const uploadPathsResult = await resolveStrictExistingUploadPaths({
+    requestedPaths: opts.paths,
+    scopeLabel: 'uploads directory',
+  });
+  if (!uploadPathsResult.ok) throw new Error(uploadPathsResult.error);
+  const resolvedPaths = uploadPathsResult.paths;
 
   try {
-    await locator.setInputFiles(opts.paths);
+    await locator.setInputFiles(resolvedPaths);
   } catch (err) {
     throw toAIFriendlyError(err, inputRef || element);
   }
@@ -325,13 +309,16 @@ export async function armFileUploadViaPlaywright(opts: {
       return;
     }
 
-    try {
-      await assertSafeUploadPaths(opts.paths);
-    } catch {
+    const uploadPathsResult = await resolveStrictExistingUploadPaths({
+      requestedPaths: opts.paths,
+      scopeLabel: 'uploads directory',
+    });
+    if (!uploadPathsResult.ok) {
       try { await page.keyboard.press('Escape'); } catch {}
       return;
     }
-    await fileChooser.setFiles(opts.paths);
+
+    await fileChooser.setFiles(uploadPathsResult.paths);
 
     try {
       const input = typeof fileChooser.element === 'function' ? await Promise.resolve(fileChooser.element()) : null;

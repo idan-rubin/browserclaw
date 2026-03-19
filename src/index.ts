@@ -11,10 +11,27 @@ export {
   createPinnedLookup,
   resolvePinnedHostnameWithPolicy,
   writeViaSiblingTempPath,
+  assertSafeUploadPaths,
+  resolveStrictExistingUploadPaths,
 } from './security.js';
 export type { BrowserNavigationPolicyOptions, BrowserNavigationRequestLike, LookupFn } from './security.js';
-export { ensureContextState, forceDisconnectPlaywrightForTarget } from './connection.js';
+export {
+  ensureContextState,
+  forceDisconnectPlaywrightForTarget,
+  withPlaywrightPageCdpSession,
+  withPageScopedCdpClient,
+  resolvePageByTargetIdOrThrow,
+  requireRef,
+  requireRefOrSelector,
+  resolveInteractionTimeoutMs,
+  resolveBoundedDelayMs,
+  getRestoredPageForTarget,
+  parseRoleRef,
+  BrowserTabNotFoundError,
+} from './connection.js';
 export type { FrameEvalResult } from './actions/evaluate.js';
+export { batchViaPlaywright, executeSingleAction } from './actions/batch.js';
+export type { BatchAction, BatchActionResult } from './actions/batch.js';
 export type {
   SsrfPolicy,
   LaunchOptions,

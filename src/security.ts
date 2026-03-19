@@ -562,6 +562,22 @@ export async function assertSafeUploadPaths(paths: string[]): Promise<void> {
   }
 }
 
+/**
+ * Resolve and validate upload file paths, returning them if all are safe.
+ * Returns `{ ok: true, paths }` or `{ ok: false, error }`.
+ */
+export async function resolveStrictExistingUploadPaths(params: {
+  requestedPaths: string[];
+  scopeLabel?: string;
+}): Promise<{ ok: true; paths: string[] } | { ok: false; error: string }> {
+  try {
+    await assertSafeUploadPaths(params.requestedPaths);
+    return { ok: true, paths: params.requestedPaths };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 // ── Atomic file write utilities ──
 
 /**

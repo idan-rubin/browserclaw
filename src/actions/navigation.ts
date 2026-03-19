@@ -1,4 +1,4 @@
-import { connectBrowser, getPageForTargetId, ensurePageState, ensureContextState, pageTargetId, findPageByTargetId, getAllPages, normalizeTimeoutMs, forceDisconnectPlaywrightForTarget } from '../connection.js';
+import { connectBrowser, getPageForTargetId, ensurePageState, ensureContextState, pageTargetId, findPageByTargetId, getAllPages, normalizeTimeoutMs, forceDisconnectPlaywrightForTarget, resolvePageByTargetIdOrThrow, withPageScopedCdpClient } from '../connection.js';
 import { assertBrowserNavigationAllowed, assertBrowserNavigationResultAllowed, assertBrowserNavigationRedirectChainAllowed, withBrowserNavigationPolicy } from '../security.js';
 import type { BrowserTab, SsrfPolicy } from '../types.js';
 
@@ -71,22 +71,25 @@ export async function createPageViaPlaywright(opts: {
   /** @deprecated Use ssrfPolicy: { dangerouslyAllowPrivateNetwork: true } instead */
   allowInternal?: boolean;
 }): Promise<BrowserTab> {
-  const targetUrl = (opts.url ?? '').trim() || 'about:blank';
-  const policy = opts.allowInternal ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
-  if (targetUrl !== 'about:blank') {
-    await assertBrowserNavigationAllowed({ url: targetUrl, ssrfPolicy: policy });
-  }
   const { browser } = await connectBrowser(opts.cdpUrl);
   const context = browser.contexts()[0] ?? await browser.newContext();
   ensureContextState(context);
   const page = await context.newPage();
   ensurePageState(page);
+
+  const targetUrl = (opts.url ?? '').trim() || 'about:blank';
+  const policy = opts.allowInternal ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
+
   if (targetUrl !== 'about:blank') {
     const navigationPolicy = withBrowserNavigationPolicy(policy);
-    const response = await page.goto(targetUrl, { timeout: 30000 }).catch(() => null);
-    await assertBrowserNavigationRedirectChainAllowed({ request: response?.request(), ...navigationPolicy });
-    await assertBrowserNavigationResultAllowed({ url: page.url(), ssrfPolicy: policy });
+    await assertBrowserNavigationAllowed({ url: targetUrl, ...navigationPolicy });
+    await assertBrowserNavigationRedirectChainAllowed({
+      request: (await page.goto(targetUrl, { timeout: 30000 }).catch(() => null))?.request(),
+      ...navigationPolicy,
+    });
+    await assertBrowserNavigationResultAllowed({ url: page.url(), ...navigationPolicy });
   }
+
   const tid = await pageTargetId(page).catch(() => null);
   if (!tid) throw new Error('Failed to get targetId for new page');
   return {
@@ -110,29 +113,29 @@ export async function closePageByTargetIdViaPlaywright(opts: {
   cdpUrl: string;
   targetId: string;
 }): Promise<void> {
-  const { browser } = await connectBrowser(opts.cdpUrl);
-  const page = await findPageByTargetId(browser, opts.targetId, opts.cdpUrl);
-  if (!page) throw new Error(`Tab not found (targetId: ${opts.targetId}). Use browser.tabs() to list open tabs.`);
-  await page.close();
+  await (await resolvePageByTargetIdOrThrow(opts)).close();
 }
 
 export async function focusPageByTargetIdViaPlaywright(opts: {
   cdpUrl: string;
   targetId: string;
 }): Promise<void> {
-  const { browser } = await connectBrowser(opts.cdpUrl);
-  const page = await findPageByTargetId(browser, opts.targetId, opts.cdpUrl);
-  if (!page) throw new Error(`Tab not found (targetId: ${opts.targetId}). Use browser.tabs() to list open tabs.`);
+  const page = await resolvePageByTargetIdOrThrow(opts);
   try {
     await page.bringToFront();
   } catch (err) {
-    const session = await page.context().newCDPSession(page);
     try {
-      await session.send('Page.bringToFront');
+      await withPageScopedCdpClient({
+        cdpUrl: opts.cdpUrl,
+        page,
+        targetId: opts.targetId,
+        fn: async (send) => {
+          await send('Page.bringToFront');
+        },
+      });
+      return;
     } catch {
       throw err;
-    } finally {
-      await session.detach().catch(() => {});
     }
   }
 }

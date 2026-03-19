@@ -1,4 +1,4 @@
-import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget, normalizeTimeoutMs } from '../connection.js';
+import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget, normalizeTimeoutMs, withPlaywrightPageCdpSession } from '../connection.js';
 import type { PageWithAI } from '../connection.js';
 import {
   buildRoleSnapshotFromAriaSnapshot,
@@ -125,22 +125,20 @@ export async function snapshotAria(opts: {
 
   const sourceUrl = page.url();
 
-  const session = await page.context().newCDPSession(page);
-  try {
-    await session.send('Accessibility.enable').catch(() => {});
-    const res = await session.send('Accessibility.getFullAXTree') as { nodes?: CdpAXNode[] };
-    return {
-      nodes: formatAriaNodes(Array.isArray(res?.nodes) ? res.nodes : [], limit),
-      untrusted: true,
-      contentMeta: {
-        sourceUrl,
-        contentType: 'browser-aria-tree',
-        capturedAt: new Date().toISOString(),
-      },
-    };
-  } finally {
-    await session.detach().catch(() => {});
-  }
+  const res = await withPlaywrightPageCdpSession(page, async (session) => {
+    await session.send('Accessibility.enable' as any).catch(() => {});
+    return await session.send('Accessibility.getFullAXTree' as any) as { nodes?: CdpAXNode[] };
+  });
+
+  return {
+    nodes: formatAriaNodes(Array.isArray(res?.nodes) ? res.nodes : [], limit),
+    untrusted: true,
+    contentMeta: {
+      sourceUrl,
+      contentType: 'browser-aria-tree',
+      capturedAt: new Date().toISOString(),
+    },
+  };
 }
 
 function axValue(v: { value?: string | number | boolean } | undefined): string {
