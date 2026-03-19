@@ -1,17 +1,135 @@
 import { chromium } from 'playwright-core';
 import type { Browser, Page, BrowserContext } from 'playwright-core';
-import { getChromeWebSocketUrl, normalizeCdpHttpBaseForJsonEndpoints, normalizeCdpWsUrl } from './chrome-launcher.js';
-import type { PageState, ContextState, RoleRefs } from './types.js';
+import http from 'node:http';
+import https from 'node:https';
+import { getChromeWebSocketUrl, normalizeCdpHttpBaseForJsonEndpoints, normalizeCdpWsUrl, isLoopbackHost, hasProxyEnvConfigured } from './chrome-launcher.js';
+import type { PageState, ContextState, RoleRefs, NetworkRequest } from './types.js';
 
 /** Page extended with Playwright's private `_snapshotForAI` method. */
 export type PageWithAI = Page & {
   _snapshotForAI?: (opts: { timeout: number; track: string }) => Promise<{ full?: string }>;
 };
 
+// ── NO_PROXY Lease Manager (for loopback CDP URLs) ──
+
+const LOOPBACK_ENTRIES = 'localhost,127.0.0.1,[::1]';
+
+function noProxyAlreadyCoversLocalhost(): boolean {
+  const current = process.env.NO_PROXY || process.env.no_proxy || '';
+  return current.includes('localhost') && current.includes('127.0.0.1') && current.includes('[::1]');
+}
+
+function isLoopbackCdpUrl(url: string): boolean {
+  try {
+    return isLoopbackHost(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+class NoProxyLeaseManager {
+  private leaseCount = 0;
+  private snapshot: { noProxy?: string; noProxyLower?: string; applied: string } | null = null;
+
+  acquire(url: string): (() => void) | null {
+    if (!isLoopbackCdpUrl(url) || !hasProxyEnvConfigured()) return null;
+    if (this.leaseCount === 0 && !noProxyAlreadyCoversLocalhost()) {
+      const noProxy = process.env.NO_PROXY;
+      const noProxyLower = process.env.no_proxy;
+      const current = noProxy || noProxyLower || '';
+      const applied = current ? `${current},${LOOPBACK_ENTRIES}` : LOOPBACK_ENTRIES;
+      process.env.NO_PROXY = applied;
+      process.env.no_proxy = applied;
+      this.snapshot = { noProxy, noProxyLower, applied };
+    }
+    this.leaseCount += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.release();
+    };
+  }
+
+  release(): void {
+    if (this.leaseCount <= 0) return;
+    this.leaseCount -= 1;
+    if (this.leaseCount > 0 || !this.snapshot) return;
+    const { noProxy, noProxyLower, applied } = this.snapshot;
+    const currentNoProxy = process.env.NO_PROXY;
+    const currentNoProxyLower = process.env.no_proxy;
+    if (currentNoProxy === applied && (currentNoProxyLower === applied || currentNoProxyLower === undefined)) {
+      if (noProxy !== undefined) process.env.NO_PROXY = noProxy;
+      else delete process.env.NO_PROXY;
+      if (noProxyLower !== undefined) process.env.no_proxy = noProxyLower;
+      else delete process.env.no_proxy;
+    }
+    this.snapshot = null;
+  }
+}
+
+const noProxyLeaseManager = new NoProxyLeaseManager();
+
+/**
+ * Scoped NO_PROXY bypass for loopback CDP URLs.
+ * This wrapper only mutates env vars for loopback destinations.
+ */
+export async function withNoProxyForCdpUrl<T>(url: string, fn: () => Promise<T>): Promise<T> {
+  const release = noProxyLeaseManager.acquire(url);
+  try {
+    return await fn();
+  } finally {
+    release?.();
+  }
+}
+
+/** HTTP agent that never uses a proxy — for localhost CDP connections. */
+const directHttpAgent = new http.Agent();
+const directHttpsAgent = new https.Agent();
+
+/**
+ * Returns a plain (non-proxy) agent for WebSocket or HTTP connections
+ * when the target is a loopback address. Returns `undefined` otherwise.
+ */
+export function getDirectAgentForCdp(url: string): http.Agent | https.Agent | undefined {
+  try {
+    const parsed = new URL(url);
+    if (isLoopbackHost(parsed.hostname)) {
+      return parsed.protocol === 'https:' || parsed.protocol === 'wss:'
+        ? directHttpsAgent : directHttpAgent;
+    }
+  } catch {}
+  return undefined;
+}
+
+// ── Auth Headers ──
+
+/**
+ * Resolve auth headers for a CDP endpoint URL.
+ * Supports URL credentials (user:pass@host).
+ */
+export function getHeadersWithAuth(endpoint: string, baseHeaders: Record<string, string> = {}): Record<string, string> {
+  const headers = { ...baseHeaders };
+  try {
+    const parsed = new URL(endpoint);
+    if (parsed.username && parsed.password) {
+      const credentials = Buffer.from(`${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`).toString('base64');
+      headers['Authorization'] = `Basic ${credentials}`;
+    }
+  } catch {}
+  return headers;
+}
+
 // ── Persistent Connection Cache ──
 
-let cached: { browser: Browser; cdpUrl: string; authToken?: string; onDisconnected?: () => void } | null = null;
-const connectingByUrl = new Map<string, Promise<{ browser: Browser; cdpUrl: string; authToken?: string; onDisconnected?: () => void }>>();
+interface CachedConnection {
+  browser: Browser;
+  cdpUrl: string;
+  onDisconnected?: () => void;
+}
+
+const cachedByCdpUrl = new Map<string, CachedConnection>();
+const connectingByCdpUrl = new Map<string, Promise<CachedConnection>>();
 
 const pageStates = new WeakMap<Page, PageState>();
 const contextStates = new WeakMap<BrowserContext, ContextState>();
@@ -68,6 +186,15 @@ function roleRefsKey(cdpUrl: string, targetId: string): string {
 }
 
 // ── Page State Management ──
+
+/** Find a network request by ID in the page state. */
+export function findNetworkRequestById(state: PageState, id: string): NetworkRequest | undefined {
+  for (let i = state.requests.length - 1; i >= 0; i--) {
+    const candidate = state.requests[i];
+    if (candidate && candidate.id === id) return candidate;
+  }
+  return undefined;
+}
 
 export function ensurePageState(page: Page): PageState {
   const existing = pageStates.get(page);
@@ -126,26 +253,20 @@ export function ensurePageState(page: Page): PageState {
       const req = resp.request();
       const id = state.requestIds.get(req);
       if (!id) return;
-      for (let i = state.requests.length - 1; i >= 0; i--) {
-        const rec = state.requests[i];
-        if (rec && rec.id === id) {
-          rec.status = resp.status();
-          rec.ok = resp.ok();
-          break;
-        }
+      const rec = findNetworkRequestById(state, id);
+      if (rec) {
+        rec.status = resp.status();
+        rec.ok = resp.ok();
       }
     });
 
     page.on('requestfailed', (req) => {
       const id = state.requestIds.get(req);
       if (!id) return;
-      for (let i = state.requests.length - 1; i >= 0; i--) {
-        const rec = state.requests[i];
-        if (rec && rec.id === id) {
-          rec.failureText = req.failure()?.errorText;
-          rec.ok = false;
-          break;
-        }
+      const rec = findNetworkRequestById(state, id);
+      if (rec) {
+        rec.failureText = req.failure()?.errorText;
+        rec.ok = false;
       }
     });
 
@@ -193,20 +314,18 @@ function observeBrowser(browser: Browser): void {
 
 // ── Role Refs Storage ──
 
-export function storeRoleRefsForTarget(opts: {
-  page: Page;
+/**
+ * Remember role refs in the target cache (without storing on page state).
+ * Used to persist refs across page reconnections.
+ */
+export function rememberRoleRefsForTarget(opts: {
   cdpUrl: string;
-  targetId?: string;
+  targetId: string;
   refs: RoleRefs;
   frameSelector?: string;
   mode?: 'role' | 'aria';
 }): void {
-  const state = ensurePageState(opts.page);
-  state.roleRefs = opts.refs;
-  state.roleRefsFrameSelector = opts.frameSelector;
-  state.roleRefsMode = opts.mode;
-
-  const targetId = opts.targetId?.trim();
+  const targetId = opts.targetId.trim();
   if (!targetId) return;
   roleRefsByTarget.set(roleRefsKey(opts.cdpUrl, targetId), {
     refs: opts.refs,
@@ -218,6 +337,29 @@ export function storeRoleRefsForTarget(opts: {
     if (first.done) break;
     roleRefsByTarget.delete(first.value);
   }
+}
+
+export function storeRoleRefsForTarget(opts: {
+  page: Page;
+  cdpUrl: string;
+  targetId?: string;
+  refs: RoleRefs;
+  frameSelector?: string;
+  mode: 'role' | 'aria';
+}): void {
+  const state = ensurePageState(opts.page);
+  state.roleRefs = opts.refs;
+  state.roleRefsFrameSelector = opts.frameSelector;
+  state.roleRefsMode = opts.mode;
+
+  if (!opts.targetId?.trim()) return;
+  rememberRoleRefsForTarget({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    refs: opts.refs,
+    frameSelector: opts.frameSelector,
+    mode: opts.mode,
+  });
 }
 
 export function restoreRoleRefsForTarget(opts: {
@@ -238,11 +380,12 @@ export function restoreRoleRefsForTarget(opts: {
 
 // ── Connect to Browser ──
 
-export async function connectBrowser(cdpUrl: string, authToken?: string): Promise<{ browser: Browser; cdpUrl: string; authToken?: string; onDisconnected?: () => void }> {
+export async function connectBrowser(cdpUrl: string, authToken?: string): Promise<CachedConnection> {
   const normalized = normalizeCdpUrl(cdpUrl);
-  if (cached?.cdpUrl === normalized) return cached;
+  const existing_cached = cachedByCdpUrl.get(normalized);
+  if (existing_cached) return existing_cached;
 
-  const existing = connectingByUrl.get(normalized);
+  const existing = connectingByCdpUrl.get(normalized);
   if (existing) return await existing;
 
   const connectWithRetry = async () => {
@@ -251,17 +394,17 @@ export async function connectBrowser(cdpUrl: string, authToken?: string): Promis
       try {
         const timeout = 5000 + attempt * 2000;
         const endpoint = await getChromeWebSocketUrl(normalized, timeout, authToken).catch(() => null) ?? normalized;
-        const headers: Record<string, string> = {};
-        if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-        const browser = await chromium.connectOverCDP(endpoint, { timeout, headers });
+        const headers: Record<string, string> = getHeadersWithAuth(endpoint);
+        if (authToken && !headers['Authorization']) headers['Authorization'] = `Bearer ${authToken}`;
+        const browser = await withNoProxyForCdpUrl(endpoint, () => chromium.connectOverCDP(endpoint, { timeout, headers }));
         const onDisconnected = () => {
-          if (cached?.browser === browser) cached = null;
+          if (cachedByCdpUrl.get(normalized)?.browser === browser) cachedByCdpUrl.delete(normalized);
           for (const key of roleRefsByTarget.keys()) {
             if (key.startsWith(normalized + '::')) roleRefsByTarget.delete(key);
           }
         };
-        const connected = { browser, cdpUrl: normalized, authToken, onDisconnected };
-        cached = connected;
+        const connected: CachedConnection = { browser, cdpUrl: normalized, onDisconnected };
+        cachedByCdpUrl.set(normalized, connected);
         observeBrowser(browser);
         browser.on('disconnected', onDisconnected);
         return connected;
@@ -274,20 +417,36 @@ export async function connectBrowser(cdpUrl: string, authToken?: string): Promis
     throw lastErr instanceof Error ? lastErr : new Error('CDP connect failed');
   };
 
-  const promise = connectWithRetry().finally(() => { connectingByUrl.delete(normalized); });
-  connectingByUrl.set(normalized, promise);
+  const promise = connectWithRetry().finally(() => { connectingByCdpUrl.delete(normalized); });
+  connectingByCdpUrl.set(normalized, promise);
   return await promise;
 }
 
 export async function disconnectBrowser(): Promise<void> {
-  if (connectingByUrl.size) {
-    for (const p of connectingByUrl.values()) {
+  if (connectingByCdpUrl.size) {
+    for (const p of connectingByCdpUrl.values()) {
       try { await p; } catch {}
     }
   }
-  const cur = cached;
-  cached = null;
-  if (cur) await cur.browser.close().catch(() => {});
+  for (const cur of cachedByCdpUrl.values()) {
+    await cur.browser.close().catch(() => {});
+  }
+  cachedByCdpUrl.clear();
+}
+
+/**
+ * Close the Playwright connection for a specific CDP URL without affecting other connections.
+ */
+export async function closePlaywrightBrowserConnection(opts?: { cdpUrl?: string }): Promise<void> {
+  if (opts?.cdpUrl) {
+    const normalized = normalizeCdpUrl(opts.cdpUrl);
+    const cur = cachedByCdpUrl.get(normalized);
+    cachedByCdpUrl.delete(normalized);
+    connectingByCdpUrl.delete(normalized);
+    if (cur) await cur.browser.close().catch(() => {});
+  } else {
+    await disconnectBrowser();
+  }
 }
 
 function cdpSocketNeedsAttach(wsUrl: string): boolean {
@@ -366,11 +525,11 @@ export async function forceDisconnectPlaywrightForTarget(opts: {
   reason?: string;
 }): Promise<void> {
   const normalized = normalizeCdpUrl(opts.cdpUrl);
-  const cur = cached;
-  if (!cur || cur.cdpUrl !== normalized) return;
+  const cur = cachedByCdpUrl.get(normalized);
+  if (!cur) return;
 
-  cached = null;
-  connectingByUrl.delete(normalized);
+  cachedByCdpUrl.delete(normalized);
+  connectingByCdpUrl.delete(normalized);
 
   if (cur.onDisconnected && typeof cur.browser.off === 'function') {
     cur.browser.off('disconnected', cur.onDisconnected);
@@ -428,7 +587,6 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
     try {
       const listUrl = `${normalizeCdpHttpBaseForJsonEndpoints(cdpUrl)}/json/list`;
       const headers: Record<string, string> = {};
-      if (cached?.authToken) headers['Authorization'] = `Bearer ${cached.authToken}`;
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 2000);
       try {
