@@ -36,7 +36,9 @@ export async function snapshotAi(opts: {
 
   let truncated = false;
   if (limit && snapshot.length > limit) {
-    snapshot = `${snapshot.slice(0, limit)}\n\n[...TRUNCATED - page too large]`;
+    const lastNewline = snapshot.lastIndexOf('\n', limit);
+    const cutoff = lastNewline > 0 ? lastNewline : limit;
+    snapshot = `${snapshot.slice(0, cutoff)}\n\n[...TRUNCATED - page too large]`;
     truncated = true;
   }
 
