@@ -47,8 +47,6 @@ export async function screenshotWithLabelsViaPlaywright(opts: {
   const skipped = opts.refs.slice(maxLabels);
 
   const viewport = await page.evaluate(() => ({
-    scrollX: window.scrollX || 0,
-    scrollY: window.scrollY || 0,
     width: window.innerWidth || 0,
     height: window.innerHeight || 0,
   }));
@@ -80,43 +78,19 @@ export async function screenshotWithLabelsViaPlaywright(opts: {
     if (labels.length > 0) {
       await page.evaluate((labelData: Array<{ index: number; box: { x: number; y: number; width: number; height: number } }>) => {
         document.querySelectorAll('[data-browserclaw-labels]').forEach((el) => el.remove());
-        const root = document.createElement('div');
-        root.setAttribute('data-browserclaw-labels', '1');
-        root.style.position = 'fixed';
-        root.style.left = '0';
-        root.style.top = '0';
-        root.style.zIndex = '2147483647';
-        root.style.pointerEvents = 'none';
-        root.style.fontFamily = '"SF Mono","SFMono-Regular",Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace';
-        const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-        for (const label of labelData) {
-          const bx = document.createElement('div');
-          bx.setAttribute('data-browserclaw-labels', '1');
-          bx.style.position = 'absolute';
-          bx.style.left = `${label.box.x}px`;
-          bx.style.top = `${label.box.y}px`;
-          bx.style.width = `${label.box.width}px`;
-          bx.style.height = `${label.box.height}px`;
-          bx.style.border = '2px solid #ffb020';
-          bx.style.boxSizing = 'border-box';
-          const tag = document.createElement('div');
-          tag.setAttribute('data-browserclaw-labels', '1');
-          tag.textContent = String(label.index);
-          tag.style.position = 'absolute';
-          tag.style.left = `${label.box.x}px`;
-          tag.style.top = `${clamp(label.box.y - 18, 0, 20000)}px`;
-          tag.style.background = '#ffb020';
-          tag.style.color = '#1a1a1a';
-          tag.style.fontSize = '12px';
-          tag.style.lineHeight = '14px';
-          tag.style.padding = '1px 4px';
-          tag.style.borderRadius = '3px';
-          tag.style.boxShadow = '0 1px 2px rgba(0,0,0,0.35)';
-          tag.style.whiteSpace = 'nowrap';
-          root.appendChild(bx);
-          root.appendChild(tag);
+        const container = document.createElement('div');
+        container.setAttribute('data-browserclaw-labels', '1');
+        container.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2147483647;';
+        for (const { index, box } of labelData) {
+          const border = document.createElement('div');
+          border.style.cssText = `position:absolute;left:${box.x}px;top:${box.y}px;width:${box.width}px;height:${box.height}px;border:2px solid #FF4500;box-sizing:border-box;`;
+          container.appendChild(border);
+          const badge = document.createElement('div');
+          badge.textContent = String(index);
+          badge.style.cssText = `position:absolute;left:${box.x}px;top:${Math.max(0, box.y - 18)}px;background:#FF4500;color:#fff;font:bold 12px/16px monospace;padding:0 4px;border-radius:2px;`;
+          container.appendChild(badge);
         }
-        document.documentElement.appendChild(root);
+        document.documentElement.appendChild(container);
       }, labels.map(l => ({ index: l.index, box: l.box })));
     }
     return {
