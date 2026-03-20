@@ -96,7 +96,7 @@ export async function typeViaPlaywright(opts: {
   try {
     if (opts.slowly) {
       await locator.click({ timeout });
-      await locator.type(text, { timeout, delay: 75 });
+      await locator.pressSequentially(text, { timeout, delay: 75 });
     } else {
       await locator.fill(text, { timeout });
     }

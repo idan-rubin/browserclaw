@@ -4,7 +4,6 @@ import {
   restoreRoleRefsForTarget,
   refLocator,
 } from '../connection.js';
-import type { RoleRefs } from '../types.js';
 
 export async function takeScreenshotViaPlaywright(opts: {
   cdpUrl: string;
@@ -33,17 +32,19 @@ export async function takeScreenshotViaPlaywright(opts: {
 export async function screenshotWithLabelsViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
-  refs: RoleRefs;
+  refs: string[];
   maxLabels?: number;
   type?: 'png' | 'jpeg';
-}): Promise<{ buffer: Buffer; labels: number; skipped: number }> {
+}): Promise<{ buffer: Buffer; labels: Array<{ ref: string; index: number; box: { x: number; y: number; width: number; height: number } }>; skipped: string[] }> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
   restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
 
-  const type = opts.type ?? 'png';
   const maxLabels = typeof opts.maxLabels === 'number' && Number.isFinite(opts.maxLabels)
     ? Math.max(1, Math.floor(opts.maxLabels)) : 150;
+  const type = opts.type ?? 'png';
+  const refs = opts.refs.slice(0, maxLabels);
+  const skipped = opts.refs.slice(maxLabels);
 
   const viewport = await page.evaluate(() => ({
     scrollX: window.scrollX || 0,
@@ -52,51 +53,35 @@ export async function screenshotWithLabelsViaPlaywright(opts: {
     height: window.innerHeight || 0,
   }));
 
-  const refIds = Object.keys(opts.refs ?? {});
-  const boxes: Array<{ ref: string; x: number; y: number; w: number; h: number }> = [];
-  let skipped = 0;
-
-  for (const ref of refIds) {
-    if (boxes.length >= maxLabels) {
-      skipped += 1;
-      continue;
-    }
+  const labels: Array<{ ref: string; index: number; box: { x: number; y: number; width: number; height: number } }> = [];
+  for (let i = 0; i < refs.length; i++) {
+    const ref = refs[i]!;
     try {
-      const box = await refLocator(page, ref).boundingBox();
+      const locator = refLocator(page, ref);
+      const box = await locator.boundingBox({ timeout: 2000 });
       if (!box) {
-        skipped += 1;
+        skipped.push(ref);
         continue;
       }
-      const x0 = box.x;
-      const y0 = box.y;
+      // Viewport clipping: skip elements entirely outside the visible area
       const x1 = box.x + box.width;
       const y1 = box.y + box.height;
-      const vx0 = viewport.scrollX;
-      const vy0 = viewport.scrollY;
-      const vx1 = viewport.scrollX + viewport.width;
-      const vy1 = viewport.scrollY + viewport.height;
-      if (x1 < vx0 || x0 > vx1 || y1 < vy0 || y0 > vy1) {
-        skipped += 1;
+      if (x1 < 0 || box.x > viewport.width || y1 < 0 || box.y > viewport.height) {
+        skipped.push(ref);
         continue;
       }
-      boxes.push({
-        ref,
-        x: x0 - viewport.scrollX,
-        y: y0 - viewport.scrollY,
-        w: Math.max(1, box.width),
-        h: Math.max(1, box.height),
-      });
+      labels.push({ ref, index: i + 1, box });
     } catch {
-      skipped += 1;
+      skipped.push(ref);
     }
   }
 
   try {
-    if (boxes.length > 0) {
-      await page.evaluate((labels) => {
-        document.querySelectorAll('[data-openclaw-labels]').forEach((el) => el.remove());
+    if (labels.length > 0) {
+      await page.evaluate((labelData: Array<{ index: number; box: { x: number; y: number; width: number; height: number } }>) => {
+        document.querySelectorAll('[data-browserclaw-labels]').forEach((el) => el.remove());
         const root = document.createElement('div');
-        root.setAttribute('data-openclaw-labels', '1');
+        root.setAttribute('data-browserclaw-labels', '1');
         root.style.position = 'fixed';
         root.style.left = '0';
         root.style.top = '0';
@@ -104,22 +89,22 @@ export async function screenshotWithLabelsViaPlaywright(opts: {
         root.style.pointerEvents = 'none';
         root.style.fontFamily = '"SF Mono","SFMono-Regular",Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace';
         const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-        for (const label of labels) {
-          const box = document.createElement('div');
-          box.setAttribute('data-openclaw-labels', '1');
-          box.style.position = 'absolute';
-          box.style.left = `${label.x}px`;
-          box.style.top = `${label.y}px`;
-          box.style.width = `${label.w}px`;
-          box.style.height = `${label.h}px`;
-          box.style.border = '2px solid #ffb020';
-          box.style.boxSizing = 'border-box';
+        for (const label of labelData) {
+          const bx = document.createElement('div');
+          bx.setAttribute('data-browserclaw-labels', '1');
+          bx.style.position = 'absolute';
+          bx.style.left = `${label.box.x}px`;
+          bx.style.top = `${label.box.y}px`;
+          bx.style.width = `${label.box.width}px`;
+          bx.style.height = `${label.box.height}px`;
+          bx.style.border = '2px solid #ffb020';
+          bx.style.boxSizing = 'border-box';
           const tag = document.createElement('div');
-          tag.setAttribute('data-openclaw-labels', '1');
-          tag.textContent = label.ref;
+          tag.setAttribute('data-browserclaw-labels', '1');
+          tag.textContent = String(label.index);
           tag.style.position = 'absolute';
-          tag.style.left = `${label.x}px`;
-          tag.style.top = `${clamp(label.y - 18, 0, 20000)}px`;
+          tag.style.left = `${label.box.x}px`;
+          tag.style.top = `${clamp(label.box.y - 18, 0, 20000)}px`;
           tag.style.background = '#ffb020';
           tag.style.color = '#1a1a1a';
           tag.style.fontSize = '12px';
@@ -128,20 +113,20 @@ export async function screenshotWithLabelsViaPlaywright(opts: {
           tag.style.borderRadius = '3px';
           tag.style.boxShadow = '0 1px 2px rgba(0,0,0,0.35)';
           tag.style.whiteSpace = 'nowrap';
-          root.appendChild(box);
+          root.appendChild(bx);
           root.appendChild(tag);
         }
         document.documentElement.appendChild(root);
-      }, boxes);
+      }, labels.map(l => ({ index: l.index, box: l.box })));
     }
     return {
       buffer: await page.screenshot({ type }),
-      labels: boxes.length,
+      labels,
       skipped,
     };
   } finally {
     await page.evaluate(() => {
-      document.querySelectorAll('[data-openclaw-labels]').forEach((el) => el.remove());
+      document.querySelectorAll('[data-browserclaw-labels]').forEach((el) => el.remove());
     }).catch(() => {});
   }
 }
