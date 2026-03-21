@@ -11,6 +11,7 @@ import {
   resolveInteractionTimeoutMs,
   resolveBoundedDelayMs,
   getRestoredPageForTarget,
+  parseRoleRef,
 } from '../connection.js';
 import { resolveStrictExistingUploadPaths } from '../security.js';
 import type { FormField } from '../types.js';
@@ -19,6 +20,7 @@ type MouseButton = 'left' | 'right' | 'middle';
 type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
 
 const MAX_CLICK_DELAY_MS = 5000;
+const CHECKABLE_ROLES = new Set(['menuitemcheckbox', 'menuitemradio', 'checkbox', 'switch']);
 
 function resolveLocator(page: import('playwright-core').Page, resolved: { ref?: string; selector?: string }) {
   return resolved.ref ? refLocator(page, resolved.ref) : page.locator(resolved.selector!);
@@ -41,16 +43,54 @@ export async function clickViaPlaywright(opts: {
   const locator = resolveLocator(page, resolved);
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
 
+  // Determine if this is a checkable role element so we can verify the click worked.
+  let checkableRole = false;
+  if (resolved.ref) {
+    const refId = parseRoleRef(resolved.ref);
+    if (refId) {
+      const state = ensurePageState(page);
+      const info = state.roleRefs?.[refId];
+      if (info && CHECKABLE_ROLES.has(info.role)) checkableRole = true;
+    }
+  }
+
   try {
     const delayMs = resolveBoundedDelayMs(opts.delayMs, 'click delayMs', MAX_CLICK_DELAY_MS);
     if (delayMs > 0) {
       await locator.hover({ timeout });
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
+
+    // For checkable roles, capture aria-checked before the click.
+    let ariaCheckedBefore: string | null | undefined;
+    if (checkableRole && !opts.doubleClick) {
+      ariaCheckedBefore = await locator.getAttribute('aria-checked', { timeout }).catch(() => undefined);
+    }
+
     if (opts.doubleClick) {
       await locator.dblclick({ timeout, button: opts.button, modifiers: opts.modifiers });
     } else {
       await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
+    }
+
+    // If this is a checkable role and aria-checked didn't change, fall back to JS click.
+    // Poll briefly to give async frameworks time to update the DOM before concluding
+    // the click didn't work — otherwise we'd fire a second click that un-toggles it.
+    if (checkableRole && !opts.doubleClick && ariaCheckedBefore !== undefined) {
+      const POLL_INTERVAL_MS = 50;
+      const POLL_TIMEOUT_MS = 500;
+      let changed = false;
+      for (let elapsed = 0; elapsed < POLL_TIMEOUT_MS; elapsed += POLL_INTERVAL_MS) {
+        const current = await locator.getAttribute('aria-checked', { timeout }).catch(() => undefined);
+        if (current === undefined || current !== ariaCheckedBefore) {
+          changed = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      }
+      if (!changed) {
+        await locator.evaluate((el: Element) => (el as HTMLElement).click()).catch(() => {});
+      }
     }
   } catch (err) {
     throw toAIFriendlyError(err, label);
