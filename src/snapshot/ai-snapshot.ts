@@ -34,10 +34,12 @@ export async function snapshotAi(opts: {
   const limit = typeof maxChars === 'number' && Number.isFinite(maxChars) && maxChars > 0
     ? Math.floor(maxChars) : undefined;
 
+  let truncated = false;
   if (limit && snapshot.length > limit) {
     const lastNewline = snapshot.lastIndexOf('\n', limit);
     const cutoff = lastNewline > 0 ? lastNewline : limit;
     snapshot = `${snapshot.slice(0, cutoff)}\n\n[...TRUNCATED - page too large]`;
+    truncated = true;
   }
 
   const built = buildRoleSnapshotFromAiSnapshot(snapshot, opts.options);
@@ -53,6 +55,7 @@ export async function snapshotAi(opts: {
     snapshot: built.snapshot,
     refs: built.refs,
     stats: getRoleSnapshotStats(built.snapshot, built.refs),
+    ...(truncated ? { truncated } : {}),
     untrusted: true,
     contentMeta: {
       sourceUrl,

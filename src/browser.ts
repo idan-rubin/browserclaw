@@ -602,16 +602,13 @@ export class CrawlPage {
    */
   async screenshotWithLabels(refs: string[], opts?: { maxLabels?: number; type?: 'png' | 'jpeg' }): Promise<{
     buffer: Buffer;
-    labels: number;
-    skipped: number;
+    labels: Array<{ ref: string; index: number; box: { x: number; y: number; width: number; height: number } }>;
+    skipped: string[];
   }> {
-    // Convert string[] to RoleRefs map for the underlying implementation
-    const refsMap: Record<string, { role: string }> = {};
-    for (const ref of refs) refsMap[ref] = { role: 'generic' };
     return screenshotWithLabelsViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this.targetId,
-      refs: refsMap,
+      refs,
       maxLabels: opts?.maxLabels,
       type: opts?.type,
     });
