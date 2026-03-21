@@ -74,9 +74,21 @@ export async function clickViaPlaywright(opts: {
     }
 
     // If this is a checkable role and aria-checked didn't change, fall back to JS click.
+    // Poll briefly to give async frameworks time to update the DOM before concluding
+    // the click didn't work — otherwise we'd fire a second click that un-toggles it.
     if (checkableRole && !opts.doubleClick && ariaCheckedBefore !== undefined) {
-      const ariaCheckedAfter = await locator.getAttribute('aria-checked', { timeout }).catch(() => undefined);
-      if (ariaCheckedAfter !== undefined && ariaCheckedAfter === ariaCheckedBefore) {
+      const POLL_INTERVAL_MS = 50;
+      const POLL_TIMEOUT_MS = 500;
+      let changed = false;
+      for (let elapsed = 0; elapsed < POLL_TIMEOUT_MS; elapsed += POLL_INTERVAL_MS) {
+        const current = await locator.getAttribute('aria-checked', { timeout }).catch(() => undefined);
+        if (current === undefined || current !== ariaCheckedBefore) {
+          changed = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      }
+      if (!changed) {
         await locator.evaluate((el: Element) => (el as HTMLElement).click()).catch(() => {});
       }
     }
