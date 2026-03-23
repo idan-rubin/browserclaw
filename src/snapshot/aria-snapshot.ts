@@ -1,11 +1,14 @@
-import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget, normalizeTimeoutMs, withPlaywrightPageCdpSession } from '../connection.js';
-import type { PageWithAI } from '../connection.js';
 import {
-  buildRoleSnapshotFromAriaSnapshot,
-  buildRoleSnapshotFromAiSnapshot,
-  getRoleSnapshotStats,
-} from './ref-map.js';
+  getPageForTargetId,
+  ensurePageState,
+  storeRoleRefsForTarget,
+  normalizeTimeoutMs,
+  withPlaywrightPageCdpSession,
+} from '../connection.js';
+import type { PageWithAI } from '../connection.js';
 import type { SnapshotResult, AriaSnapshotResult, AriaNode } from '../types.js';
+
+import { buildRoleSnapshotFromAriaSnapshot, buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
 
 /**
  * Take a role-based snapshot using Playwright's ariaSnapshot().
@@ -34,7 +37,10 @@ export async function snapshotRole(opts: {
 
   // refs=aria sub-path: use _snapshotForAI instead of ariaSnapshot
   if (opts.refsMode === 'aria') {
-    if (opts.selector?.trim() || opts.frameSelector?.trim()) {
+    if (
+      (opts.selector !== undefined && opts.selector.trim() !== '') ||
+      (opts.frameSelector !== undefined && opts.frameSelector.trim() !== '')
+    ) {
       throw new Error('refs=aria does not support selector/frame snapshots yet.');
     }
     const maybe = page as PageWithAI;
@@ -42,7 +48,7 @@ export async function snapshotRole(opts: {
       throw new Error('refs=aria requires Playwright _snapshotForAI support.');
     }
     const result = await maybe._snapshotForAI({ timeout: 5000, track: 'response' });
-    const built = buildRoleSnapshotFromAiSnapshot(String(result?.full ?? ''), opts.options);
+    const built = buildRoleSnapshotFromAiSnapshot(String(result.full), opts.options);
 
     storeRoleRefsForTarget({
       page,
@@ -65,25 +71,25 @@ export async function snapshotRole(opts: {
     };
   }
 
-  const frameSelector = opts.frameSelector?.trim() || '';
-  const selector = opts.selector?.trim() || '';
+  const frameSelector = opts.frameSelector?.trim() ?? '';
+  const selector = opts.selector?.trim() ?? '';
   const locator = frameSelector
-    ? (selector
+    ? selector
       ? page.frameLocator(frameSelector).locator(selector)
-      : page.frameLocator(frameSelector).locator(':root'))
-    : (selector
+      : page.frameLocator(frameSelector).locator(':root')
+    : selector
       ? page.locator(selector)
-      : page.locator(':root'));
+      : page.locator(':root');
 
   const ariaSnapshot = await locator.ariaSnapshot({ timeout: normalizeTimeoutMs(opts.timeoutMs, 5000) });
-  const built = buildRoleSnapshotFromAriaSnapshot(String(ariaSnapshot ?? ''), opts.options);
+  const built = buildRoleSnapshotFromAriaSnapshot(ariaSnapshot, opts.options);
 
   storeRoleRefsForTarget({
     page,
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
     refs: built.refs,
-    frameSelector: frameSelector || undefined,
+    frameSelector: frameSelector !== '' ? frameSelector : undefined,
     mode: 'role',
   });
 
@@ -126,12 +132,16 @@ export async function snapshotAria(opts: {
   const sourceUrl = page.url();
 
   const res = await withPlaywrightPageCdpSession(page, async (session) => {
-    await session.send('Accessibility.enable' as any).catch(() => {});
-    return await session.send('Accessibility.getFullAXTree' as any) as { nodes?: CdpAXNode[] };
+    await session.send('Accessibility.enable' as unknown as Parameters<typeof session.send>[0]).catch(() => {
+      /* intentional no-op */
+    });
+    return (await session.send('Accessibility.getFullAXTree' as unknown as Parameters<typeof session.send>[0])) as {
+      nodes?: CdpAXNode[];
+    };
   });
 
   return {
-    nodes: formatAriaNodes(Array.isArray(res?.nodes) ? res.nodes : [], limit),
+    nodes: formatAriaNodes(Array.isArray(res.nodes) ? res.nodes : [], limit),
     untrusted: true,
     contentMeta: {
       sourceUrl,
@@ -156,11 +166,11 @@ function formatAriaNodes(nodes: CdpAXNode[], limit: number): AriaNode[] {
   const referenced = new Set<string>();
   for (const n of nodes) for (const c of n.childIds ?? []) referenced.add(c);
 
-  const root = nodes.find(n => n.nodeId && !referenced.has(n.nodeId)) ?? nodes[0];
-  if (!root?.nodeId) return [];
+  const root = nodes.find((n) => n.nodeId !== '' && !referenced.has(n.nodeId)) ?? nodes[0];
+  if (root.nodeId === '') return [];
 
   const out: AriaNode[] = [];
-  const stack: Array<{ id: string; depth: number }> = [{ id: root.nodeId, depth: 0 }];
+  const stack: { id: string; depth: number }[] = [{ id: root.nodeId, depth: 0 }];
 
   while (stack.length && out.length < limit) {
     const popped = stack.pop();
@@ -173,7 +183,7 @@ function formatAriaNodes(nodes: CdpAXNode[], limit: number): AriaNode[] {
     const name = axValue(n.name);
     const value = axValue(n.value);
     const description = axValue(n.description);
-    const ref = `ax${out.length + 1}`;
+    const ref = `ax${String(out.length + 1)}`;
 
     out.push({
       ref,

@@ -1,29 +1,97 @@
-import { launchChrome, stopChrome, isChromeReachable } from './chrome-launcher.js';
-import { connectBrowser, disconnectBrowser, getPageForTargetId, ensurePageState, restoreRoleRefsForTarget, refLocator, pageTargetId, getAllPages, normalizeTimeoutMs } from './connection.js';
-import { snapshotAi } from './snapshot/ai-snapshot.js';
-import { snapshotRole, snapshotAria } from './snapshot/aria-snapshot.js';
-import { clickViaPlaywright, hoverViaPlaywright, typeViaPlaywright, selectOptionViaPlaywright, dragViaPlaywright, fillFormViaPlaywright, scrollIntoViewViaPlaywright, highlightViaPlaywright, setInputFilesViaPlaywright, armDialogViaPlaywright, armFileUploadViaPlaywright } from './actions/interaction.js';
+import type { BrowserContext } from 'playwright-core';
+
 import { batchViaPlaywright } from './actions/batch.js';
 import type { BatchAction, BatchActionResult } from './actions/batch.js';
-import { pressKeyViaPlaywright } from './actions/keyboard.js';
-import { navigateViaPlaywright, listPagesViaPlaywright, createPageViaPlaywright, closePageByTargetIdViaPlaywright, focusPageByTargetIdViaPlaywright, resizeViewportViaPlaywright } from './actions/navigation.js';
-import { waitForViaPlaywright } from './actions/wait.js';
-import { evaluateViaPlaywright, evaluateInAllFramesViaPlaywright, type FrameEvalResult } from './actions/evaluate.js';
 import { downloadViaPlaywright, waitForDownloadViaPlaywright } from './actions/download.js';
-import { emulateMediaViaPlaywright, setDeviceViaPlaywright, setExtraHTTPHeadersViaPlaywright, setGeolocationViaPlaywright, setHttpCredentialsViaPlaywright, setLocaleViaPlaywright, setOfflineViaPlaywright, setTimezoneViaPlaywright } from './actions/emulation.js';
-import { takeScreenshotViaPlaywright, screenshotWithLabelsViaPlaywright } from './capture/screenshot.js';
+import {
+  emulateMediaViaPlaywright,
+  setDeviceViaPlaywright,
+  setExtraHTTPHeadersViaPlaywright,
+  setGeolocationViaPlaywright,
+  setHttpCredentialsViaPlaywright,
+  setLocaleViaPlaywright,
+  setOfflineViaPlaywright,
+  setTimezoneViaPlaywright,
+} from './actions/emulation.js';
+import { evaluateViaPlaywright, evaluateInAllFramesViaPlaywright, type FrameEvalResult } from './actions/evaluate.js';
+import {
+  clickViaPlaywright,
+  hoverViaPlaywright,
+  typeViaPlaywright,
+  selectOptionViaPlaywright,
+  dragViaPlaywright,
+  fillFormViaPlaywright,
+  scrollIntoViewViaPlaywright,
+  highlightViaPlaywright,
+  setInputFilesViaPlaywright,
+  armDialogViaPlaywright,
+  armFileUploadViaPlaywright,
+} from './actions/interaction.js';
+import { pressKeyViaPlaywright } from './actions/keyboard.js';
+import {
+  navigateViaPlaywright,
+  listPagesViaPlaywright,
+  createPageViaPlaywright,
+  closePageByTargetIdViaPlaywright,
+  focusPageByTargetIdViaPlaywright,
+  resizeViewportViaPlaywright,
+} from './actions/navigation.js';
+import { waitForViaPlaywright } from './actions/wait.js';
+import {
+  getConsoleMessagesViaPlaywright,
+  getPageErrorsViaPlaywright,
+  getNetworkRequestsViaPlaywright,
+} from './capture/activity.js';
 import { pdfViaPlaywright } from './capture/pdf.js';
-import { traceStartViaPlaywright, traceStopViaPlaywright } from './capture/trace.js';
 import { responseBodyViaPlaywright } from './capture/response.js';
-import { getConsoleMessagesViaPlaywright, getPageErrorsViaPlaywright, getNetworkRequestsViaPlaywright } from './capture/activity.js';
-import { cookiesGetViaPlaywright, cookiesSetViaPlaywright, cookiesClearViaPlaywright, storageGetViaPlaywright, storageSetViaPlaywright, storageClearViaPlaywright } from './storage/index.js';
+import { takeScreenshotViaPlaywright, screenshotWithLabelsViaPlaywright } from './capture/screenshot.js';
+import { traceStartViaPlaywright, traceStopViaPlaywright } from './capture/trace.js';
+import { launchChrome, stopChrome, isChromeReachable } from './chrome-launcher.js';
+import {
+  connectBrowser,
+  disconnectBrowser,
+  getPageForTargetId,
+  ensurePageState,
+  pageTargetId,
+  getAllPages,
+  normalizeTimeoutMs,
+} from './connection.js';
+import { snapshotAi } from './snapshot/ai-snapshot.js';
+import { snapshotRole, snapshotAria } from './snapshot/aria-snapshot.js';
+import {
+  cookiesGetViaPlaywright,
+  cookiesSetViaPlaywright,
+  cookiesClearViaPlaywright,
+  storageGetViaPlaywright,
+  storageSetViaPlaywright,
+  storageClearViaPlaywright,
+} from './storage/index.js';
 import type {
-  LaunchOptions, ConnectOptions, SnapshotResult, SnapshotOptions, AriaSnapshotResult,
-  BrowserTab, FormField, ClickOptions, TypeOptions, WaitOptions,
-  ScreenshotOptions, ConsoleMessage, PageError, NetworkRequest,
-  CookieData, StorageKind, RunningChrome, SsrfPolicy,
-  DownloadResult, DialogOptions, ResponseBodyResult, TraceStartOptions,
-  ColorScheme, GeolocationOptions, HttpCredentials,
+  LaunchOptions,
+  ConnectOptions,
+  SnapshotResult,
+  SnapshotOptions,
+  AriaSnapshotResult,
+  BrowserTab,
+  FormField,
+  ClickOptions,
+  TypeOptions,
+  WaitOptions,
+  ScreenshotOptions,
+  ConsoleMessage,
+  PageError,
+  NetworkRequest,
+  CookieData,
+  StorageKind,
+  RunningChrome,
+  SsrfPolicy,
+  DownloadResult,
+  DialogOptions,
+  ResponseBodyResult,
+  TraceStartOptions,
+  ColorScheme,
+  GeolocationOptions,
+  HttpCredentials,
 } from './types.js';
 
 /**
@@ -101,8 +169,13 @@ export class CrawlPage {
         },
       });
     }
-    if (opts?.selector || opts?.frameSelector) {
-      throw new Error('selector and frameSelector are only supported in role mode. Use { mode: "role" } or omit these options.');
+    if (
+      (opts?.selector !== undefined && opts.selector !== '') ||
+      (opts?.frameSelector !== undefined && opts.frameSelector !== '')
+    ) {
+      throw new Error(
+        'selector and frameSelector are only supported in role mode. Use { mode: "role" } or omit these options.',
+      );
     }
     return snapshotAi({
       cdpUrl: this.cdpUrl,
@@ -362,7 +435,10 @@ export class CrawlPage {
    * @param opts - Options (stopOnError: stop on first failure, default true)
    * @returns Array of per-action results
    */
-  async batch(actions: BatchAction[], opts?: { stopOnError?: boolean; evaluateEnabled?: boolean }): Promise<{ results: BatchActionResult[] }> {
+  async batch(
+    actions: BatchAction[],
+    opts?: { stopOnError?: boolean; evaluateEnabled?: boolean },
+  ): Promise<{ results: BatchActionResult[] }> {
     return batchViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this.targetId,
@@ -600,9 +676,12 @@ export class CrawlPage {
    * fs.writeFileSync('labeled.png', buffer);
    * ```
    */
-  async screenshotWithLabels(refs: string[], opts?: { maxLabels?: number; type?: 'png' | 'jpeg' }): Promise<{
+  async screenshotWithLabels(
+    refs: string[],
+    opts?: { maxLabels?: number; type?: 'png' | 'jpeg' },
+  ): Promise<{
     buffer: Buffer;
-    labels: Array<{ ref: string; index: number; box: { x: number; y: number; width: number; height: number } }>;
+    labels: { ref: string; index: number; box: { x: number; y: number; width: number; height: number } }[];
     skipped: string[];
   }> {
     return screenshotWithLabelsViaPlaywright({
@@ -749,7 +828,7 @@ export class CrawlPage {
    *
    * @returns Array of cookie objects
    */
-  async cookies(): Promise<Awaited<ReturnType<import('playwright-core').BrowserContext['cookies']>>> {
+  async cookies(): Promise<Awaited<ReturnType<BrowserContext['cookies']>>> {
     const result = await cookiesGetViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this.targetId });
     return result.cookies;
   }
@@ -786,7 +865,10 @@ export class CrawlPage {
    */
   async storageGet(kind: StorageKind, key?: string): Promise<Record<string, string>> {
     const result = await storageGetViaPlaywright({
-      cdpUrl: this.cdpUrl, targetId: this.targetId, kind, key,
+      cdpUrl: this.cdpUrl,
+      targetId: this.targetId,
+      kind,
+      key,
     });
     return result.values;
   }
@@ -800,7 +882,11 @@ export class CrawlPage {
    */
   async storageSet(kind: StorageKind, key: string, value: string): Promise<void> {
     return storageSetViaPlaywright({
-      cdpUrl: this.cdpUrl, targetId: this.targetId, kind, key, value,
+      cdpUrl: this.cdpUrl,
+      targetId: this.targetId,
+      kind,
+      key,
+      value,
     });
   }
 
@@ -811,7 +897,9 @@ export class CrawlPage {
    */
   async storageClear(kind: StorageKind): Promise<void> {
     return storageClearViaPlaywright({
-      cdpUrl: this.cdpUrl, targetId: this.targetId, kind,
+      cdpUrl: this.cdpUrl,
+      targetId: this.targetId,
+      kind,
     });
   }
 
@@ -831,7 +919,11 @@ export class CrawlPage {
    * console.log(result.suggestedFilename); // 'report.pdf'
    * ```
    */
-  async download(ref: string, path: string, opts?: { timeoutMs?: number; allowedOutputRoots?: string[] }): Promise<DownloadResult> {
+  async download(
+    ref: string,
+    path: string,
+    opts?: { timeoutMs?: number; allowedOutputRoots?: string[] },
+  ): Promise<DownloadResult> {
     return downloadViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this.targetId,
@@ -850,7 +942,11 @@ export class CrawlPage {
    * @param opts - Options (path: save location, timeoutMs)
    * @returns Download result with URL, suggested filename, and saved path
    */
-  async waitForDownload(opts?: { path?: string; timeoutMs?: number; allowedOutputRoots?: string[] }): Promise<DownloadResult> {
+  async waitForDownload(opts?: {
+    path?: string;
+    timeoutMs?: number;
+    allowedOutputRoots?: string[];
+  }): Promise<DownloadResult> {
     return waitForDownloadViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this.targetId,
@@ -1051,8 +1147,11 @@ export class BrowserClaw {
    */
   static async launch(opts: LaunchOptions = {}): Promise<BrowserClaw> {
     const chrome = await launchChrome(opts);
-    const cdpUrl = `http://127.0.0.1:${chrome.cdpPort}`;
-    const ssrfPolicy = opts.allowInternal ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
+    const cdpUrl = `http://127.0.0.1:${String(chrome.cdpPort)}`;
+    /* eslint-disable @typescript-eslint/no-deprecated -- backward-compat bridge for allowInternal */
+    const ssrfPolicy =
+      opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
+    /* eslint-enable @typescript-eslint/no-deprecated */
     return new BrowserClaw(cdpUrl, chrome, ssrfPolicy);
   }
 
@@ -1071,11 +1170,14 @@ export class BrowserClaw {
    * ```
    */
   static async connect(cdpUrl: string, opts?: ConnectOptions): Promise<BrowserClaw> {
-    if (!await isChromeReachable(cdpUrl, 3000, opts?.authToken)) {
+    if (!(await isChromeReachable(cdpUrl, 3000, opts?.authToken))) {
       throw new Error(`Cannot connect to Chrome at ${cdpUrl}. Is Chrome running with --remote-debugging-port?`);
     }
     await connectBrowser(cdpUrl, opts?.authToken);
-    const ssrfPolicy = opts?.allowInternal ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts?.ssrfPolicy;
+    /* eslint-disable @typescript-eslint/no-deprecated -- backward-compat bridge for allowInternal */
+    const ssrfPolicy =
+      opts?.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts?.ssrfPolicy;
+    /* eslint-enable @typescript-eslint/no-deprecated */
     return new BrowserClaw(cdpUrl, null, ssrfPolicy);
   }
 
@@ -1103,10 +1205,10 @@ export class BrowserClaw {
    */
   async currentPage(): Promise<CrawlPage> {
     const { browser } = await connectBrowser(this.cdpUrl);
-    const pages = await getAllPages(browser);
+    const pages = getAllPages(browser);
     if (!pages.length) throw new Error('No pages available. Use browser.open(url) to create a tab.');
-    const tid = await pageTargetId(pages[0]!).catch(() => null);
-    if (!tid) throw new Error('Failed to get targetId for the current page.');
+    const tid = await pageTargetId(pages[0]).catch(() => null);
+    if (tid === null || tid === '') throw new Error('Failed to get targetId for the current page.');
     return new CrawlPage(this.cdpUrl, tid, this.ssrfPolicy);
   }
 

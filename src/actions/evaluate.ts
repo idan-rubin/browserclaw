@@ -23,7 +23,7 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
   targetId?: string;
   fn: string;
 }): Promise<FrameEvalResult[]> {
-  const fnText = String(opts.fn ?? '').trim();
+  const fnText = opts.fn.trim();
   if (!fnText) throw new Error('function is required');
 
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
@@ -33,19 +33,15 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
   for (const frame of frames) {
     try {
       // Runs in the frame's browser context (sandboxed), not in Node.js
-      const result = await frame.evaluate(
-        // eslint-disable-next-line no-eval
-        (fnBody: string) => {
-          'use strict';
-          try {
-            const candidate = (0, eval)('(' + fnBody + ')');
-            return typeof candidate === 'function' ? candidate() : candidate;
-          } catch (err: unknown) {
-            throw new Error('Invalid evaluate function: ' + (err instanceof Error ? err.message : String(err)));
-          }
-        },
-        fnText,
-      );
+      const result: unknown = await frame.evaluate((fnBody: string) => {
+        'use strict';
+        try {
+          const candidate: unknown = (0, eval)('(' + fnBody + ')');
+          return typeof candidate === 'function' ? (candidate as () => unknown)() : candidate;
+        } catch (err: unknown) {
+          throw new Error('Invalid evaluate function: ' + (err instanceof Error ? err.message : String(err)));
+        }
+      }, fnText);
       results.push({
         frameUrl: frame.url(),
         frameName: frame.name(),
@@ -68,7 +64,9 @@ async function awaitEvalWithAbort(evalPromise: Promise<unknown>, abortPromise?: 
     return await Promise.race([evalPromise, abortPromise]);
   } catch (err) {
     // Suppress unhandled rejection from the eval promise if abort won the race
-    evalPromise.catch(() => {});
+    evalPromise.catch(() => {
+      /* suppress unhandled rejection */
+    });
     throw err;
   }
 }
@@ -76,8 +74,11 @@ async function awaitEvalWithAbort(evalPromise: Promise<unknown>, abortPromise?: 
 // Browser-side evaluator that wraps async results with a timeout via Promise.race.
 // This runs inside the browser sandbox (not Node.js) — `new Function` is the standard
 // pattern for browser-context evaluation with timeout, matching OpenClaw's implementation.
-// eslint-disable-next-line no-new-func
-const BROWSER_EVALUATOR = new Function('args', `
+
+// eslint-disable-next-line @typescript-eslint/no-implied-eval
+const BROWSER_EVALUATOR = new Function(
+  'args',
+  `
   "use strict";
   var fnBody = args.fnBody, timeoutMs = args.timeoutMs;
   try {
@@ -95,10 +96,14 @@ const BROWSER_EVALUATOR = new Function('args', `
   } catch (err) {
     throw new Error("Invalid evaluate function: " + (err && err.message ? err.message : String(err)));
   }
-`);
+`,
+);
 
-// eslint-disable-next-line no-new-func
-const ELEMENT_EVALUATOR = new Function('el', 'args', `
+// eslint-disable-next-line @typescript-eslint/no-implied-eval
+const ELEMENT_EVALUATOR = new Function(
+  'el',
+  'args',
+  `
   "use strict";
   var fnBody = args.fnBody, timeoutMs = args.timeoutMs;
   try {
@@ -116,7 +121,8 @@ const ELEMENT_EVALUATOR = new Function('el', 'args', `
   } catch (err) {
     throw new Error("Invalid evaluate function: " + (err && err.message ? err.message : String(err)));
   }
-`);
+`,
+);
 
 /**
  * Evaluate JavaScript in the browser page context.
@@ -132,7 +138,7 @@ export async function evaluateViaPlaywright(opts: {
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<unknown> {
-  const fnText = String(opts.fn ?? '').trim();
+  const fnText = opts.fn.trim();
   if (!fnText) throw new Error('function is required');
 
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
@@ -148,20 +154,24 @@ export async function evaluateViaPlaywright(opts: {
   let abortReject: ((reason: unknown) => void) | undefined;
   let abortPromise: Promise<never> | undefined;
 
-  if (signal) {
+  if (signal !== undefined) {
     abortPromise = new Promise<never>((_, reject) => {
       abortReject = reject;
     });
-    abortPromise.catch(() => {});
+    abortPromise.catch(() => {
+      /* suppress unhandled rejection */
+    });
   }
 
-  if (signal) {
+  if (signal !== undefined) {
     const disconnect = () => {
       forceDisconnectPlaywrightForTarget({
         cdpUrl: opts.cdpUrl,
         targetId: opts.targetId,
         reason: 'evaluate aborted',
-      }).catch(() => {});
+      }).catch(() => {
+        /* intentional no-op */
+      });
     };
     if (signal.aborted) {
       disconnect();
@@ -172,6 +182,8 @@ export async function evaluateViaPlaywright(opts: {
       abortReject?.(signal.reason ?? new Error('aborted'));
     };
     signal.addEventListener('abort', abortListener, { once: true });
+    // Re-check after adding listener to handle race where signal was aborted between checks
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (signal.aborted) {
       abortListener();
       throw signal.reason ?? new Error('aborted');
@@ -179,16 +191,22 @@ export async function evaluateViaPlaywright(opts: {
   }
 
   try {
-    if (opts.ref) {
+    if (opts.ref !== undefined && opts.ref !== '') {
       const locator = refLocator(page, opts.ref);
       return await awaitEvalWithAbort(
-        locator.evaluate(ELEMENT_EVALUATOR as any, { fnBody: fnText, timeoutMs: evaluateTimeout }),
+        locator.evaluate(ELEMENT_EVALUATOR as (...args: unknown[]) => unknown, {
+          fnBody: fnText,
+          timeoutMs: evaluateTimeout,
+        }),
         abortPromise,
       );
     }
 
     return await awaitEvalWithAbort(
-      page.evaluate(BROWSER_EVALUATOR as any, { fnBody: fnText, timeoutMs: evaluateTimeout }),
+      page.evaluate(BROWSER_EVALUATOR as (...args: unknown[]) => unknown, {
+        fnBody: fnText,
+        timeoutMs: evaluateTimeout,
+      }),
       abortPromise,
     );
   } finally {

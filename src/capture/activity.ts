@@ -3,13 +3,18 @@ import type { ConsoleMessage, PageError, NetworkRequest } from '../types.js';
 
 function consolePriority(level: string): number {
   switch (level) {
-    case 'error': return 3;
+    case 'error':
+      return 3;
     case 'warning':
-    case 'warn': return 2;
+    case 'warn':
+      return 2;
     case 'info':
-    case 'log': return 1;
-    case 'debug': return 0;
-    default: return 1;
+    case 'log':
+      return 1;
+    case 'debug':
+      return 0;
+    default:
+      return 1;
   }
 }
 
@@ -20,10 +25,11 @@ export async function getConsoleMessagesViaPlaywright(opts: {
   clear?: boolean;
 }): Promise<ConsoleMessage[]> {
   const state = ensurePageState(await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId }));
-  const messages = opts.level
-    ? state.console.filter(msg => consolePriority(msg.type) >= consolePriority(opts.level!))
-    : [...state.console];
-  if (opts.clear) state.console = [];
+  const messages =
+    opts.level !== undefined && opts.level !== ''
+      ? state.console.filter((msg) => consolePriority(msg.type) >= consolePriority(opts.level ?? ''))
+      : [...state.console];
+  if (opts.clear === true) state.console = [];
   return messages;
 }
 
@@ -34,7 +40,7 @@ export async function getPageErrorsViaPlaywright(opts: {
 }): Promise<{ errors: PageError[] }> {
   const state = ensurePageState(await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId }));
   const errors = [...state.errors];
-  if (opts.clear) state.errors = [];
+  if (opts.clear === true) state.errors = [];
   return { errors };
 }
 
@@ -47,8 +53,8 @@ export async function getNetworkRequestsViaPlaywright(opts: {
   const state = ensurePageState(await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId }));
   const raw = [...state.requests];
   const filter = typeof opts.filter === 'string' ? opts.filter.trim() : '';
-  const requests = filter ? raw.filter(r => r.url.includes(filter)) : raw;
-  if (opts.clear) {
+  const requests = filter ? raw.filter((r) => r.url.includes(filter)) : raw;
+  if (opts.clear === true) {
     state.requests = [];
     state.requestIds = new WeakMap();
   }

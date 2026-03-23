@@ -6,7 +6,7 @@ export async function pressKeyViaPlaywright(opts: {
   key: string;
   delayMs?: number;
 }): Promise<void> {
-  const key = String(opts.key ?? '').trim();
+  const key = opts.key.trim();
   if (!key) throw new Error('key is required');
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);

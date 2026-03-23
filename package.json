@@ -1,6 +1,6 @@
 {
   "name": "browserclaw",
-  "version": "0.5.8",
+  "version": "0.6.0",
   "description": "AI-friendly browser automation with snapshot + ref targeting. No CSS selectors, no XPath, no vision — just numbered refs.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -25,6 +25,10 @@
     "build": "tsup && node -e \"import('./dist/index.js')\"",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/",
     "prepublishOnly": "npm run build",
     "test": "echo \"No tests yet\" && exit 0"
   },
@@ -61,7 +65,14 @@
   },
   "devDependencies": {
     "@types/node": "^25.2.1",
+    "@typescript-eslint/eslint-plugin": "^8.57.2",
+    "@typescript-eslint/parser": "^8.57.2",
+    "eslint": "^10.1.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-import-x": "^4.16.2",
+    "prettier": "^3.8.1",
     "tsup": "^8.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.57.2"
   }
 }

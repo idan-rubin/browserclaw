@@ -1,8 +1,9 @@
-import os from 'node:os';
-import path from 'node:path';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
-import { execFileSync, spawn } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
+
 import type { ChromeExecutable, ChromeKind, LaunchOptions, RunningChrome } from './types.js';
 
 // ── Executable Detection ──
@@ -47,18 +48,48 @@ const CHROMIUM_DESKTOP_IDS = new Set([
 ]);
 
 const CHROMIUM_EXE_NAMES = new Set([
-  'chrome.exe', 'msedge.exe', 'brave.exe', 'brave-browser.exe', 'chromium.exe',
-  'vivaldi.exe', 'opera.exe', 'launcher.exe', 'yandex.exe', 'yandexbrowser.exe',
-  'google chrome', 'google chrome canary', 'brave browser', 'microsoft edge',
-  'chromium', 'chrome', 'brave', 'msedge', 'brave-browser',
-  'google-chrome', 'google-chrome-stable', 'google-chrome-beta', 'google-chrome-unstable',
-  'microsoft-edge', 'microsoft-edge-beta', 'microsoft-edge-dev', 'microsoft-edge-canary',
-  'chromium-browser', 'vivaldi', 'vivaldi-stable', 'opera', 'opera-stable', 'opera-gx',
+  'chrome.exe',
+  'msedge.exe',
+  'brave.exe',
+  'brave-browser.exe',
+  'chromium.exe',
+  'vivaldi.exe',
+  'opera.exe',
+  'launcher.exe',
+  'yandex.exe',
+  'yandexbrowser.exe',
+  'google chrome',
+  'google chrome canary',
+  'brave browser',
+  'microsoft edge',
+  'chromium',
+  'chrome',
+  'brave',
+  'msedge',
+  'brave-browser',
+  'google-chrome',
+  'google-chrome-stable',
+  'google-chrome-beta',
+  'google-chrome-unstable',
+  'microsoft-edge',
+  'microsoft-edge-beta',
+  'microsoft-edge-dev',
+  'microsoft-edge-canary',
+  'chromium-browser',
+  'vivaldi',
+  'vivaldi-stable',
+  'opera',
+  'opera-stable',
+  'opera-gx',
   'yandex-browser',
 ]);
 
 function fileExists(filePath: string): boolean {
-  try { return fs.existsSync(filePath); } catch { return false; }
+  try {
+    return fs.existsSync(filePath);
+  } catch {
+    return false;
+  }
 }
 
 function execText(command: string, args: string[], timeoutMs = 1200): string | null {
@@ -68,8 +99,10 @@ function execText(command: string, args: string[], timeoutMs = 1200): string | n
       encoding: 'utf8',
       maxBuffer: 1024 * 1024,
     });
-    return String(output ?? '').trim() || null;
-  } catch { return null; }
+    return output.trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 function inferKindFromIdentifier(identifier: string): ChromeKind {
@@ -78,7 +111,8 @@ function inferKindFromIdentifier(identifier: string): ChromeKind {
   if (id.includes('edge')) return 'edge';
   if (id.includes('chromium')) return 'chromium';
   if (id.includes('canary')) return 'canary';
-  if (id.includes('opera') || id.includes('vivaldi') || id.includes('yandex') || id.includes('thebrowser')) return 'chromium';
+  if (id.includes('opera') || id.includes('vivaldi') || id.includes('yandex') || id.includes('thebrowser'))
+    return 'chromium';
   return 'chrome';
 }
 
@@ -100,22 +134,33 @@ function findFirstExe(candidates: ChromeExecutable[]): ChromeExecutable | null {
 // ── Mac Detection ──
 
 function detectDefaultBrowserBundleIdMac(): string | null {
-  const plistPath = path.join(os.homedir(), 'Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist');
+  const plistPath = path.join(
+    os.homedir(),
+    'Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist',
+  );
   if (!fileExists(plistPath)) return null;
   const handlersRaw = execText('/usr/bin/plutil', ['-extract', 'LSHandlers', 'json', '-o', '-', '--', plistPath], 2000);
-  if (!handlersRaw) return null;
-  let handlers: any[];
-  try { handlers = JSON.parse(handlersRaw); } catch { return null; }
-  if (!Array.isArray(handlers)) return null;
+  if (handlersRaw === null) return null;
+  let handlers: unknown[];
+  try {
+    const parsed: unknown = JSON.parse(handlersRaw);
+    if (!Array.isArray(parsed)) return null;
+    handlers = parsed;
+  } catch {
+    return null;
+  }
 
   const resolveScheme = (scheme: string): string | null => {
     let candidate: string | null = null;
     for (const entry of handlers) {
-      if (!entry || typeof entry !== 'object') continue;
-      if (entry.LSHandlerURLScheme !== scheme) continue;
-      const role = (typeof entry.LSHandlerRoleAll === 'string' && entry.LSHandlerRoleAll) ||
-                   (typeof entry.LSHandlerRoleViewer === 'string' && entry.LSHandlerRoleViewer) || null;
-      if (role) candidate = role;
+      if (entry === null || entry === undefined || typeof entry !== 'object') continue;
+      const rec = entry as Record<string, unknown>;
+      if (rec.LSHandlerURLScheme !== scheme) continue;
+      const role =
+        (typeof rec.LSHandlerRoleAll === 'string' ? rec.LSHandlerRoleAll : null) ??
+        (typeof rec.LSHandlerRoleViewer === 'string' ? rec.LSHandlerRoleViewer : null) ??
+        null;
+      if (role !== null) candidate = role;
     }
     return candidate;
   };
@@ -124,12 +169,12 @@ function detectDefaultBrowserBundleIdMac(): string | null {
 
 function detectDefaultChromiumMac(): ChromeExecutable | null {
   const bundleId = detectDefaultBrowserBundleIdMac();
-  if (!bundleId || !CHROMIUM_BUNDLE_IDS.has(bundleId)) return null;
+  if (bundleId === null || !CHROMIUM_BUNDLE_IDS.has(bundleId)) return null;
   const appPathRaw = execText('/usr/bin/osascript', ['-e', `POSIX path of (path to application id "${bundleId}")`]);
-  if (!appPathRaw) return null;
+  if (appPathRaw === null) return null;
   const appPath = appPathRaw.trim().replace(/\/$/, '');
   const exeName = execText('/usr/bin/defaults', ['read', path.join(appPath, 'Contents', 'Info'), 'CFBundleExecutable']);
-  if (!exeName) return null;
+  if (exeName === null) return null;
   const exePath = path.join(appPath, 'Contents', 'MacOS', exeName.trim());
   if (!fileExists(exePath)) return null;
   return { kind: inferKindFromIdentifier(bundleId), path: exePath };
@@ -146,16 +191,20 @@ function findChromeMac(): ChromeExecutable | null {
     { kind: 'chromium', path: '/Applications/Chromium.app/Contents/MacOS/Chromium' },
     { kind: 'chromium', path: path.join(os.homedir(), 'Applications/Chromium.app/Contents/MacOS/Chromium') },
     { kind: 'canary', path: '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary' },
-    { kind: 'canary', path: path.join(os.homedir(), 'Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary') },
+    {
+      kind: 'canary',
+      path: path.join(os.homedir(), 'Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary'),
+    },
   ]);
 }
 
 // ── Linux Detection ──
 
 function detectDefaultChromiumLinux(): ChromeExecutable | null {
-  const desktopId = execText('xdg-settings', ['get', 'default-web-browser']) ||
+  const desktopId =
+    execText('xdg-settings', ['get', 'default-web-browser']) ??
     execText('xdg-mime', ['query', 'default', 'x-scheme-handler/http']);
-  if (!desktopId) return null;
+  if (desktopId === null) return null;
   const trimmed = desktopId.trim();
   if (!CHROMIUM_DESKTOP_IDS.has(trimmed)) return null;
 
@@ -168,16 +217,25 @@ function detectDefaultChromiumLinux(): ChromeExecutable | null {
   let desktopPath: string | null = null;
   for (const dir of searchDirs) {
     const candidate = path.join(dir, trimmed);
-    if (fileExists(candidate)) { desktopPath = candidate; break; }
+    if (fileExists(candidate)) {
+      desktopPath = candidate;
+      break;
+    }
   }
-  if (!desktopPath) return null;
+  if (desktopPath === null) return null;
 
   let execLine: string | null = null;
   try {
     const lines = fs.readFileSync(desktopPath, 'utf8').split(/\r?\n/);
-    for (const line of lines) if (line.startsWith('Exec=')) { execLine = line.slice(5).trim(); break; }
-  } catch {}
-  if (!execLine) return null;
+    for (const line of lines)
+      if (line.startsWith('Exec=')) {
+        execLine = line.slice(5).trim();
+        break;
+      }
+  } catch {
+    /* no exec line found */
+  }
+  if (execLine === null) return null;
 
   const tokens = execLine.split(/\s+/);
   let command: string | null = null;
@@ -186,10 +244,10 @@ function detectDefaultChromiumLinux(): ChromeExecutable | null {
     command = token.replace(/^["']|["']$/g, '');
     break;
   }
-  if (!command) return null;
+  if (command === null) return null;
 
   const resolved = command.startsWith('/') ? command : (execText('which', [command], 800)?.trim() ?? null);
-  if (!resolved) return null;
+  if (resolved === null || resolved === '') return null;
   const exeName = path.posix.basename(resolved).toLowerCase();
   if (!CHROMIUM_EXE_NAMES.has(exeName)) return null;
   return { kind: inferKindFromExeName(exeName), path: resolved };
@@ -222,15 +280,24 @@ function findChromeWindows(): ChromeExecutable | null {
   const candidates: ChromeExecutable[] = [];
   if (localAppData) {
     candidates.push({ kind: 'chrome', path: j(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe') });
-    candidates.push({ kind: 'brave', path: j(localAppData, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe') });
+    candidates.push({
+      kind: 'brave',
+      path: j(localAppData, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
+    });
     candidates.push({ kind: 'edge', path: j(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe') });
     candidates.push({ kind: 'chromium', path: j(localAppData, 'Chromium', 'Application', 'chrome.exe') });
     candidates.push({ kind: 'canary', path: j(localAppData, 'Google', 'Chrome SxS', 'Application', 'chrome.exe') });
   }
   candidates.push({ kind: 'chrome', path: j(programFiles, 'Google', 'Chrome', 'Application', 'chrome.exe') });
   candidates.push({ kind: 'chrome', path: j(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe') });
-  candidates.push({ kind: 'brave', path: j(programFiles, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe') });
-  candidates.push({ kind: 'brave', path: j(programFilesX86, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe') });
+  candidates.push({
+    kind: 'brave',
+    path: j(programFiles, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
+  });
+  candidates.push({
+    kind: 'brave',
+    path: j(programFilesX86, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
+  });
   candidates.push({ kind: 'edge', path: j(programFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe') });
   candidates.push({ kind: 'edge', path: j(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe') });
   return findFirstExe(candidates);
@@ -239,7 +306,7 @@ function findChromeWindows(): ChromeExecutable | null {
 // ── Resolve Executable ──
 
 export function resolveBrowserExecutable(opts?: { executablePath?: string }): ChromeExecutable | null {
-  if (opts?.executablePath) {
+  if (opts?.executablePath !== undefined && opts.executablePath !== '') {
     if (!fileExists(opts.executablePath)) throw new Error(`executablePath not found: ${opts.executablePath}`);
     return { kind: 'custom', path: opts.executablePath };
   }
@@ -254,40 +321,47 @@ export function resolveBrowserExecutable(opts?: { executablePath?: string }): Ch
 
 async function ensurePortAvailable(port: number): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const tester = net.createServer()
+    const tester = net
+      .createServer()
       .once('error', (err: NodeJS.ErrnoException) => {
-        if (err.code === 'EADDRINUSE') reject(new Error(`Port ${port} is already in use`));
+        if (err.code === 'EADDRINUSE') reject(new Error(`Port ${String(port)} is already in use`));
         else reject(err);
       })
-      .once('listening', () => { tester.close(() => resolve()); })
+      .once('listening', () => {
+        tester.close(() => {
+          resolve();
+        });
+      })
       .listen(port);
   });
 }
 
 // ── Profile Decoration ──
 
-function safeReadJson(filePath: string): Record<string, any> | null {
+function safeReadJson(filePath: string): Record<string, unknown> | null {
   try {
     if (!fs.existsSync(filePath)) return null;
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const parsed: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
-    return parsed;
-  } catch { return null; }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
-function safeWriteJson(filePath: string, data: Record<string, any>): void {
+function safeWriteJson(filePath: string, data: Record<string, unknown>): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
 }
 
-function setDeep(obj: Record<string, any>, keys: string[], value: any): void {
-  let node = obj;
+function setDeep(obj: Record<string, unknown>, keys: string[], value: unknown): void {
+  let node: Record<string, unknown> = obj;
   for (const key of keys.slice(0, -1)) {
     const next = node[key];
     if (typeof next !== 'object' || next === null || Array.isArray(next)) node[key] = {};
-    node = node[key];
+    node = node[key] as Record<string, unknown>;
   }
-  node[keys[keys.length - 1]!] = value;
+  node[keys[keys.length - 1]] = value;
 }
 
 function parseHexRgbToSignedArgbInt(hex: string): number | null {
@@ -348,7 +422,9 @@ function isWebSocketUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
     return parsed.protocol === 'ws:' || parsed.protocol === 'wss:';
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 export function isLoopbackHost(hostname: string): boolean {
@@ -356,7 +432,10 @@ export function isLoopbackHost(hostname: string): boolean {
 }
 
 export function hasProxyEnvConfigured(): boolean {
-  return !!(process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.https_proxy);
+  return (
+    (process.env.HTTP_PROXY ?? process.env.HTTPS_PROXY ?? process.env.http_proxy ?? process.env.https_proxy ?? '') !==
+    ''
+  );
 }
 
 /**
@@ -421,14 +500,30 @@ async function canOpenWebSocket(url: string, timeoutMs: number): Promise<boolean
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try { ws.close(); } catch {}
+      try {
+        ws.close();
+      } catch {}
       resolve(value);
     };
-    const timer = setTimeout(() => finish(false), Math.max(50, timeoutMs + 25));
+    const timer = setTimeout(
+      () => {
+        finish(false);
+      },
+      Math.max(50, timeoutMs + 25),
+    );
     let ws: WebSocket;
-    try { ws = new WebSocket(url); } catch { finish(false); return; }
-    ws.onopen = () => finish(true);
-    ws.onerror = () => finish(false);
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      finish(false);
+      return;
+    }
+    ws.onopen = () => {
+      finish(true);
+    };
+    ws.onerror = () => {
+      finish(false);
+    };
   });
 }
 
@@ -436,20 +531,25 @@ async function fetchChromeVersion(
   cdpUrl: string,
   timeoutMs = 500,
   authToken?: string,
-): Promise<Record<string, any> | null> {
+): Promise<Record<string, unknown> | null> {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  const t = setTimeout(() => {
+    ctrl.abort();
+  }, timeoutMs);
   try {
     const httpBase = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
     const headers: Record<string, string> = {};
-    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    if (authToken !== undefined && authToken !== '') headers.Authorization = `Bearer ${authToken}`;
     const res = await fetch(appendCdpPath(httpBase, '/json/version'), { signal: ctrl.signal, headers });
     if (!res.ok) return null;
-    const data = await res.json();
-    if (!data || typeof data !== 'object') return null;
-    return data as Record<string, any>;
-  } catch { return null; }
-  finally { clearTimeout(t); }
+    const data: unknown = await res.json();
+    if (data === null || data === undefined || typeof data !== 'object') return null;
+    return data as Record<string, unknown>;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 export async function isChromeReachable(cdpUrl: string, timeoutMs = 500, authToken?: string): Promise<boolean> {
@@ -458,17 +558,22 @@ export async function isChromeReachable(cdpUrl: string, timeoutMs = 500, authTok
   return Boolean(version);
 }
 
-export async function getChromeWebSocketUrl(cdpUrl: string, timeoutMs = 500, authToken?: string): Promise<string | null> {
+export async function getChromeWebSocketUrl(
+  cdpUrl: string,
+  timeoutMs = 500,
+  authToken?: string,
+): Promise<string | null> {
   if (isWebSocketUrl(cdpUrl)) return cdpUrl;
   const version = await fetchChromeVersion(cdpUrl, timeoutMs, authToken);
-  const wsUrl = String(version?.webSocketDebuggerUrl ?? '').trim();
-  if (!wsUrl) return null;
+  const rawWsUrl = version?.webSocketDebuggerUrl;
+  const wsUrl = typeof rawWsUrl === 'string' ? rawWsUrl.trim() : '';
+  if (wsUrl === '') return null;
   return normalizeCdpWsUrl(wsUrl, cdpUrl);
 }
 
 export async function isChromeCdpReady(cdpUrl: string, timeoutMs = 500, handshakeTimeoutMs = 800): Promise<boolean> {
   const wsUrl = await getChromeWebSocketUrl(cdpUrl, timeoutMs);
-  if (!wsUrl) return false;
+  if (wsUrl === null) return false;
   return await canRunCdpHealthCommand(wsUrl, handshakeTimeoutMs);
 }
 
@@ -479,11 +584,18 @@ async function canRunCdpHealthCommand(wsUrl: string, timeoutMs = 800): Promise<b
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try { ws.close(); } catch {}
+      try {
+        ws.close();
+      } catch {}
       resolve(value);
     };
 
-    const timer = setTimeout(() => finish(false), Math.max(50, timeoutMs + 25));
+    const timer = setTimeout(
+      () => {
+        finish(false);
+      },
+      Math.max(50, timeoutMs + 25),
+    );
 
     let ws: WebSocket;
     try {
@@ -496,17 +608,27 @@ async function canRunCdpHealthCommand(wsUrl: string, timeoutMs = 800): Promise<b
     ws.onopen = () => {
       try {
         ws.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' }));
-      } catch { finish(false); }
+      } catch {
+        finish(false);
+      }
     };
     ws.onmessage = (event) => {
       try {
-        const parsed = JSON.parse(String(event.data));
-        if (parsed?.id !== 1) return;
-        finish(Boolean(parsed.result && typeof parsed.result === 'object'));
-      } catch { /* ignore non-JSON frames */ }
+        const parsed: unknown = JSON.parse(String(event.data));
+        if (typeof parsed !== 'object' || parsed === null) return;
+        const msg = parsed as Record<string, unknown>;
+        if (msg.id !== 1) return;
+        finish(typeof msg.result === 'object' && msg.result !== null);
+      } catch {
+        /* ignore non-JSON frames */
+      }
     };
-    ws.onerror = () => finish(false);
-    ws.onclose = () => finish(false);
+    ws.onerror = () => {
+      finish(false);
+    };
+    ws.onclose = () => {
+      finish(false);
+    };
   });
 }
 
@@ -515,7 +637,8 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   await ensurePortAvailable(cdpPort);
 
   const exe = resolveBrowserExecutable({ executablePath: opts.executablePath });
-  if (!exe) throw new Error('No supported browser found (Chrome/Brave/Edge/Chromium). Install one or provide executablePath.');
+  if (!exe)
+    throw new Error('No supported browser found (Chrome/Brave/Edge/Chromium). Install one or provide executablePath.');
 
   const profileName = opts.profileName ?? DEFAULT_PROFILE_NAME;
   const userDataDir = opts.userDataDir ?? resolveUserDataDir(profileName);
@@ -523,7 +646,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
 
   const spawnChrome = () => {
     const args = [
-      `--remote-debugging-port=${cdpPort}`,
+      `--remote-debugging-port=${String(cdpPort)}`,
       `--user-data-dir=${userDataDir}`,
       '--no-first-run',
       '--no-default-browser-check',
@@ -536,10 +659,10 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
       '--hide-crash-restore-bubble',
       '--password-store=basic',
     ];
-    if (opts.headless) {
+    if (opts.headless === true) {
       args.push('--headless=new', '--disable-gpu');
     }
-    if (opts.noSandbox) {
+    if (opts.noSandbox === true) {
       args.push('--no-sandbox', '--disable-setuid-sandbox');
     }
     if (process.platform === 'linux') args.push('--disable-dev-shm-usage');
@@ -564,16 +687,20 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
       if (fileExists(localStatePath) && fileExists(preferencesPath)) break;
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 100));
     }
-    try { bootstrap.kill('SIGTERM'); } catch {}
+    try {
+      bootstrap.kill('SIGTERM');
+    } catch {}
     const exitDeadline = Date.now() + 5000;
     while (Date.now() < exitDeadline) {
       if (bootstrap.exitCode != null) break;
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
     }
     if (bootstrap.exitCode == null) {
-      try { bootstrap.kill('SIGKILL'); } catch {}
+      try {
+        bootstrap.kill('SIGKILL');
+      } catch {}
     }
   }
 
@@ -581,32 +708,40 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
     decorateProfile(userDataDir, profileName, opts.profileColor ?? DEFAULT_PROFILE_COLOR);
   } catch {}
 
-  try { ensureCleanExit(userDataDir); } catch {}
+  try {
+    ensureCleanExit(userDataDir);
+  } catch {}
 
   const proc = spawnChrome();
-  const cdpUrl = `http://127.0.0.1:${cdpPort}`;
+  const cdpUrl = `http://127.0.0.1:${String(cdpPort)}`;
 
   // Capture stderr for diagnostics on failure
   const stderrChunks: Buffer[] = [];
-  const onStderr = (chunk: Buffer) => { stderrChunks.push(chunk); };
-  proc.stderr?.on('data', onStderr);
+  const onStderr = (chunk: Buffer) => {
+    stderrChunks.push(chunk);
+  };
+  proc.stderr.on('data', onStderr);
 
   const readyDeadline = Date.now() + 15000;
   while (Date.now() < readyDeadline) {
     if (await isChromeReachable(cdpUrl, 500)) break;
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 200));
   }
 
-  if (!await isChromeReachable(cdpUrl, 500)) {
+  if (!(await isChromeReachable(cdpUrl, 500))) {
     const stderrOutput = Buffer.concat(stderrChunks).toString('utf8').trim();
     const stderrHint = stderrOutput ? `\nChrome stderr:\n${stderrOutput.slice(0, 2000)}` : '';
-    const sandboxHint = process.platform === 'linux' && !opts.noSandbox
-      ? '\nHint: If running in a container or as root, try setting noSandbox: true.' : '';
-    try { proc.kill('SIGKILL'); } catch {}
-    throw new Error(`Failed to start Chrome CDP on port ${cdpPort}.${sandboxHint}${stderrHint}`);
+    const sandboxHint =
+      process.platform === 'linux' && opts.noSandbox !== true
+        ? '\nHint: If running in a container or as root, try setting noSandbox: true.'
+        : '';
+    try {
+      proc.kill('SIGKILL');
+    } catch {}
+    throw new Error(`Failed to start Chrome CDP on port ${String(cdpPort)}.${sandboxHint}${stderrHint}`);
   }
 
-  proc.stderr?.off('data', onStderr);
+  proc.stderr.off('data', onStderr);
   stderrChunks.length = 0;
 
   return {
@@ -621,12 +756,21 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
 
 export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Promise<void> {
   const proc = running.proc;
-  if (proc.exitCode != null) return;
-  try { proc.kill('SIGTERM'); } catch {}
+  if (proc.exitCode !== null) return;
+  try {
+    proc.kill('SIGTERM');
+  } catch {
+    /* process may already be dead */
+  }
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (proc.exitCode != null) return;
-    await new Promise(r => setTimeout(r, 100));
+    // exitCode changes asynchronously after SIGTERM; re-read from proc
+    if ((proc as { exitCode: number | null }).exitCode !== null) return;
+    await new Promise((r) => setTimeout(r, 100));
   }
-  try { proc.kill('SIGKILL'); } catch {}
+  try {
+    proc.kill('SIGKILL');
+  } catch {
+    /* process may already be dead */
+  }
 }

@@ -1,9 +1,11 @@
-import { resolve, normalize, dirname, basename, join, sep, relative, posix, win32 } from 'node:path';
-import { lookup as dnsLookup } from 'node:dns/promises';
-import { lookup as dnsLookupCb } from 'node:dns';
-import { lstat, realpath, rename, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { lookup as dnsLookupCb } from 'node:dns';
+import { lookup as dnsLookup } from 'node:dns/promises';
+import { lstat, realpath, rename, rm } from 'node:fs/promises';
+import { resolve, normalize, dirname, basename, join, sep, relative, posix, win32 } from 'node:path';
+
 import * as ipaddr from 'ipaddr.js';
+
 import type { SsrfPolicy, PinnedHostname } from './types.js';
 
 export type LookupFn = typeof dnsLookup;
@@ -21,15 +23,15 @@ export class InvalidBrowserNavigationUrlError extends Error {
 }
 
 /** Options for browser navigation SSRF policy. */
-export type BrowserNavigationPolicyOptions = {
+export interface BrowserNavigationPolicyOptions {
   ssrfPolicy?: SsrfPolicy;
-};
+}
 
 /** Playwright-compatible request interface for redirect chain inspection. */
-export type BrowserNavigationRequestLike = {
+export interface BrowserNavigationRequestLike {
   url(): string;
   redirectedFrom(): BrowserNavigationRequestLike | null;
-};
+}
 
 /** Build a BrowserNavigationPolicyOptions from an SsrfPolicy. */
 export function withBrowserNavigationPolicy(ssrfPolicy?: SsrfPolicy): BrowserNavigationPolicyOptions {
@@ -42,17 +44,14 @@ const SAFE_NON_NETWORK_URLS = new Set(['about:blank']);
 
 const PROXY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];
 
-const BLOCKED_HOSTNAMES = new Set([
-  'localhost',
-  'localhost.localdomain',
-  'metadata.google.internal',
-]);
+const BLOCKED_HOSTNAMES = new Set(['localhost', 'localhost.localdomain', 'metadata.google.internal']);
 
 function isAllowedNonNetworkNavigationUrl(parsed: URL): boolean {
   return SAFE_NON_NETWORK_URLS.has(parsed.href);
 }
 
 function isPrivateNetworkAllowedByPolicy(policy?: SsrfPolicy): boolean {
+  // eslint-disable-next-line @typescript-eslint/no-deprecated
   return policy?.dangerouslyAllowPrivateNetwork === true || policy?.allowPrivateNetwork === true;
 }
 
@@ -67,7 +66,7 @@ function hasProxyEnvConfigured(env: Record<string, string | undefined> = process
 // ── Hostname normalization & blocking ──
 
 function normalizeHostname(hostname: string): string {
-  let h = String(hostname ?? '').trim().toLowerCase();
+  let h = hostname.trim().toLowerCase();
   if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);
   // Strip trailing dot (FQDN)
   if (h.endsWith('.')) h = h.slice(0, -1);
@@ -82,17 +81,23 @@ function isBlockedHostnameNormalized(normalized: string): boolean {
 // ── IP address checking via ipaddr.js ──
 
 const BLOCKED_IPV4_RANGES = new Set([
-  'unspecified', 'broadcast', 'multicast', 'linkLocal',
-  'loopback', 'carrierGradeNat', 'private', 'reserved',
+  'unspecified',
+  'broadcast',
+  'multicast',
+  'linkLocal',
+  'loopback',
+  'carrierGradeNat',
+  'private',
+  'reserved',
 ]);
 
-const BLOCKED_IPV6_RANGES = new Set([
-  'unspecified', 'loopback', 'linkLocal', 'uniqueLocal', 'multicast',
-]);
+const BLOCKED_IPV6_RANGES = new Set(['unspecified', 'loopback', 'linkLocal', 'uniqueLocal', 'multicast']);
 
 const RFC2544_BENCHMARK_PREFIX: [ipaddr.IPv4, number] = [ipaddr.IPv4.parse('198.18.0.0'), 15];
 
-type IsPrivateIpOpts = { allowRfc2544BenchmarkRange?: boolean };
+interface IsPrivateIpOpts {
+  allowRfc2544BenchmarkRange?: boolean;
+}
 
 const EMBEDDED_IPV4_SENTINEL_RULES: {
   matches: (parts: number[]) => boolean;
@@ -100,12 +105,14 @@ const EMBEDDED_IPV4_SENTINEL_RULES: {
 }[] = [
   // IPv4-compatible (::a.b.c.d)
   {
-    matches: (parts) => parts[0] === 0 && parts[1] === 0 && parts[2] === 0 && parts[3] === 0 && parts[4] === 0 && parts[5] === 0,
+    matches: (parts) =>
+      parts[0] === 0 && parts[1] === 0 && parts[2] === 0 && parts[3] === 0 && parts[4] === 0 && parts[5] === 0,
     toHextets: (parts) => [parts[6], parts[7]],
   },
   // NAT64 local-use (64:ff9b:1::/48)
   {
-    matches: (parts) => parts[0] === 100 && parts[1] === 65435 && parts[2] === 1 && parts[3] === 0 && parts[4] === 0 && parts[5] === 0,
+    matches: (parts) =>
+      parts[0] === 100 && parts[1] === 65435 && parts[2] === 1 && parts[3] === 0 && parts[4] === 0 && parts[5] === 0,
     toHextets: (parts) => [parts[6], parts[7]],
   },
   // 6to4 (2002::/16)
@@ -148,13 +155,13 @@ function parseIpv6WithEmbeddedIpv4(raw: string): ipaddr.IPv6 | undefined {
 
 function normalizeIpParseInput(raw: string | undefined | null): string | undefined {
   const trimmed = raw?.trim();
-  if (!trimmed) return;
+  if (trimmed === undefined || trimmed === '') return;
   return stripIpv6Brackets(trimmed);
 }
 
 function parseCanonicalIpAddress(raw: string): ipaddr.IPv4 | ipaddr.IPv6 | undefined {
   const normalized = normalizeIpParseInput(raw);
-  if (!normalized) return;
+  if (normalized === undefined) return;
   if (ipaddr.IPv4.isValid(normalized)) {
     if (!ipaddr.IPv4.isValidFourPartDecimal(normalized)) return;
     return ipaddr.IPv4.parse(normalized);
@@ -165,22 +172,22 @@ function parseCanonicalIpAddress(raw: string): ipaddr.IPv4 | ipaddr.IPv6 | undef
 
 function parseLooseIpAddress(raw: string): ipaddr.IPv4 | ipaddr.IPv6 | undefined {
   const normalized = normalizeIpParseInput(raw);
-  if (!normalized) return;
+  if (normalized === undefined) return;
   if (ipaddr.isValid(normalized)) return ipaddr.parse(normalized);
   return parseIpv6WithEmbeddedIpv4(normalized);
 }
 
 function isCanonicalDottedDecimalIPv4(raw: string): boolean {
-  const trimmed = raw?.trim();
-  if (!trimmed) return false;
+  const trimmed = raw.trim();
+  if (trimmed === '') return false;
   const normalized = stripIpv6Brackets(trimmed);
   if (!normalized) return false;
   return ipaddr.IPv4.isValidFourPartDecimal(normalized);
 }
 
 function isLegacyIpv4Literal(raw: string): boolean {
-  const trimmed = raw?.trim();
-  if (!trimmed) return false;
+  const trimmed = raw.trim();
+  if (trimmed === '') return false;
   const normalized = stripIpv6Brackets(trimmed);
   if (!normalized || normalized.includes(':')) return false;
   if (isCanonicalDottedDecimalIPv4(normalized)) return false;
@@ -198,13 +205,6 @@ function looksLikeUnsupportedIpv4Literal(address: string): boolean {
   return parts.every((part) => /^[0-9]+$/.test(part) || /^0x/i.test(part));
 }
 
-function normalizeIpv4MappedAddress(address: ipaddr.IPv4 | ipaddr.IPv6): ipaddr.IPv4 | ipaddr.IPv6 {
-  if (address.kind() !== 'ipv6') return address;
-  const v6 = address as ipaddr.IPv6;
-  if (!v6.isIPv4MappedAddress()) return address;
-  return v6.toIPv4Address();
-}
-
 function isBlockedSpecialUseIpv4Address(address: ipaddr.IPv4, opts?: IsPrivateIpOpts): boolean {
   const inRfc2544 = address.match(RFC2544_BENCHMARK_PREFIX);
   if (inRfc2544 && opts?.allowRfc2544BenchmarkRange === true) return false;
@@ -217,12 +217,7 @@ function isBlockedSpecialUseIpv6Address(address: ipaddr.IPv6): boolean {
 }
 
 function decodeIpv4FromHextets(high: number, low: number): ipaddr.IPv4 {
-  const octets = [
-    (high >>> 8) & 0xff,
-    high & 0xff,
-    (low >>> 8) & 0xff,
-    low & 0xff,
-  ];
+  const octets = [(high >>> 8) & 0xff, high & 0xff, (low >>> 8) & 0xff, low & 0xff];
   return ipaddr.IPv4.parse(octets.join('.'));
 }
 
@@ -301,11 +296,7 @@ function normalizeHostnameSet(values?: string[]): Set<string> {
 function normalizeHostnameAllowlist(values?: string[]): string[] {
   if (!values || values.length === 0) return [];
   return Array.from(
-    new Set(
-      values
-        .map((v) => normalizeHostname(v))
-        .filter((v) => v !== '*' && v !== '*.' && v.length > 0)
-    )
+    new Set(values.map((v) => normalizeHostname(v)).filter((v) => v !== '*' && v !== '*.' && v.length > 0)),
   );
 }
 
@@ -351,28 +342,39 @@ export function createPinnedLookup(params: {
   const fallback = params.fallback ?? dnsLookupCb;
   const records = params.addresses.map((address) => ({
     address,
-    family: address.includes(':') ? 6 as const : 4 as const,
+    family: address.includes(':') ? (6 as const) : (4 as const),
   }));
   let index = 0;
 
-  return ((host: string, options: any, callback?: any) => {
-    const cb = typeof options === 'function' ? options : callback;
-    if (!cb) return;
+  // dns.lookup has complex overloads; we use a loosely-typed inner signature
+  // and cast the result back to the proper type at the boundary.
+  type DnsLookupArg = string | number | { all?: boolean; family?: number } | ((...a: unknown[]) => void) | undefined;
+  return ((_host: string, ...rest: DnsLookupArg[]) => {
+    const second = rest[0];
+    const third = rest[1];
+    const cb = typeof second === 'function' ? second : typeof third === 'function' ? third : undefined;
+    if (cb === undefined) return;
 
-    const normalized = normalizeHostname(host);
-    if (!normalized || normalized !== normalizedHost) {
-      if (typeof options === 'function' || options === undefined) return (fallback as any)(host, cb);
-      return (fallback as any)(host, options, cb);
+    const normalized = normalizeHostname(_host);
+    if (normalized === '' || normalized !== normalizedHost) {
+      if (typeof second === 'function' || second === undefined) {
+        (fallback as (...a: unknown[]) => void)(_host, cb);
+        return;
+      }
+      (fallback as (...a: unknown[]) => void)(_host, second, cb);
+      return;
     }
 
-    const opts = typeof options === 'object' && options !== null ? options : {};
-    const requestedFamily = typeof options === 'number' ? options : typeof opts.family === 'number' ? opts.family : 0;
-    const candidates = requestedFamily === 4 || requestedFamily === 6
-      ? records.filter((entry) => entry.family === requestedFamily)
-      : records;
+    const opts: { all?: boolean; family?: number } =
+      typeof second === 'object' ? (second as { all?: boolean; family?: number }) : {};
+    const requestedFamily = typeof second === 'number' ? second : typeof opts.family === 'number' ? opts.family : 0;
+    const candidates =
+      requestedFamily === 4 || requestedFamily === 6
+        ? records.filter((entry) => entry.family === requestedFamily)
+        : records;
     const usable = candidates.length > 0 ? candidates : records;
 
-    if (opts.all) {
+    if (opts.all === true) {
       cb(null, usable);
       return;
     }
@@ -386,10 +388,13 @@ export function createPinnedLookup(params: {
  * Resolve DNS for a hostname and validate resolved addresses against SSRF policy.
  * Returns a PinnedHostname with pre-resolved addresses and a pinned lookup function.
  */
-export async function resolvePinnedHostnameWithPolicy(hostname: string, params: {
-  lookupFn?: LookupFn;
-  policy?: SsrfPolicy;
-} = {}): Promise<PinnedHostname> {
+export async function resolvePinnedHostnameWithPolicy(
+  hostname: string,
+  params: {
+    lookupFn?: LookupFn;
+    policy?: SsrfPolicy;
+  } = {},
+): Promise<PinnedHostname> {
   const normalized = normalizeHostname(hostname);
   if (!normalized) throw new InvalidBrowserNavigationUrlError(`Invalid hostname: "${hostname}"`);
 
@@ -401,15 +406,13 @@ export async function resolvePinnedHostnameWithPolicy(hostname: string, params: 
 
   // hostnameAllowlist is a restriction: if specified, hostname must match a pattern
   if (!matchesHostnameAllowlist(normalized, hostnameAllowlist)) {
-    throw new InvalidBrowserNavigationUrlError(
-      `Navigation blocked: hostname "${hostname}" is not in the allowlist.`
-    );
+    throw new InvalidBrowserNavigationUrlError(`Navigation blocked: hostname "${hostname}" is not in the allowlist.`);
   }
 
   if (!skipPrivateNetworkChecks) {
     if (isBlockedHostnameOrIp(normalized, params.policy)) {
       throw new InvalidBrowserNavigationUrlError(
-        `Navigation to internal/loopback address blocked: "${hostname}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
+        `Navigation to internal/loopback address blocked: "${hostname}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`,
       );
     }
   }
@@ -417,16 +420,16 @@ export async function resolvePinnedHostnameWithPolicy(hostname: string, params: 
   const lookupFn = params.lookupFn ?? dnsLookup;
   let results: { address: string; family: number }[];
   try {
-    results = await lookupFn(normalized, { all: true }) as unknown as { address: string; family: number }[];
+    results = (await lookupFn(normalized, { all: true })) as unknown as { address: string; family: number }[];
   } catch {
     throw new InvalidBrowserNavigationUrlError(
-      `Navigation to internal/loopback address blocked: unable to resolve "${hostname}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
+      `Navigation to internal/loopback address blocked: unable to resolve "${hostname}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`,
     );
   }
 
-  if (!results || results.length === 0) {
+  if (results.length === 0) {
     throw new InvalidBrowserNavigationUrlError(
-      `Navigation to internal/loopback address blocked: unable to resolve "${hostname}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
+      `Navigation to internal/loopback address blocked: unable to resolve "${hostname}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`,
     );
   }
 
@@ -434,7 +437,7 @@ export async function resolvePinnedHostnameWithPolicy(hostname: string, params: 
     for (const r of results) {
       if (isBlockedHostnameOrIp(r.address, params.policy)) {
         throw new InvalidBrowserNavigationUrlError(
-          `Navigation to internal/loopback address blocked: "${hostname}" resolves to "${r.address}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`
+          `Navigation to internal/loopback address blocked: "${hostname}" resolves to "${r.address}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`,
         );
       }
     }
@@ -443,7 +446,7 @@ export async function resolvePinnedHostnameWithPolicy(hostname: string, params: 
   const addresses = dedupeAndPreferIpv4(results);
   if (addresses.length === 0) {
     throw new InvalidBrowserNavigationUrlError(
-      `Navigation to internal/loopback address blocked: unable to resolve "${hostname}".`
+      `Navigation to internal/loopback address blocked: unable to resolve "${hostname}".`,
     );
   }
 
@@ -458,12 +461,14 @@ export async function resolvePinnedHostnameWithPolicy(hostname: string, params: 
  * Assert that a URL is allowed for browser navigation under the given SSRF policy.
  * Throws `InvalidBrowserNavigationUrlError` if the URL is blocked.
  */
-export async function assertBrowserNavigationAllowed(opts: {
-  url: string;
-  lookupFn?: LookupFn;
-} & BrowserNavigationPolicyOptions): Promise<void> {
-  const rawUrl = String(opts.url ?? '').trim();
-  if (!rawUrl) throw new InvalidBrowserNavigationUrlError('url is required');
+export async function assertBrowserNavigationAllowed(
+  opts: {
+    url: string;
+    lookupFn?: LookupFn;
+  } & BrowserNavigationPolicyOptions,
+): Promise<void> {
+  const rawUrl = opts.url.trim();
+  if (rawUrl === '') throw new InvalidBrowserNavigationUrlError('url is required');
 
   let parsed: URL;
   try {
@@ -481,7 +486,7 @@ export async function assertBrowserNavigationAllowed(opts: {
   // Fail closed when proxy env vars are set — SSRF checks cannot be reliably enforced
   if (hasProxyEnvConfigured() && !isPrivateNetworkAllowedByPolicy(opts.ssrfPolicy)) {
     throw new InvalidBrowserNavigationUrlError(
-      'Navigation blocked: strict browser SSRF policy cannot be enforced while env proxy variables are set'
+      'Navigation blocked: strict browser SSRF policy cannot be enforced while env proxy variables are set',
     );
   }
 
@@ -505,7 +510,7 @@ export async function assertSafeOutputPath(path: string, allowedRoots?: string[]
     throw new Error(`Unsafe output path: directory traversal detected in "${path}".`);
   }
 
-  if (allowedRoots?.length) {
+  if (allowedRoots !== undefined && allowedRoots.length > 0) {
     const resolved = resolve(normalized);
 
     let parentReal: string;
@@ -534,7 +539,7 @@ export async function assertSafeOutputPath(path: string, allowedRoots?: string[]
         } catch {
           return false;
         }
-      })
+      }),
     );
     if (!results.some(Boolean)) {
       throw new Error(`Unsafe output path: "${path}" is outside allowed directories.`);
@@ -584,8 +589,8 @@ export async function resolveStrictExistingUploadPaths(params: {
  * Sanitize an untrusted file name (e.g. from a download) to prevent path traversal.
  */
 export function sanitizeUntrustedFileName(fileName: string, fallbackName: string): string {
-  const trimmed = String(fileName ?? '').trim();
-  if (!trimmed) return fallbackName;
+  const trimmed = fileName.trim();
+  if (trimmed === '') return fallbackName;
 
   let base = posix.basename(trimmed);
   base = win32.basename(base);
@@ -645,7 +650,10 @@ export async function writeViaSiblingTempPath(params: {
     await rename(tempPath, targetPath);
     renameSucceeded = true;
   } finally {
-    if (!renameSucceeded) await rm(tempPath, { force: true }).catch(() => {});
+    if (!renameSucceeded)
+      await rm(tempPath, { force: true }).catch(() => {
+        /* noop */
+      });
   }
 }
 
@@ -656,12 +664,14 @@ function isAbsolute(p: string): boolean {
 /**
  * Best-effort post-navigation guard for the final page URL.
  */
-export async function assertBrowserNavigationResultAllowed(opts: {
-  url: string;
-  lookupFn?: LookupFn;
-} & BrowserNavigationPolicyOptions): Promise<void> {
-  const rawUrl = String(opts.url ?? '').trim();
-  if (!rawUrl) return;
+export async function assertBrowserNavigationResultAllowed(
+  opts: {
+    url: string;
+    lookupFn?: LookupFn;
+  } & BrowserNavigationPolicyOptions,
+): Promise<void> {
+  const rawUrl = opts.url.trim();
+  if (rawUrl === '') return;
 
   let parsed: URL;
   try {
@@ -678,10 +688,12 @@ export async function assertBrowserNavigationResultAllowed(opts: {
 /**
  * Walk the full redirect chain and validate each hop against the SSRF policy.
  */
-export async function assertBrowserNavigationRedirectChainAllowed(opts: {
-  request?: BrowserNavigationRequestLike | null;
-  lookupFn?: LookupFn;
-} & BrowserNavigationPolicyOptions): Promise<void> {
+export async function assertBrowserNavigationRedirectChainAllowed(
+  opts: {
+    request?: BrowserNavigationRequestLike | null;
+    lookupFn?: LookupFn;
+  } & BrowserNavigationPolicyOptions,
+): Promise<void> {
   const chain: string[] = [];
   let current = opts.request ?? null;
   while (current) {

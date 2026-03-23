@@ -1,3 +1,5 @@
+import type { BrowserContext } from 'playwright-core';
+
 import { getPageForTargetId, ensurePageState } from '../connection.js';
 import type { CookieData, StorageKind } from '../types.js';
 
@@ -6,7 +8,7 @@ import type { CookieData, StorageKind } from '../types.js';
 export async function cookiesGetViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
-}): Promise<{ cookies: Awaited<ReturnType<import('playwright-core').BrowserContext['cookies']>> }> {
+}): Promise<{ cookies: Awaited<ReturnType<BrowserContext['cookies']>> }> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
   return { cookies: await page.context().cookies() };
@@ -20,17 +22,18 @@ export async function cookiesSetViaPlaywright(opts: {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
   const cookie = opts.cookie;
-  if (!cookie.name || cookie.value === undefined) throw new Error('cookie name and value are required');
-  const hasUrl = typeof cookie.url === 'string' && cookie.url.trim();
-  const hasDomainPath = typeof cookie.domain === 'string' && cookie.domain.trim() && typeof cookie.path === 'string' && cookie.path.trim();
+  if (cookie.name === '') throw new Error('cookie name and value are required');
+  const hasUrl = typeof cookie.url === 'string' && cookie.url.trim() !== '';
+  const hasDomainPath =
+    typeof cookie.domain === 'string' &&
+    cookie.domain.trim() !== '' &&
+    typeof cookie.path === 'string' &&
+    cookie.path.trim() !== '';
   if (!hasUrl && !hasDomainPath) throw new Error('cookie requires url, or domain+path');
   await page.context().addCookies([cookie]);
 }
 
-export async function cookiesClearViaPlaywright(opts: {
-  cdpUrl: string;
-  targetId?: string;
-}): Promise<void> {
+export async function cookiesClearViaPlaywright(opts: { cdpUrl: string; targetId?: string }): Promise<void> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
   await page.context().clearCookies();
@@ -50,21 +53,21 @@ export async function storageGetViaPlaywright(opts: {
     values: await page.evaluate(
       ({ kind, key }: { kind: string; key?: string }) => {
         const store = kind === 'session' ? window.sessionStorage : window.localStorage;
-        if (key) {
+        if (key !== undefined && key !== '') {
           const value = store.getItem(key);
           return value === null ? {} : { [key]: value };
         }
         const out: Record<string, string> = {};
         for (let i = 0; i < store.length; i++) {
           const k = store.key(i);
-          if (!k) continue;
+          if (k === null || k === '') continue;
           const v = store.getItem(k);
           if (v !== null) out[k] = v;
         }
         return out;
       },
       { kind: opts.kind, key: opts.key },
-    ) ?? {},
+    ),
   };
 }
 
@@ -75,15 +78,15 @@ export async function storageSetViaPlaywright(opts: {
   key: string;
   value: string;
 }): Promise<void> {
-  const key = String(opts.key ?? '');
-  if (!key) throw new Error('key is required');
+  const key = opts.key;
+  if (key === '') throw new Error('key is required');
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
   await page.evaluate(
     ({ kind, key: k, value }: { kind: string; key: string; value: string }) => {
       (kind === 'session' ? window.sessionStorage : window.localStorage).setItem(k, value);
     },
-    { kind: opts.kind, key, value: String(opts.value ?? '') },
+    { kind: opts.kind, key, value: opts.value },
   );
 }
 

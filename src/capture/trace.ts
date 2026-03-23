@@ -1,9 +1,6 @@
 import { dirname } from 'node:path';
-import {
-  getPageForTargetId,
-  ensurePageState,
-  ensureContextState,
-} from '../connection.js';
+
+import { getPageForTargetId, ensurePageState, ensureContextState } from '../connection.js';
 import { assertSafeOutputPath, writeViaSiblingTempPath } from '../security.js';
 
 export async function traceStartViaPlaywright(opts: {
