@@ -70,6 +70,7 @@
     "eslint": "^10.1.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-import-x": "^4.16.2",
+    "jiti": "^2.6.1",
     "prettier": "^3.8.1",
     "tsup": "^8.0.0",
     "typescript": "^5.7.0",

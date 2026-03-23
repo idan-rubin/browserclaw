@@ -1,8 +1,10 @@
-import tseslint from 'typescript-eslint';
+import type { ConfigArray } from 'typescript-eslint';
+
 import eslintConfigPrettier from 'eslint-config-prettier';
 import importPlugin from 'eslint-plugin-import-x';
+import tseslint from 'typescript-eslint';
 
-export default tseslint.config(
+const config: ConfigArray = tseslint.config(
   {
     ignores: ['dist/', 'node_modules/'],
   },
@@ -20,51 +22,26 @@ export default tseslint.config(
       'import-x': importPlugin,
     },
     rules: {
-      // No `any` allowed
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-unsafe-argument': 'error',
       '@typescript-eslint/no-unsafe-assignment': 'error',
       '@typescript-eslint/no-unsafe-call': 'error',
       '@typescript-eslint/no-unsafe-member-access': 'error',
       '@typescript-eslint/no-unsafe-return': 'error',
-
-      // No unused variables
       '@typescript-eslint/no-unused-vars': 'error',
-
-      // No floating promises
       '@typescript-eslint/no-floating-promises': 'error',
-
-      // Consistent type imports
       '@typescript-eslint/consistent-type-imports': [
         'error',
         { prefer: 'type-imports', fixStyle: 'separate-type-imports' },
       ],
-
-      // No non-null assertions
       '@typescript-eslint/no-non-null-assertion': 'error',
-
-      // Strict boolean expressions
       '@typescript-eslint/strict-boolean-expressions': 'error',
-
-      // No unnecessary conditions
       '@typescript-eslint/no-unnecessary-condition': 'error',
-
-      // Prefer nullish coalescing
       '@typescript-eslint/prefer-nullish-coalescing': 'error',
-
-      // Prefer optional chaining
       '@typescript-eslint/prefer-optional-chain': 'error',
-
-      // Require await in async functions
       '@typescript-eslint/require-await': 'error',
-
-      // No misused promises
       '@typescript-eslint/no-misused-promises': 'error',
-
-      // Switch exhaustiveness check
       '@typescript-eslint/switch-exhaustiveness-check': 'error',
-
-      // Import ordering
       'import-x/order': [
         'error',
         {
@@ -79,3 +56,5 @@ export default tseslint.config(
   },
   eslintConfigPrettier,
 );
+
+export default config;
