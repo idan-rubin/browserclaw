@@ -19,11 +19,6 @@ export type PageWithAI = Page & {
   _snapshotForAI?: (opts: { timeout: number; track: string }) => Promise<{ full?: string }>;
 };
 
-// ── Extension Relay Detection ──
-
-const OPENCLAW_EXTENSION_RELAY_BROWSER = 'OpenClaw/extension-relay';
-const extensionRelayByCdpUrl = new Map<string, boolean>();
-
 async function fetchJsonForCdp(url: string, timeoutMs: number): Promise<any> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -48,21 +43,6 @@ function appendCdpPath(cdpUrl: string, cdpPath: string): string {
   }
 }
 
-async function isExtensionRelayCdpEndpoint(cdpUrl: string): Promise<boolean> {
-  const normalized = normalizeCdpUrl(cdpUrl);
-  const cached = extensionRelayByCdpUrl.get(normalized);
-  if (cached !== undefined) return cached;
-  try {
-    const version = await fetchJsonForCdp(appendCdpPath(normalizeCdpHttpBaseForJsonEndpoints(normalized), '/json/version'), 2000);
-    const isRelay = String(version?.Browser ?? '').trim() === OPENCLAW_EXTENSION_RELAY_BROWSER;
-    extensionRelayByCdpUrl.set(normalized, isRelay);
-    return isRelay;
-  } catch {
-    extensionRelayByCdpUrl.set(normalized, false);
-    return false;
-  }
-}
-
 // ── CDP Session Helpers ──
 
 /**
@@ -79,8 +59,6 @@ export async function withPlaywrightPageCdpSession<T>(page: Page, fn: (session: 
 
 /**
  * Run a function with a page-scoped CDP client.
- * For extension relay endpoints, routes through the raw CDP websocket.
- * Otherwise, uses a Playwright CDP session.
  */
 export async function withPageScopedCdpClient<T>(opts: {
   cdpUrl: string;
@@ -195,7 +173,8 @@ export function getHeadersWithAuth(endpoint: string, baseHeaders: Record<string,
   const headers = { ...baseHeaders };
   try {
     const parsed = new URL(endpoint);
-    if (parsed.username && parsed.password) {
+    if (Object.keys(headers).some(k => k.toLowerCase() === 'authorization')) return headers;
+    if (parsed.username || parsed.password) {
       const credentials = Buffer.from(`${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`).toString('base64');
       headers['Authorization'] = `Basic ${credentials}`;
     }
@@ -677,15 +656,6 @@ async function findPageByTargetIdViaTargetList(pages: Page[], targetId: string, 
 
 export async function findPageByTargetId(browser: Browser, targetId: string, cdpUrl?: string) {
   const pages = await getAllPages(browser);
-  const isExtensionRelay = cdpUrl ? await isExtensionRelayCdpEndpoint(cdpUrl).catch(() => false) : false;
-
-  if (cdpUrl && isExtensionRelay) {
-    try {
-      const matched = await findPageByTargetIdViaTargetList(pages, targetId, cdpUrl);
-      if (matched) return matched;
-    } catch {}
-    return pages.length === 1 ? pages[0] ?? null : null;
-  }
 
   let resolvedViaCdp = false;
   for (const page of pages) {
