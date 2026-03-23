@@ -1,8 +1,4 @@
-import {
-  getPageForTargetId,
-  ensurePageState,
-  normalizeTimeoutMs,
-} from '../connection.js';
+import { getPageForTargetId, ensurePageState, normalizeTimeoutMs } from '../connection.js';
 import type { ResponseBodyResult } from '../types.js';
 
 function matchUrlPattern(pattern: string, url: string): boolean {
@@ -19,7 +15,6 @@ function matchUrlPattern(pattern: string, url: string): boolean {
   return url.includes(pattern);
 }
 
-
 export async function responseBodyViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
@@ -31,18 +26,17 @@ export async function responseBodyViaPlaywright(opts: {
   ensurePageState(page);
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 30000, 120000);
-  const pattern = String(opts.url ?? '').trim();
+  const pattern = opts.url.trim();
   if (!pattern) throw new Error('url is required');
 
-  const response = await page.waitForResponse(
-    (resp) => matchUrlPattern(pattern, resp.url()),
-    { timeout },
-  );
+  const response = await page.waitForResponse((resp) => matchUrlPattern(pattern, resp.url()), { timeout });
   let body = await response.text();
   let truncated = false;
 
-  const maxChars = typeof opts.maxChars === 'number' && Number.isFinite(opts.maxChars)
-    ? Math.max(1, Math.min(5_000_000, Math.floor(opts.maxChars))) : 200000;
+  const maxChars =
+    typeof opts.maxChars === 'number' && Number.isFinite(opts.maxChars)
+      ? Math.max(1, Math.min(5_000_000, Math.floor(opts.maxChars)))
+      : 200000;
   if (body.length > maxChars) {
     body = body.slice(0, maxChars);
     truncated = true;

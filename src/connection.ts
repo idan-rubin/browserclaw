@@ -1,8 +1,16 @@
-import { chromium } from 'playwright-core';
-import type { Browser, Page, BrowserContext, CDPSession } from 'playwright-core';
 import http from 'node:http';
 import https from 'node:https';
-import { getChromeWebSocketUrl, normalizeCdpHttpBaseForJsonEndpoints, normalizeCdpWsUrl, isLoopbackHost, hasProxyEnvConfigured } from './chrome-launcher.js';
+
+import { chromium } from 'playwright-core';
+import type { Browser, Page, BrowserContext, CDPSession } from 'playwright-core';
+
+import {
+  getChromeWebSocketUrl,
+  normalizeCdpHttpBaseForJsonEndpoints,
+  normalizeCdpWsUrl,
+  isLoopbackHost,
+  hasProxyEnvConfigured,
+} from './chrome-launcher.js';
 import type { PageState, ContextState, RoleRefs, NetworkRequest } from './types.js';
 
 // ── Errors ──
@@ -19,9 +27,11 @@ export type PageWithAI = Page & {
   _snapshotForAI?: (opts: { timeout: number; track: string }) => Promise<{ full?: string }>;
 };
 
-async function fetchJsonForCdp(url: string, timeoutMs: number): Promise<any> {
+async function fetchJsonForCdp(url: string, timeoutMs: number): Promise<unknown> {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  const t = setTimeout(() => {
+    ctrl.abort();
+  }, timeoutMs);
   try {
     const res = await fetch(url, { signal: ctrl.signal });
     if (!res.ok) return null;
@@ -53,7 +63,9 @@ export async function withPlaywrightPageCdpSession<T>(page: Page, fn: (session: 
   try {
     return await fn(session);
   } finally {
-    await session.detach().catch(() => {});
+    await session.detach().catch(() => {
+      /* noop */
+    });
   }
 }
 
@@ -64,10 +76,10 @@ export async function withPageScopedCdpClient<T>(opts: {
   cdpUrl: string;
   page: Page;
   targetId?: string;
-  fn: (send: (method: string, params?: Record<string, unknown>) => Promise<any>) => Promise<T>;
+  fn: (send: (method: string, params?: Record<string, unknown>) => Promise<unknown>) => Promise<T>;
 }): Promise<T> {
   return await withPlaywrightPageCdpSession(opts.page, async (session) => {
-    return await opts.fn((method, params) => session.send(method as any, params));
+    return await opts.fn((method, params) => session.send(method as Parameters<CDPSession['send']>[0], params));
   });
 }
 
@@ -76,7 +88,7 @@ export async function withPageScopedCdpClient<T>(opts: {
 const LOOPBACK_ENTRIES = 'localhost,127.0.0.1,[::1]';
 
 function noProxyAlreadyCoversLocalhost(): boolean {
-  const current = process.env.NO_PROXY || process.env.no_proxy || '';
+  const current = process.env.NO_PROXY ?? process.env.no_proxy ?? '';
   return current.includes('localhost') && current.includes('127.0.0.1') && current.includes('[::1]');
 }
 
@@ -97,7 +109,7 @@ class NoProxyLeaseManager {
     if (this.leaseCount === 0 && !noProxyAlreadyCoversLocalhost()) {
       const noProxy = process.env.NO_PROXY;
       const noProxyLower = process.env.no_proxy;
-      const current = noProxy || noProxyLower || '';
+      const current = noProxy ?? noProxyLower ?? '';
       const applied = current ? `${current},${LOOPBACK_ENTRIES}` : LOOPBACK_ENTRIES;
       process.env.NO_PROXY = applied;
       process.env.no_proxy = applied;
@@ -156,8 +168,7 @@ export function getDirectAgentForCdp(url: string): http.Agent | https.Agent | un
   try {
     const parsed = new URL(url);
     if (isLoopbackHost(parsed.hostname)) {
-      return parsed.protocol === 'https:' || parsed.protocol === 'wss:'
-        ? directHttpsAgent : directHttpAgent;
+      return parsed.protocol === 'https:' || parsed.protocol === 'wss:' ? directHttpsAgent : directHttpAgent;
     }
   } catch {}
   return undefined;
@@ -173,10 +184,12 @@ export function getHeadersWithAuth(endpoint: string, baseHeaders: Record<string,
   const headers = { ...baseHeaders };
   try {
     const parsed = new URL(endpoint);
-    if (Object.keys(headers).some(k => k.toLowerCase() === 'authorization')) return headers;
+    if (Object.keys(headers).some((k) => k.toLowerCase() === 'authorization')) return headers;
     if (parsed.username || parsed.password) {
-      const credentials = Buffer.from(`${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`).toString('base64');
-      headers['Authorization'] = `Basic ${credentials}`;
+      const credentials = Buffer.from(
+        `${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`,
+      ).toString('base64');
+      headers.Authorization = `Basic ${credentials}`;
     }
   } catch {}
   return headers;
@@ -228,11 +241,14 @@ export function ensureContextState(context: BrowserContext): ContextState {
 }
 
 // Ref cache: keyed by "cdpUrl::targetId"
-const roleRefsByTarget = new Map<string, {
-  refs: RoleRefs;
-  frameSelector?: string;
-  mode?: 'role' | 'aria';
-}>();
+const roleRefsByTarget = new Map<
+  string,
+  {
+    refs: RoleRefs;
+    frameSelector?: string;
+    mode?: 'role' | 'aria';
+  }
+>();
 const MAX_ROLE_REFS_CACHE = 50;
 
 const MAX_CONSOLE_MESSAGES = 500;
@@ -253,7 +269,7 @@ function roleRefsKey(cdpUrl: string, targetId: string): string {
 export function findNetworkRequestById(state: PageState, id: string): NetworkRequest | undefined {
   for (let i = state.requests.length - 1; i >= 0; i--) {
     const candidate = state.requests[i];
-    if (candidate && candidate.id === id) return candidate;
+    if (candidate.id === id) return candidate;
   }
   return undefined;
 }
@@ -289,9 +305,9 @@ export function ensurePageState(page: Page): PageState {
 
     page.on('pageerror', (err) => {
       state.errors.push({
-        message: err?.message ? String(err.message) : String(err),
-        name: err?.name ? String(err.name) : undefined,
-        stack: err?.stack ? String(err.stack) : undefined,
+        message: err.message !== '' ? err.message : String(err),
+        name: err.name !== '' ? err.name : undefined,
+        stack: err.stack !== undefined && err.stack !== '' ? err.stack : undefined,
         timestamp: new Date().toISOString(),
       });
       if (state.errors.length > MAX_PAGE_ERRORS) state.errors.shift();
@@ -299,7 +315,7 @@ export function ensurePageState(page: Page): PageState {
 
     page.on('request', (req) => {
       state.nextRequestId += 1;
-      const id = `r${state.nextRequestId}`;
+      const id = `r${String(state.nextRequestId)}`;
       state.requestIds.set(req, id);
       state.requests.push({
         id,
@@ -314,7 +330,7 @@ export function ensurePageState(page: Page): PageState {
     page.on('response', (resp) => {
       const req = resp.request();
       const id = state.requestIds.get(req);
-      if (!id) return;
+      if (id === undefined) return;
       const rec = findNetworkRequestById(state, id);
       if (rec) {
         rec.status = resp.status();
@@ -324,7 +340,7 @@ export function ensurePageState(page: Page): PageState {
 
     page.on('requestfailed', (req) => {
       const id = state.requestIds.get(req);
-      if (!id) return;
+      if (id === undefined) return;
       const rec = findNetworkRequestById(state, id);
       if (rec) {
         rec.failureText = req.failure()?.errorText;
@@ -346,8 +362,9 @@ export function ensurePageState(page: Page): PageState {
 const STEALTH_SCRIPT = `Object.defineProperty(navigator, 'webdriver', { get: () => undefined })`;
 
 function applyStealthToPage(page: Page): void {
-  page.evaluate(STEALTH_SCRIPT).catch((e) => {
-    if (process.env.DEBUG) console.warn('[browserclaw] stealth evaluate failed:', e.message);
+  page.evaluate(STEALTH_SCRIPT).catch((e: unknown) => {
+    if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
+      console.warn('[browserclaw] stealth evaluate failed:', e instanceof Error ? e.message : String(e));
   });
 }
 
@@ -356,8 +373,9 @@ function observeContext(context: BrowserContext): void {
   observedContexts.add(context);
   ensureContextState(context);
 
-  context.addInitScript(STEALTH_SCRIPT).catch((e) => {
-    if (process.env.DEBUG) console.warn('[browserclaw] stealth initScript failed:', e.message);
+  context.addInitScript(STEALTH_SCRIPT).catch((e: unknown) => {
+    if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
+      console.warn('[browserclaw] stealth initScript failed:', e instanceof Error ? e.message : String(e));
   });
 
   for (const page of context.pages()) {
@@ -388,15 +406,15 @@ export function rememberRoleRefsForTarget(opts: {
   mode?: 'role' | 'aria';
 }): void {
   const targetId = opts.targetId.trim();
-  if (!targetId) return;
+  if (targetId === '') return;
   roleRefsByTarget.set(roleRefsKey(opts.cdpUrl, targetId), {
     refs: opts.refs,
-    ...(opts.frameSelector ? { frameSelector: opts.frameSelector } : {}),
-    ...(opts.mode ? { mode: opts.mode } : {}),
+    ...(opts.frameSelector !== undefined && opts.frameSelector !== '' ? { frameSelector: opts.frameSelector } : {}),
+    ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
   });
   while (roleRefsByTarget.size > MAX_ROLE_REFS_CACHE) {
     const first = roleRefsByTarget.keys().next();
-    if (first.done) break;
+    if (first.done === true) break;
     roleRefsByTarget.delete(first.value);
   }
 }
@@ -414,7 +432,7 @@ export function storeRoleRefsForTarget(opts: {
   state.roleRefsFrameSelector = opts.frameSelector;
   state.roleRefsMode = opts.mode;
 
-  if (!opts.targetId?.trim()) return;
+  if (opts.targetId === undefined || opts.targetId.trim() === '') return;
   rememberRoleRefsForTarget({
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
@@ -424,13 +442,9 @@ export function storeRoleRefsForTarget(opts: {
   });
 }
 
-export function restoreRoleRefsForTarget(opts: {
-  cdpUrl: string;
-  targetId?: string;
-  page: Page;
-}): void {
-  const targetId = opts.targetId?.trim() || '';
-  if (!targetId) return;
+export function restoreRoleRefsForTarget(opts: { cdpUrl: string; targetId?: string; page: Page }): void {
+  const targetId = opts.targetId?.trim() ?? '';
+  if (targetId === '') return;
   const entry = roleRefsByTarget.get(roleRefsKey(opts.cdpUrl, targetId));
   if (!entry) return;
   const state = ensurePageState(opts.page);
@@ -455,10 +469,13 @@ export async function connectBrowser(cdpUrl: string, authToken?: string): Promis
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const timeout = 5000 + attempt * 2000;
-        const endpoint = await getChromeWebSocketUrl(normalized, timeout, authToken).catch(() => null) ?? normalized;
+        const endpoint = (await getChromeWebSocketUrl(normalized, timeout, authToken).catch(() => null)) ?? normalized;
         const headers: Record<string, string> = getHeadersWithAuth(endpoint);
-        if (authToken && !headers['Authorization']) headers['Authorization'] = `Bearer ${authToken}`;
-        const browser = await withNoProxyForCdpUrl(endpoint, () => chromium.connectOverCDP(endpoint, { timeout, headers }));
+        if (authToken !== undefined && authToken !== '' && !headers.Authorization)
+          headers.Authorization = `Bearer ${authToken}`;
+        const browser = await withNoProxyForCdpUrl(endpoint, () =>
+          chromium.connectOverCDP(endpoint, { timeout, headers }),
+        );
         const onDisconnected = () => {
           if (cachedByCdpUrl.get(normalized)?.browser === browser) {
             cachedByCdpUrl.delete(normalized);
@@ -475,13 +492,15 @@ export async function connectBrowser(cdpUrl: string, authToken?: string): Promis
       } catch (err) {
         lastErr = err;
         if ((err instanceof Error ? err.message : String(err)).includes('rate limit')) break;
-        await new Promise(r => setTimeout(r, 250 + attempt * 250));
+        await new Promise((r) => setTimeout(r, 250 + attempt * 250));
       }
     }
     throw lastErr instanceof Error ? lastErr : new Error('CDP connect failed');
   };
 
-  const promise = connectWithRetry().finally(() => { connectingByCdpUrl.delete(normalized); });
+  const promise = connectWithRetry().finally(() => {
+    connectingByCdpUrl.delete(normalized);
+  });
   connectingByCdpUrl.set(normalized, promise);
   return await promise;
 }
@@ -489,11 +508,15 @@ export async function connectBrowser(cdpUrl: string, authToken?: string): Promis
 export async function disconnectBrowser(): Promise<void> {
   if (connectingByCdpUrl.size) {
     for (const p of connectingByCdpUrl.values()) {
-      try { await p; } catch {}
+      try {
+        await p;
+      } catch {}
     }
   }
   for (const cur of cachedByCdpUrl.values()) {
-    await cur.browser.close().catch(() => {});
+    await cur.browser.close().catch(() => {
+      /* noop */
+    });
   }
   cachedByCdpUrl.clear();
 }
@@ -502,12 +525,15 @@ export async function disconnectBrowser(): Promise<void> {
  * Close the Playwright connection for a specific CDP URL without affecting other connections.
  */
 export async function closePlaywrightBrowserConnection(opts?: { cdpUrl?: string }): Promise<void> {
-  if (opts?.cdpUrl) {
+  if (opts?.cdpUrl !== undefined && opts.cdpUrl !== '') {
     const normalized = normalizeCdpUrl(opts.cdpUrl);
     const cur = cachedByCdpUrl.get(normalized);
     cachedByCdpUrl.delete(normalized);
     connectingByCdpUrl.delete(normalized);
-    if (cur) await cur.browser.close().catch(() => {});
+    if (cur)
+      await cur.browser.close().catch(() => {
+        /* noop */
+      });
   } else {
     await disconnectBrowser();
   }
@@ -516,7 +542,9 @@ export async function closePlaywrightBrowserConnection(opts?: { cdpUrl?: string 
 function cdpSocketNeedsAttach(wsUrl: string): boolean {
   try {
     const pathname = new URL(wsUrl).pathname;
-    return pathname === '/cdp' || pathname.endsWith('/cdp') || pathname.includes('/devtools/browser/') || pathname === '/';
+    return (
+      pathname === '/cdp' || pathname.endsWith('/cdp') || pathname.includes('/devtools/browser/') || pathname === '/'
+    );
   } catch {
     return false;
   }
@@ -530,30 +558,51 @@ function cdpSocketNeedsAttach(wsUrl: string): boolean {
 async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string): Promise<void> {
   const httpBase = normalizeCdpHttpBaseForJsonEndpoints(cdpUrl);
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 2000);
-  let targets: any[];
+  const t = setTimeout(() => {
+    ctrl.abort();
+  }, 2000);
+  let targets: unknown;
   try {
     const res = await fetch(`${httpBase}/json/list`, { signal: ctrl.signal });
     if (!res.ok) return;
     targets = await res.json();
-  } catch { return; }
-  finally { clearTimeout(t); }
+  } catch {
+    return;
+  } finally {
+    clearTimeout(t);
+  }
 
   if (!Array.isArray(targets)) return;
-  const target = targets.find((entry: any) => String(entry?.id ?? '').trim() === targetId);
-  const wsUrlRaw = String(target?.webSocketDebuggerUrl ?? '').trim();
-  if (!wsUrlRaw) return;
+  const target = targets.find((entry: unknown) => {
+    const e = entry as { id?: string; webSocketDebuggerUrl?: string };
+    return (e.id ?? '').trim() === targetId;
+  }) as { id?: string; webSocketDebuggerUrl?: string } | undefined;
+  const wsUrlRaw = (target?.webSocketDebuggerUrl ?? '').trim();
+  if (wsUrlRaw === '') return;
 
   const wsUrl = normalizeCdpWsUrl(wsUrlRaw, httpBase);
   const needsAttach = cdpSocketNeedsAttach(wsUrl);
 
   await new Promise<void>((resolve) => {
     let done = false;
-    const finish = () => { if (done) return; done = true; clearTimeout(timer); try { ws.close(); } catch {} resolve(); };
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        ws.close();
+      } catch {}
+      resolve();
+    };
     const timer = setTimeout(finish, 3000);
     let ws: WebSocket;
     let nextId = 1;
-    try { ws = new WebSocket(wsUrl); } catch { finish(); return; }
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch {
+      finish();
+      return;
+    }
     ws.onopen = () => {
       if (needsAttach) {
         ws.send(JSON.stringify({ id: nextId++, method: 'Target.attachToTarget', params: { targetId, flatten: true } }));
@@ -565,16 +614,34 @@ async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string): Pr
     ws.onmessage = (event) => {
       if (!needsAttach) return;
       try {
-        const msg = JSON.parse(String(event.data));
-        if (msg.id && msg.result?.sessionId) {
-          ws.send(JSON.stringify({ id: nextId++, sessionId: msg.result.sessionId, method: 'Runtime.terminateExecution' }));
-          try { ws.send(JSON.stringify({ id: nextId++, method: 'Target.detachFromTarget', params: { sessionId: msg.result.sessionId } })); } catch {}
+        const msg = JSON.parse(String(event.data)) as Record<string, unknown>;
+        const result = msg.result as Record<string, unknown> | undefined;
+        if (msg.id !== undefined && result?.sessionId !== undefined) {
+          const sessionId = result.sessionId as string;
+          ws.send(JSON.stringify({ id: nextId++, sessionId, method: 'Runtime.terminateExecution' }));
+          try {
+            ws.send(
+              JSON.stringify({
+                id: nextId++,
+                method: 'Target.detachFromTarget',
+                params: { sessionId },
+              }),
+            );
+          } catch {
+            /* noop */
+          }
           setTimeout(finish, 300);
         }
-      } catch {}
+      } catch {
+        /* noop */
+      }
     };
-    ws.onerror = () => finish();
-    ws.onclose = () => finish();
+    ws.onerror = () => {
+      finish();
+    };
+    ws.onclose = () => {
+      finish();
+    };
   });
 }
 
@@ -599,12 +666,16 @@ export async function forceDisconnectPlaywrightForTarget(opts: {
     cur.browser.off('disconnected', cur.onDisconnected);
   }
 
-  const targetId = opts.targetId?.trim() || '';
-  if (targetId) {
-    await tryTerminateExecutionViaCdp(normalized, targetId).catch(() => {});
+  const targetId = opts.targetId?.trim() ?? '';
+  if (targetId !== '') {
+    await tryTerminateExecutionViaCdp(normalized, targetId).catch(() => {
+      /* noop */
+    });
   }
 
-  cur.browser.close().catch(() => {});
+  cur.browser.close().catch(() => {
+    /* noop */
+  });
 }
 
 // ── Page Lookup ──
@@ -618,8 +689,8 @@ interface CdpTarget {
   webSocketDebuggerUrl?: string;
 }
 
-export async function getAllPages(browser: Browser) {
-  return browser.contexts().flatMap(c => c.pages());
+export function getAllPages(browser: Browser) {
+  return browser.contexts().flatMap((c) => c.pages());
 }
 
 export async function pageTargetId(page: Page): Promise<string | null> {
@@ -627,9 +698,11 @@ export async function pageTargetId(page: Page): Promise<string | null> {
   try {
     const info = await session.send('Target.getTargetInfo');
     const targetInfo = (info as { targetInfo?: { targetId?: string } }).targetInfo;
-    return String(targetInfo?.targetId ?? '').trim() || null;
+    return (targetInfo?.targetId ?? '').trim() || null;
   } finally {
-    await session.detach().catch(() => {});
+    await session.detach().catch(() => {
+      /* noop */
+    });
   }
 }
 
@@ -649,13 +722,16 @@ function matchPageByTargetList(pages: Page[], targets: CdpTarget[], targetId: st
 }
 
 async function findPageByTargetIdViaTargetList(pages: Page[], targetId: string, cdpUrl: string): Promise<Page | null> {
-  const targets = await fetchJsonForCdp(appendCdpPath(normalizeCdpHttpBaseForJsonEndpoints(cdpUrl), '/json/list'), 2000);
+  const targets = await fetchJsonForCdp(
+    appendCdpPath(normalizeCdpHttpBaseForJsonEndpoints(cdpUrl), '/json/list'),
+    2000,
+  );
   if (!Array.isArray(targets)) return null;
-  return matchPageByTargetList(pages, targets, targetId);
+  return matchPageByTargetList(pages, targets as CdpTarget[], targetId);
 }
 
 export async function findPageByTargetId(browser: Browser, targetId: string, cdpUrl?: string) {
-  const pages = await getAllPages(browser);
+  const pages = getAllPages(browser);
 
   let resolvedViaCdp = false;
   for (const page of pages) {
@@ -666,10 +742,10 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
     } catch {
       tid = null;
     }
-    if (tid && tid === targetId) return page;
+    if (tid !== null && tid !== '' && tid === targetId) return page;
   }
 
-  if (cdpUrl) {
+  if (cdpUrl !== undefined && cdpUrl !== '') {
     try {
       return await findPageByTargetIdViaTargetList(pages, targetId, cdpUrl);
     } catch {}
@@ -682,14 +758,16 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
 
 export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: string }) {
   const { browser } = await connectBrowser(opts.cdpUrl);
-  const pages = await getAllPages(browser);
+  const pages = getAllPages(browser);
   if (!pages.length) throw new Error('No pages available in the connected browser.');
-  const first = pages[0]!;
-  if (!opts.targetId) return first;
+  const first = pages[0];
+  if (opts.targetId === undefined || opts.targetId === '') return first;
   const found = await findPageByTargetId(browser, opts.targetId, opts.cdpUrl);
   if (!found) {
     if (pages.length === 1) return first;
-    throw new BrowserTabNotFoundError(`Tab not found (targetId: ${opts.targetId}). Call browser.tabs() to list open tabs.`);
+    throw new BrowserTabNotFoundError(
+      `Tab not found (targetId: ${opts.targetId}). Call browser.tabs() to list open tabs.`,
+    );
   }
   return found;
 }
@@ -713,7 +791,11 @@ export async function resolvePageByTargetIdOrThrow(opts: { cdpUrl: string; targe
 export function parseRoleRef(raw: string): string | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  const normalized = trimmed.startsWith('@') ? trimmed.slice(1) : trimmed.startsWith('ref=') ? trimmed.slice(4) : trimmed;
+  const normalized = trimmed.startsWith('@')
+    ? trimmed.slice(1)
+    : trimmed.startsWith('ref=')
+      ? trimmed.slice(4)
+      : trimmed;
   return /^e\d+$/.test(normalized) ? normalized : null;
 }
 
@@ -748,7 +830,7 @@ export function resolveInteractionTimeoutMs(timeoutMs?: number): number {
 export function resolveBoundedDelayMs(value: number | undefined, label: string, maxMs: number): number {
   const normalized = Math.floor(value ?? 0);
   if (!Number.isFinite(normalized) || normalized < 0) throw new Error(`${label} must be >= 0`);
-  if (normalized > maxMs) throw new Error(`${label} exceeds maximum of ${maxMs}ms`);
+  if (normalized > maxMs) throw new Error(`${label} exceeds maximum of ${String(maxMs)}ms`);
   return normalized;
 }
 
@@ -766,28 +848,33 @@ export async function getRestoredPageForTarget(opts: { cdpUrl: string; targetId?
 
 export function refLocator(page: Page, ref: string) {
   const normalized = ref.startsWith('@') ? ref.slice(1) : ref.startsWith('ref=') ? ref.slice(4) : ref;
-  if (!normalized.trim()) throw new Error('ref is required');
+  if (normalized.trim() === '') throw new Error('ref is required');
 
   if (/^e\d+$/.test(normalized)) {
     const state = pageStates.get(page);
 
     // Aria mode: use aria-ref locator
     if (state?.roleRefsMode === 'aria') {
-      return (state.roleRefsFrameSelector ? page.frameLocator(state.roleRefsFrameSelector) : page)
-        .locator(`aria-ref=${normalized}`);
+      return (
+        state.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''
+          ? page.frameLocator(state.roleRefsFrameSelector)
+          : page
+      ).locator(`aria-ref=${normalized}`);
     }
 
     // Role mode: use getByRole
     const info = state?.roleRefs?.[normalized];
     if (!info) throw new Error(`Unknown ref "${normalized}". Run a new snapshot and use a ref from that snapshot.`);
 
-    const locAny = state?.roleRefsFrameSelector
-      ? page.frameLocator(state.roleRefsFrameSelector)
-      : page;
+    const locAny =
+      state.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''
+        ? page.frameLocator(state.roleRefsFrameSelector)
+        : page;
     const role = info.role as Parameters<Page['getByRole']>[0];
-    const locator = info.name
-      ? locAny.getByRole(role, { name: info.name, exact: true })
-      : locAny.getByRole(role);
+    const locator =
+      info.name !== undefined && info.name !== ''
+        ? locAny.getByRole(role, { name: info.name, exact: true })
+        : locAny.getByRole(role);
     return info.nth !== undefined ? locator.nth(info.nth) : locator;
   }
 
@@ -799,16 +886,28 @@ export function refLocator(page: Page, ref: string) {
 export function toAIFriendlyError(error: unknown, selector: string): Error {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes('strict mode violation')) {
-    const countMatch = message.match(/resolved to (\d+) elements/);
+    const countMatch = /resolved to (\d+) elements/.exec(message);
     const count = countMatch ? countMatch[1] : 'multiple';
-    return new Error(`Selector "${selector}" matched ${count} elements. Run a new snapshot to get updated refs, or use a different ref.`);
+    return new Error(
+      `Selector "${selector}" matched ${count} elements. Run a new snapshot to get updated refs, or use a different ref.`,
+    );
   }
-  if ((message.includes('Timeout') || message.includes('waiting for')) &&
-      (message.includes('to be visible') || message.includes('not visible'))) {
-    return new Error(`Element "${selector}" not found or not visible. Run a new snapshot to see current page elements.`);
+  if (
+    (message.includes('Timeout') || message.includes('waiting for')) &&
+    (message.includes('to be visible') || message.includes('not visible'))
+  ) {
+    return new Error(
+      `Element "${selector}" not found or not visible. Run a new snapshot to see current page elements.`,
+    );
   }
-  if (message.includes('intercepts pointer events') || message.includes('not visible') || message.includes('not receive pointer events')) {
-    return new Error(`Element "${selector}" is not interactable (hidden or covered). Try scrolling it into view, closing overlays, or re-snapshotting.`);
+  if (
+    message.includes('intercepts pointer events') ||
+    message.includes('not visible') ||
+    message.includes('not receive pointer events')
+  ) {
+    return new Error(
+      `Element "${selector}" is not interactable (hidden or covered). Try scrolling it into view, closing overlays, or re-snapshotting.`,
+    );
   }
   return error instanceof Error ? error : new Error(message);
 }

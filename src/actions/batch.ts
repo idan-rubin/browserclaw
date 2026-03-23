@@ -1,30 +1,75 @@
-import { clickViaPlaywright } from './interaction.js';
-import { hoverViaPlaywright } from './interaction.js';
-import { typeViaPlaywright } from './interaction.js';
-import { selectOptionViaPlaywright } from './interaction.js';
-import { dragViaPlaywright } from './interaction.js';
-import { fillFormViaPlaywright } from './interaction.js';
-import { scrollIntoViewViaPlaywright } from './interaction.js';
+import { evaluateViaPlaywright } from './evaluate.js';
+import {
+  clickViaPlaywright,
+  hoverViaPlaywright,
+  typeViaPlaywright,
+  selectOptionViaPlaywright,
+  dragViaPlaywright,
+  fillFormViaPlaywright,
+  scrollIntoViewViaPlaywright,
+} from './interaction.js';
 import { pressKeyViaPlaywright } from './keyboard.js';
 import { resizeViewportViaPlaywright, closePageViaPlaywright } from './navigation.js';
 import { waitForViaPlaywright } from './wait.js';
-import { evaluateViaPlaywright } from './evaluate.js';
 
 const MAX_BATCH_DEPTH = 5;
 const MAX_BATCH_ACTIONS = 100;
 
 /** A single action within a batch. */
 export type BatchAction =
-  | { kind: 'click'; ref?: string; selector?: string; targetId?: string; doubleClick?: boolean; button?: string; modifiers?: string[]; delayMs?: number; timeoutMs?: number }
-  | { kind: 'type'; ref?: string; selector?: string; text: string; targetId?: string; submit?: boolean; slowly?: boolean; timeoutMs?: number }
+  | {
+      kind: 'click';
+      ref?: string;
+      selector?: string;
+      targetId?: string;
+      doubleClick?: boolean;
+      button?: string;
+      modifiers?: string[];
+      delayMs?: number;
+      timeoutMs?: number;
+    }
+  | {
+      kind: 'type';
+      ref?: string;
+      selector?: string;
+      text: string;
+      targetId?: string;
+      submit?: boolean;
+      slowly?: boolean;
+      timeoutMs?: number;
+    }
   | { kind: 'press'; key: string; targetId?: string; delayMs?: number }
   | { kind: 'hover'; ref?: string; selector?: string; targetId?: string; timeoutMs?: number }
   | { kind: 'scrollIntoView'; ref?: string; selector?: string; targetId?: string; timeoutMs?: number }
-  | { kind: 'drag'; startRef?: string; startSelector?: string; endRef?: string; endSelector?: string; targetId?: string; timeoutMs?: number }
+  | {
+      kind: 'drag';
+      startRef?: string;
+      startSelector?: string;
+      endRef?: string;
+      endSelector?: string;
+      targetId?: string;
+      timeoutMs?: number;
+    }
   | { kind: 'select'; ref?: string; selector?: string; values: string[]; targetId?: string; timeoutMs?: number }
-  | { kind: 'fill'; fields: Array<{ ref: string; type?: string; value?: string | number | boolean }>; targetId?: string; timeoutMs?: number }
+  | {
+      kind: 'fill';
+      fields: { ref: string; type?: string; value?: string | number | boolean }[];
+      targetId?: string;
+      timeoutMs?: number;
+    }
   | { kind: 'resize'; width: number; height: number; targetId?: string }
-  | { kind: 'wait'; timeMs?: number; text?: string; textGone?: string; selector?: string; url?: string; loadState?: 'load' | 'domcontentloaded' | 'networkidle'; fn?: string; targetId?: string; timeoutMs?: number }
+  | {
+      kind: 'wait';
+      timeMs?: number;
+      text?: string;
+      textGone?: string;
+      selector?: string;
+      url?: string;
+      loadState?: 'load' | 'domcontentloaded' | 'networkidle';
+      fn?: string;
+      targetId?: string;
+      timeoutMs?: number;
+    }
   | { kind: 'evaluate'; fn: string; ref?: string; targetId?: string; timeoutMs?: number }
   | { kind: 'close'; targetId?: string }
   | { kind: 'batch'; actions: BatchAction[]; targetId?: string; stopOnError?: boolean };
@@ -42,7 +87,7 @@ export async function executeSingleAction(
   evaluateEnabled: boolean,
   depth = 0,
 ): Promise<void> {
-  if (depth > MAX_BATCH_DEPTH) throw new Error(`Batch nesting depth exceeds maximum of ${MAX_BATCH_DEPTH}`);
+  if (depth > MAX_BATCH_DEPTH) throw new Error(`Batch nesting depth exceeds maximum of ${String(MAX_BATCH_DEPTH)}`);
   const effectiveTargetId = action.targetId ?? targetId;
 
   switch (action.kind) {
@@ -53,8 +98,8 @@ export async function executeSingleAction(
         ref: action.ref,
         selector: action.selector,
         doubleClick: action.doubleClick,
-        button: action.button as any,
-        modifiers: action.modifiers as any,
+        button: action.button as 'left' | 'right' | 'middle' | undefined,
+        modifiers: action.modifiers as ('Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift')[] | undefined,
         delayMs: action.delayMs,
         timeoutMs: action.timeoutMs,
       });
@@ -135,7 +180,8 @@ export async function executeSingleAction(
       });
       break;
     case 'wait':
-      if (action.fn && !evaluateEnabled) throw new Error('wait --fn is disabled by config (browser.evaluateEnabled=false)');
+      if (action.fn !== undefined && action.fn !== '' && !evaluateEnabled)
+        throw new Error('wait --fn is disabled by config (browser.evaluateEnabled=false)');
       await waitForViaPlaywright({
         cdpUrl,
         targetId: effectiveTargetId,
@@ -176,7 +222,7 @@ export async function executeSingleAction(
       });
       break;
     default:
-      throw new Error(`Unsupported batch action kind: ${(action as any).kind}`);
+      throw new Error(`Unsupported batch action kind: ${String((action as Record<string, unknown>).kind)}`);
   }
 }
 
@@ -197,8 +243,9 @@ export async function batchViaPlaywright(opts: {
   depth?: number;
 }): Promise<{ results: BatchActionResult[] }> {
   const depth = opts.depth ?? 0;
-  if (depth > MAX_BATCH_DEPTH) throw new Error(`Batch nesting depth exceeds maximum of ${MAX_BATCH_DEPTH}`);
-  if (opts.actions.length > MAX_BATCH_ACTIONS) throw new Error(`Batch exceeds maximum of ${MAX_BATCH_ACTIONS} actions`);
+  if (depth > MAX_BATCH_DEPTH) throw new Error(`Batch nesting depth exceeds maximum of ${String(MAX_BATCH_DEPTH)}`);
+  if (opts.actions.length > MAX_BATCH_ACTIONS)
+    throw new Error(`Batch exceeds maximum of ${String(MAX_BATCH_ACTIONS)} actions`);
 
   const results: BatchActionResult[] = [];
   const evaluateEnabled = opts.evaluateEnabled !== false;

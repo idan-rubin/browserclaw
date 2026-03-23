@@ -1,3 +1,5 @@
+import type { Page } from 'playwright-core';
+
 import {
   getPageForTargetId,
   ensurePageState,
@@ -22,8 +24,10 @@ type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
 const MAX_CLICK_DELAY_MS = 5000;
 const CHECKABLE_ROLES = new Set(['menuitemcheckbox', 'menuitemradio', 'checkbox', 'switch']);
 
-function resolveLocator(page: import('playwright-core').Page, resolved: { ref?: string; selector?: string }) {
-  return resolved.ref ? refLocator(page, resolved.ref) : page.locator(resolved.selector!);
+function resolveLocator(page: Page, resolved: { ref?: string; selector?: string }) {
+  if (resolved.ref !== undefined && resolved.ref !== '') return refLocator(page, resolved.ref);
+  const sel = resolved.selector ?? '';
+  return page.locator(sel);
 }
 
 export async function clickViaPlaywright(opts: {
@@ -39,15 +43,15 @@ export async function clickViaPlaywright(opts: {
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   const page = await getRestoredPageForTarget(opts);
-  const label = resolved.ref ?? resolved.selector!;
+  const label = resolved.ref ?? resolved.selector ?? '';
   const locator = resolveLocator(page, resolved);
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
 
   // Determine if this is a checkable role element so we can verify the click worked.
   let checkableRole = false;
-  if (resolved.ref) {
+  if (resolved.ref !== undefined && resolved.ref !== '') {
     const refId = parseRoleRef(resolved.ref);
-    if (refId) {
+    if (refId !== null) {
       const state = ensurePageState(page);
       const info = state.roleRefs?.[refId];
       if (info && CHECKABLE_ROLES.has(info.role)) checkableRole = true;
@@ -63,11 +67,11 @@ export async function clickViaPlaywright(opts: {
 
     // For checkable roles, capture aria-checked before the click.
     let ariaCheckedBefore: string | null | undefined;
-    if (checkableRole && !opts.doubleClick) {
+    if (checkableRole && opts.doubleClick !== true) {
       ariaCheckedBefore = await locator.getAttribute('aria-checked', { timeout }).catch(() => undefined);
     }
 
-    if (opts.doubleClick) {
+    if (opts.doubleClick === true) {
       await locator.dblclick({ timeout, button: opts.button, modifiers: opts.modifiers });
     } else {
       await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
@@ -76,7 +80,7 @@ export async function clickViaPlaywright(opts: {
     // If this is a checkable role and aria-checked didn't change, fall back to JS click.
     // Poll briefly to give async frameworks time to update the DOM before concluding
     // the click didn't work — otherwise we'd fire a second click that un-toggles it.
-    if (checkableRole && !opts.doubleClick && ariaCheckedBefore !== undefined) {
+    if (checkableRole && opts.doubleClick !== true && ariaCheckedBefore !== undefined) {
       const POLL_INTERVAL_MS = 50;
       const POLL_TIMEOUT_MS = 500;
       let changed = false;
@@ -89,7 +93,13 @@ export async function clickViaPlaywright(opts: {
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
       }
       if (!changed) {
-        await locator.evaluate((el: Element) => (el as HTMLElement).click()).catch(() => {});
+        await locator
+          .evaluate((el: Element) => {
+            (el as HTMLElement).click();
+          })
+          .catch(() => {
+            /* intentional no-op */
+          });
       }
     }
   } catch (err) {
@@ -106,7 +116,7 @@ export async function hoverViaPlaywright(opts: {
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   const page = await getRestoredPageForTarget(opts);
-  const label = resolved.ref ?? resolved.selector!;
+  const label = resolved.ref ?? resolved.selector ?? '';
   const locator = resolveLocator(page, resolved);
 
   try {
@@ -127,20 +137,20 @@ export async function typeViaPlaywright(opts: {
   timeoutMs?: number;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
-  const text = String(opts.text ?? '');
+  const text = opts.text;
   const page = await getRestoredPageForTarget(opts);
-  const label = resolved.ref ?? resolved.selector!;
+  const label = resolved.ref ?? resolved.selector ?? '';
   const locator = resolveLocator(page, resolved);
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
 
   try {
-    if (opts.slowly) {
+    if (opts.slowly === true) {
       await locator.click({ timeout });
       await locator.pressSequentially(text, { timeout, delay: 75 });
     } else {
       await locator.fill(text, { timeout });
     }
-    if (opts.submit) await locator.press('Enter', { timeout });
+    if (opts.submit === true) await locator.press('Enter', { timeout });
   } catch (err) {
     throw toAIFriendlyError(err, label);
   }
@@ -155,9 +165,9 @@ export async function selectOptionViaPlaywright(opts: {
   timeoutMs?: number;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
-  if (!opts.values?.length) throw new Error('values are required');
+  if (opts.values.length === 0) throw new Error('values are required');
   const page = await getRestoredPageForTarget(opts);
-  const label = resolved.ref ?? resolved.selector!;
+  const label = resolved.ref ?? resolved.selector ?? '';
   const locator = resolveLocator(page, resolved);
 
   try {
@@ -181,8 +191,8 @@ export async function dragViaPlaywright(opts: {
   const page = await getRestoredPageForTarget(opts);
   const startLocator = resolveLocator(page, resolvedStart);
   const endLocator = resolveLocator(page, resolvedEnd);
-  const startLabel = resolvedStart.ref ?? resolvedStart.selector!;
-  const endLabel = resolvedEnd.ref ?? resolvedEnd.selector!;
+  const startLabel = resolvedStart.ref ?? resolvedStart.selector ?? '';
+  const endLabel = resolvedEnd.ref ?? resolvedEnd.selector ?? '';
 
   try {
     await startLocator.dragTo(endLocator, { timeout: resolveInteractionTimeoutMs(opts.timeoutMs) });
@@ -204,9 +214,12 @@ export async function fillFormViaPlaywright(opts: {
     const ref = field.ref.trim();
     const type = (typeof field.type === 'string' ? field.type.trim() : '') || 'text';
     const rawValue = field.value;
-    const value = typeof rawValue === 'string' ? rawValue
-      : typeof rawValue === 'number' || typeof rawValue === 'boolean' ? String(rawValue)
-      : '';
+    const value =
+      typeof rawValue === 'string'
+        ? rawValue
+        : typeof rawValue === 'number' || typeof rawValue === 'boolean'
+          ? String(rawValue)
+          : '';
 
     if (!ref) continue;
     const locator = refLocator(page, ref);
@@ -238,7 +251,7 @@ export async function scrollIntoViewViaPlaywright(opts: {
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   const page = await getRestoredPageForTarget(opts);
-  const label = resolved.ref ?? resolved.selector!;
+  const label = resolved.ref ?? resolved.selector ?? '';
   const locator = resolveLocator(page, resolved);
 
   try {
@@ -248,11 +261,7 @@ export async function scrollIntoViewViaPlaywright(opts: {
   }
 }
 
-export async function highlightViaPlaywright(opts: {
-  cdpUrl: string;
-  targetId?: string;
-  ref: string;
-}): Promise<void> {
+export async function highlightViaPlaywright(opts: { cdpUrl: string; targetId?: string; ref: string }): Promise<void> {
   const page = await getRestoredPageForTarget(opts);
   const ref = requireRef(opts.ref);
 
@@ -279,9 +288,7 @@ export async function setInputFilesViaPlaywright(opts: {
   if (inputRef && element) throw new Error('ref and element are mutually exclusive');
   if (!inputRef && !element) throw new Error('Either ref or element is required for setInputFiles');
 
-  const locator = inputRef
-    ? refLocator(page, inputRef)
-    : page.locator(element).first();
+  const locator = inputRef ? refLocator(page, inputRef) : page.locator(element).first();
 
   const uploadPathsResult = await resolveStrictExistingUploadPaths({
     requestedPaths: opts.paths,
@@ -304,7 +311,9 @@ export async function setInputFilesViaPlaywright(opts: {
         el.dispatchEvent(new Event('change', { bubbles: true }));
       });
     }
-  } catch {}
+  } catch {
+    /* intentional no-op */
+  }
 }
 
 export async function armDialogViaPlaywright(opts: {
@@ -321,11 +330,16 @@ export async function armDialogViaPlaywright(opts: {
   state.armIdDialog = bumpDialogArmId();
   const armId = state.armIdDialog;
 
-  page.waitForEvent('dialog', { timeout }).then(async (dialog) => {
-    if (state.armIdDialog !== armId) return;
-    if (opts.accept) await dialog.accept(opts.promptText);
-    else await dialog.dismiss();
-  }).catch(() => {});
+  page
+    .waitForEvent('dialog', { timeout })
+    .then(async (dialog) => {
+      if (state.armIdDialog !== armId) return;
+      if (opts.accept) await dialog.accept(opts.promptText);
+      else await dialog.dismiss();
+    })
+    .catch(() => {
+      /* intentional no-op */
+    });
 }
 
 export async function armFileUploadViaPlaywright(opts: {
@@ -341,33 +355,48 @@ export async function armFileUploadViaPlaywright(opts: {
   state.armIdUpload = bumpUploadArmId();
   const armId = state.armIdUpload;
 
-  page.waitForEvent('filechooser', { timeout }).then(async (fileChooser) => {
-    if (state.armIdUpload !== armId) return;
+  page
+    .waitForEvent('filechooser', { timeout })
+    .then(async (fileChooser) => {
+      if (state.armIdUpload !== armId) return;
 
-    if (!opts.paths?.length) {
-      try { await page.keyboard.press('Escape'); } catch {}
-      return;
-    }
-
-    const uploadPathsResult = await resolveStrictExistingUploadPaths({
-      requestedPaths: opts.paths,
-      scopeLabel: 'uploads directory',
-    });
-    if (!uploadPathsResult.ok) {
-      try { await page.keyboard.press('Escape'); } catch {}
-      return;
-    }
-
-    await fileChooser.setFiles(uploadPathsResult.paths);
-
-    try {
-      const input = typeof fileChooser.element === 'function' ? await Promise.resolve(fileChooser.element()) : null;
-      if (input) {
-        await (input as any).evaluate((el: Element) => {
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        });
+      if (opts.paths === undefined || opts.paths.length === 0) {
+        try {
+          await page.keyboard.press('Escape');
+        } catch {
+          /* intentional no-op */
+        }
+        return;
       }
-    } catch {}
-  }).catch(() => {});
+
+      const uploadPathsResult = await resolveStrictExistingUploadPaths({
+        requestedPaths: opts.paths,
+        scopeLabel: 'uploads directory',
+      });
+      if (!uploadPathsResult.ok) {
+        try {
+          await page.keyboard.press('Escape');
+        } catch {
+          /* intentional no-op */
+        }
+        return;
+      }
+
+      await fileChooser.setFiles(uploadPathsResult.paths);
+
+      try {
+        const input = typeof fileChooser.element === 'function' ? await Promise.resolve(fileChooser.element()) : null;
+        if (input !== null) {
+          await input.evaluate((el: Element) => {
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          });
+        }
+      } catch {
+        /* intentional no-op */
+      }
+    })
+    .catch(() => {
+      /* intentional no-op */
+    });
 }

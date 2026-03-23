@@ -1,4 +1,7 @@
+import { dirname } from 'node:path';
+
 import type { Page, Download } from 'playwright-core';
+
 import {
   getPageForTargetId,
   ensurePageState,
@@ -8,7 +11,6 @@ import {
   normalizeTimeoutMs,
   bumpDownloadArmId,
 } from '../connection.js';
-import { dirname } from 'node:path';
 import { assertSafeOutputPath, writeViaSiblingTempPath } from '../security.js';
 import type { DownloadResult, PageState } from '../types.js';
 
@@ -97,7 +99,7 @@ export async function downloadViaPlaywright(opts: {
   restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
-  const outPath = String(opts.path ?? '').trim();
+  const outPath = opts.path.trim();
   if (!outPath) throw new Error('path is required');
 
   state.armIdDownload = bumpDownloadArmId();

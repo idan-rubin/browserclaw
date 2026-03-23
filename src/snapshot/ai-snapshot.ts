@@ -1,7 +1,8 @@
 import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget, normalizeTimeoutMs } from '../connection.js';
 import type { PageWithAI } from '../connection.js';
-import { buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
 import type { SnapshotResult, SnapshotOptions } from '../types.js';
+
+import { buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
 
 /**
  * Take an AI-readable snapshot using Playwright's _snapshotForAI.
@@ -29,13 +30,13 @@ export async function snapshotAi(opts: {
     track: 'response',
   });
 
-  let snapshot = String(result?.full ?? '');
+  let snapshot = String(result.full);
   const maxChars = opts.maxChars;
-  const limit = typeof maxChars === 'number' && Number.isFinite(maxChars) && maxChars > 0
-    ? Math.floor(maxChars) : undefined;
+  const limit =
+    typeof maxChars === 'number' && Number.isFinite(maxChars) && maxChars > 0 ? Math.floor(maxChars) : undefined;
 
   let truncated = false;
-  if (limit && snapshot.length > limit) {
+  if (limit !== undefined && snapshot.length > limit) {
     const lastNewline = snapshot.lastIndexOf('\n', limit);
     const cutoff = lastNewline > 0 ? lastNewline : limit;
     snapshot = `${snapshot.slice(0, cutoff)}\n\n[...TRUNCATED - page too large]`;

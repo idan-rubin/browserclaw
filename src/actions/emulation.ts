@@ -1,9 +1,6 @@
 import { devices } from 'playwright-core';
-import {
-  getPageForTargetId,
-  ensurePageState,
-  withPageScopedCdpClient,
-} from '../connection.js';
+
+import { getPageForTargetId, ensurePageState, withPageScopedCdpClient } from '../connection.js';
 import type { ColorScheme } from '../types.js';
 
 export async function emulateMediaViaPlaywright(opts: {
@@ -16,23 +13,29 @@ export async function emulateMediaViaPlaywright(opts: {
   await page.emulateMedia({ colorScheme: opts.colorScheme });
 }
 
-export async function setDeviceViaPlaywright(opts: {
-  cdpUrl: string;
-  targetId?: string;
-  name: string;
-}): Promise<void> {
-  const name = String(opts.name ?? '').trim();
+export async function setDeviceViaPlaywright(opts: { cdpUrl: string; targetId?: string; name: string }): Promise<void> {
+  const name = opts.name.trim();
   if (!name) throw new Error('device name is required');
 
-  const device = devices[name];
-  if (!device) {
+  const device:
+    | {
+        viewport: { width: number; height: number } | null;
+        userAgent: string;
+        deviceScaleFactor: number;
+        isMobile: boolean;
+        hasTouch: boolean;
+        defaultBrowserType: string;
+        locale?: string;
+      }
+    | undefined = devices[name] as ((typeof devices)[string] & { locale?: string }) | undefined;
+  if (device === undefined) {
     throw new Error(`Unknown device "${name}".`);
   }
 
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
 
-  if (device.viewport) {
+  if (device.viewport !== null) {
     await page.setViewportSize({
       width: device.viewport.width,
       height: device.viewport.height,
@@ -44,19 +47,19 @@ export async function setDeviceViaPlaywright(opts: {
     page,
     targetId: opts.targetId,
     fn: async (send) => {
-      const locale = (device as any).locale as string | undefined;
-      if (device.userAgent || locale) {
+      const locale = device.locale;
+      if (device.userAgent !== '' || (locale !== undefined && locale !== '')) {
         await send('Emulation.setUserAgentOverride', {
-          userAgent: device.userAgent ?? '',
-          acceptLanguage: locale ?? undefined,
+          userAgent: device.userAgent,
+          acceptLanguage: locale,
         });
       }
-      if (device.viewport) {
+      if (device.viewport !== null) {
         await send('Emulation.setDeviceMetricsOverride', {
-          mobile: Boolean(device.isMobile),
+          mobile: device.isMobile,
           width: device.viewport.width,
           height: device.viewport.height,
-          deviceScaleFactor: device.deviceScaleFactor ?? 1,
+          deviceScaleFactor: device.deviceScaleFactor,
           screenWidth: device.viewport.width,
           screenHeight: device.viewport.height,
         });
@@ -91,9 +94,11 @@ export async function setGeolocationViaPlaywright(opts: {
   ensurePageState(page);
   const context = page.context();
 
-  if (opts.clear) {
+  if (opts.clear === true) {
     await context.setGeolocation(null);
-    await context.clearPermissions().catch(() => {});
+    await context.clearPermissions().catch(() => {
+      /* intentional no-op */
+    });
     return;
   }
 
@@ -107,10 +112,19 @@ export async function setGeolocationViaPlaywright(opts: {
     accuracy: typeof opts.accuracy === 'number' ? opts.accuracy : undefined,
   });
 
-  const origin = opts.origin?.trim() || (() => {
-    try { return new URL(page.url()).origin; } catch { return ''; }
-  })();
-  if (origin) await context.grantPermissions(['geolocation'], { origin }).catch(() => {});
+  const origin =
+    (opts.origin !== undefined && opts.origin !== '' ? opts.origin.trim() : '') ||
+    (() => {
+      try {
+        return new URL(page.url()).origin;
+      } catch {
+        return '';
+      }
+    })();
+  if (origin !== '')
+    await context.grantPermissions(['geolocation'], { origin }).catch(() => {
+      /* intentional no-op */
+    });
 }
 
 /**
@@ -129,15 +143,17 @@ export async function setHttpCredentialsViaPlaywright(opts: {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
 
-  if (opts.clear) {
-    await page.context().setHTTPCredentials(null as any);
+  if (opts.clear === true) {
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await page.context().setHTTPCredentials(null);
     return;
   }
 
-  const username = String(opts.username ?? '');
-  const password = String(opts.password ?? '');
+  const username = opts.username ?? '';
+  const password = opts.password ?? '';
   if (!username) throw new Error('username is required (or set clear=true)');
 
+  // eslint-disable-next-line @typescript-eslint/no-deprecated
   await page.context().setHTTPCredentials({ username, password });
 }
 
@@ -149,7 +165,7 @@ export async function setLocaleViaPlaywright(opts: {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
 
-  const locale = String(opts.locale ?? '').trim();
+  const locale = opts.locale.trim();
   if (!locale) throw new Error('locale is required');
 
   await withPageScopedCdpClient({
@@ -174,7 +190,7 @@ export async function setOfflineViaPlaywright(opts: {
 }): Promise<void> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
-  await page.context().setOffline(Boolean(opts.offline));
+  await page.context().setOffline(opts.offline);
 }
 
 export async function setTimezoneViaPlaywright(opts: {
@@ -185,7 +201,7 @@ export async function setTimezoneViaPlaywright(opts: {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
 
-  const timezoneId = String(opts.timezoneId ?? '').trim();
+  const timezoneId = opts.timezoneId.trim();
   if (!timezoneId) throw new Error('timezoneId is required');
 
   await withPageScopedCdpClient({

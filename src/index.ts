@@ -1,5 +1,10 @@
 export { BrowserClaw, CrawlPage } from './browser.js';
-export { isChromeCdpReady, isChromeReachable, getChromeWebSocketUrl, normalizeCdpHttpBaseForJsonEndpoints } from './chrome-launcher.js';
+export {
+  isChromeCdpReady,
+  isChromeReachable,
+  getChromeWebSocketUrl,
+  normalizeCdpHttpBaseForJsonEndpoints,
+} from './chrome-launcher.js';
 export {
   InvalidBrowserNavigationUrlError,
   withBrowserNavigationPolicy,

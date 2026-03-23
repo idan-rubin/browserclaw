@@ -1,3 +1,6 @@
+import type { ChildProcess } from 'node:child_process';
+import type { lookup as dnsLookup } from 'node:dns';
+
 // ── SSRF Policy ──
 
 /**
@@ -54,7 +57,7 @@ export interface RunningChrome {
   /** Unix timestamp (ms) when the browser was started */
   startedAt: number;
   /** The child process handle */
-  proc: import('node:child_process').ChildProcess;
+  proc: ChildProcess;
 }
 
 /** Options for launching a new browser instance. */
@@ -506,5 +509,5 @@ export interface PageState {
 export interface PinnedHostname {
   hostname: string;
   addresses: string[];
-  lookup: typeof import('node:dns').lookup;
+  lookup: typeof dnsLookup;
 }
