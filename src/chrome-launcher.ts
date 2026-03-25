@@ -555,23 +555,7 @@ async function fetchChromeVersion(
 export async function isChromeReachable(cdpUrl: string, timeoutMs = 500, authToken?: string): Promise<boolean> {
   if (isWebSocketUrl(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs);
   const version = await fetchChromeVersion(cdpUrl, timeoutMs, authToken);
-  if (version !== null) return true;
-  // Retry briefly for loopback URLs — a transient miss should not immediately
-  // trigger relaunch detection on slower headless setups.
-  let isLoopback = false;
-  try {
-    const u = new URL(cdpUrl.startsWith('http') ? cdpUrl : `http://${cdpUrl}`);
-    isLoopback = isLoopbackHost(u.hostname);
-  } catch {
-    // not a valid URL, skip retry
-  }
-  if (!isLoopback) return false;
-  for (let i = 0; i < 2; i++) {
-    await new Promise((r) => setTimeout(r, 150));
-    const retry = await fetchChromeVersion(cdpUrl, timeoutMs, authToken);
-    if (retry !== null) return true;
-  }
-  return false;
+  return version !== null;
 }
 
 export async function getChromeWebSocketUrl(
