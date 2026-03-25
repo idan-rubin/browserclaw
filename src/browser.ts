@@ -37,6 +37,7 @@ import {
   resizeViewportViaPlaywright,
 } from './actions/navigation.js';
 import { waitForViaPlaywright } from './actions/wait.js';
+import { detectChallengeViaPlaywright, waitForChallengeViaPlaywright } from './anti-bot.js';
 import {
   getConsoleMessagesViaPlaywright,
   getPageErrorsViaPlaywright,
@@ -92,6 +93,8 @@ import type {
   ColorScheme,
   GeolocationOptions,
   HttpCredentials,
+  ChallengeInfo,
+  ChallengeWaitResult,
 } from './types.js';
 
 /**
@@ -1086,6 +1089,56 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this.targetId,
       name,
+    });
+  }
+
+  // ── Anti-Bot ──────────────────────────────────────────────────
+
+  /**
+   * Detect whether the page is showing an anti-bot challenge
+   * (Cloudflare, hCaptcha, reCAPTCHA, access-denied, rate-limit, etc.).
+   *
+   * Returns `null` if no challenge is detected.
+   *
+   * @example
+   * ```ts
+   * const challenge = await page.detectChallenge();
+   * if (challenge) {
+   *   console.log(challenge.kind);    // 'cloudflare-js'
+   *   console.log(challenge.message); // 'Cloudflare JS challenge'
+   * }
+   * ```
+   */
+  async detectChallenge(): Promise<ChallengeInfo | null> {
+    return detectChallengeViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+  }
+
+  /**
+   * Wait for an anti-bot challenge to resolve on its own.
+   *
+   * Cloudflare JS challenges typically auto-resolve in ~5 seconds.
+   * CAPTCHA challenges will only resolve if solved in a visible browser window.
+   *
+   * @param opts.timeoutMs - Maximum wait time (default: `15000`)
+   * @param opts.pollMs - Poll interval (default: `500`)
+   * @returns Whether the challenge resolved, and the remaining challenge info if not
+   *
+   * @example
+   * ```ts
+   * await page.goto('https://example.com');
+   * const challenge = await page.detectChallenge();
+   * if (challenge?.kind === 'cloudflare-js') {
+   *   const { resolved } = await page.waitForChallenge({ timeoutMs: 20000 });
+   *   if (!resolved) throw new Error('Challenge did not resolve');
+   * }
+   * ```
+   */
+  async waitForChallenge(opts?: { timeoutMs?: number; pollMs?: number }): Promise<ChallengeWaitResult> {
+    return waitForChallengeViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this.targetId,
+      timeoutMs: opts?.timeoutMs,
+      pollMs: opts?.pollMs,
     });
   }
 }

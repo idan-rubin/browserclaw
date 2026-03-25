@@ -37,6 +37,8 @@ export {
 export type { FrameEvalResult } from './actions/evaluate.js';
 export { batchViaPlaywright, executeSingleAction } from './actions/batch.js';
 export type { BatchAction, BatchActionResult } from './actions/batch.js';
+export { STEALTH_SCRIPT } from './stealth.js';
+export { detectChallengeViaPlaywright, waitForChallengeViaPlaywright } from './anti-bot.js';
 export type {
   SsrfPolicy,
   LaunchOptions,
@@ -71,4 +73,7 @@ export type {
   HttpCredentials,
   ContextState,
   PinnedHostname,
+  ChallengeKind,
+  ChallengeInfo,
+  ChallengeWaitResult,
 } from './types.js';
