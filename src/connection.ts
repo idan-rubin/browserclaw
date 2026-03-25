@@ -11,6 +11,7 @@ import {
   isLoopbackHost,
   hasProxyEnvConfigured,
 } from './chrome-launcher.js';
+import { STEALTH_SCRIPT } from './stealth.js';
 import type { PageState, ContextState, RoleRefs, NetworkRequest } from './types.js';
 
 // ── Errors ──
@@ -357,9 +358,7 @@ export function ensurePageState(page: Page): PageState {
   return state;
 }
 
-// ── Stealth: hide navigator.webdriver ──
-
-const STEALTH_SCRIPT = `Object.defineProperty(navigator, 'webdriver', { get: () => undefined })`;
+// ── Stealth ──
 
 function applyStealthToPage(page: Page): void {
   page.evaluate(STEALTH_SCRIPT).catch((e: unknown) => {

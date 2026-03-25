@@ -503,6 +503,34 @@ export interface PageState {
   armIdDownload: number;
 }
 
+// ── Anti-Bot ──
+
+/** The kind of anti-bot challenge detected on a page. */
+export type ChallengeKind =
+  | 'cloudflare-js'
+  | 'cloudflare-block'
+  | 'cloudflare-turnstile'
+  | 'hcaptcha'
+  | 'recaptcha'
+  | 'blocked'
+  | 'rate-limited';
+
+/** Information about a detected anti-bot challenge. */
+export interface ChallengeInfo {
+  /** What type of challenge is present */
+  kind: ChallengeKind;
+  /** Human-readable description */
+  message: string;
+}
+
+/** Result of waiting for an anti-bot challenge to resolve. */
+export interface ChallengeWaitResult {
+  /** Whether the challenge cleared within the timeout */
+  resolved: boolean;
+  /** The challenge still present (null if resolved) */
+  challenge: ChallengeInfo | null;
+}
+
 // ── DNS Pinning ──
 
 /** Result of DNS pinning resolution — hostname locked to resolved addresses. */
