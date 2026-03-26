@@ -3,7 +3,18 @@ import { lookup as dnsLookupCb } from 'node:dns';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { lstat, realpath, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve, normalize, dirname, basename, join, sep, relative, posix, win32, isAbsolute as pathIsAbsolute } from 'node:path';
+import {
+  resolve,
+  normalize,
+  dirname,
+  basename,
+  join,
+  sep,
+  relative,
+  posix,
+  win32,
+  isAbsolute as pathIsAbsolute,
+} from 'node:path';
 
 import * as ipaddr from 'ipaddr.js';
 
@@ -357,7 +368,8 @@ export function createPinnedLookup(params: {
   fallback?: typeof dnsLookupCb;
 }): typeof dnsLookupCb {
   const normalizedHost = normalizeHostname(params.hostname);
-  if (params.addresses.length === 0) throw new Error(`Pinned lookup requires at least one address for ${params.hostname}`);
+  if (params.addresses.length === 0)
+    throw new Error(`Pinned lookup requires at least one address for ${params.hostname}`);
   const fallback = params.fallback ?? dnsLookupCb;
   const records = params.addresses.map((address) => ({
     address,
@@ -618,7 +630,8 @@ export function resolvePathWithinRoot(params: {
 }): PathResult {
   const root = resolve(params.rootDir);
   const raw = params.requestedPath.trim();
-  const effectivePath = raw === '' && params.defaultFileName != null && params.defaultFileName !== '' ? params.defaultFileName : raw;
+  const effectivePath =
+    raw === '' && params.defaultFileName != null && params.defaultFileName !== '' ? params.defaultFileName : raw;
   if (effectivePath === '') return { ok: false, error: `Empty path is not allowed (${params.scopeLabel}).` };
 
   const resolved = resolve(root, effectivePath);
@@ -649,7 +662,10 @@ export async function resolveWritablePathWithinRoot(params: {
   try {
     parentReal = await realpath(dirname(target));
   } catch {
-    return { ok: false, error: `Parent directory is inaccessible for "${params.requestedPath}" (${params.scopeLabel}).` };
+    return {
+      ok: false,
+      error: `Parent directory is inaccessible for "${params.requestedPath}" (${params.scopeLabel}).`,
+    };
   }
 
   const parentRel = relative(root, parentReal);
@@ -664,7 +680,10 @@ export async function resolveWritablePathWithinRoot(params: {
     }
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-      return { ok: false, error: `Cannot stat "${params.requestedPath}" (${params.scopeLabel}): ${(e as Error).message}` };
+      return {
+        ok: false,
+        error: `Cannot stat "${params.requestedPath}" (${params.scopeLabel}): ${(e as Error).message}`,
+      };
     }
   }
 

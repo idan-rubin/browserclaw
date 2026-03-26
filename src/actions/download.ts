@@ -139,7 +139,8 @@ export async function waitForDownloadViaPlaywright(opts: {
   try {
     const download = await waiter.promise;
     if (state.armIdDownload !== armId) throw new Error('Download was superseded by another waiter');
-    const savePath = opts.path ?? sanitizeUntrustedFileName(download.suggestedFilename() || 'download.bin', 'download.bin');
+    const savePath =
+      opts.path ?? sanitizeUntrustedFileName(download.suggestedFilename() || 'download.bin', 'download.bin');
     await assertSafeOutputPath(savePath, opts.allowedOutputRoots);
     return await saveDownloadPayload(download, savePath);
   } catch (err) {
