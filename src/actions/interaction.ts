@@ -15,7 +15,7 @@ import {
   getRestoredPageForTarget,
   parseRoleRef,
 } from '../connection.js';
-import { resolveStrictExistingUploadPaths } from '../security.js';
+import { resolveStrictExistingPathsWithinRoot, DEFAULT_UPLOAD_DIR } from '../security.js';
 import type { FormField } from '../types.js';
 
 type MouseButton = 'left' | 'right' | 'middle';
@@ -290,9 +290,10 @@ export async function setInputFilesViaPlaywright(opts: {
 
   const locator = inputRef ? refLocator(page, inputRef) : page.locator(element).first();
 
-  const uploadPathsResult = await resolveStrictExistingUploadPaths({
+  const uploadPathsResult = await resolveStrictExistingPathsWithinRoot({
+    rootDir: DEFAULT_UPLOAD_DIR,
     requestedPaths: opts.paths,
-    scopeLabel: 'uploads directory',
+    scopeLabel: `uploads directory (${DEFAULT_UPLOAD_DIR})`,
   });
   if (!uploadPathsResult.ok) throw new Error(uploadPathsResult.error);
   const resolvedPaths = uploadPathsResult.paths;
@@ -369,9 +370,10 @@ export async function armFileUploadViaPlaywright(opts: {
         return;
       }
 
-      const uploadPathsResult = await resolveStrictExistingUploadPaths({
+      const uploadPathsResult = await resolveStrictExistingPathsWithinRoot({
+        rootDir: DEFAULT_UPLOAD_DIR,
         requestedPaths: opts.paths,
-        scopeLabel: 'uploads directory',
+        scopeLabel: `uploads directory (${DEFAULT_UPLOAD_DIR})`,
       });
       if (!uploadPathsResult.ok) {
         try {

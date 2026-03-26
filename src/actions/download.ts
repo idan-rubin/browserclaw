@@ -11,7 +11,7 @@ import {
   normalizeTimeoutMs,
   bumpDownloadArmId,
 } from '../connection.js';
-import { assertSafeOutputPath, writeViaSiblingTempPath } from '../security.js';
+import { assertSafeOutputPath, writeViaSiblingTempPath, sanitizeUntrustedFileName } from '../security.js';
 import type { DownloadResult, PageState } from '../types.js';
 
 function createPageDownloadWaiter(page: Page, timeoutMs: number) {
@@ -139,7 +139,7 @@ export async function waitForDownloadViaPlaywright(opts: {
   try {
     const download = await waiter.promise;
     if (state.armIdDownload !== armId) throw new Error('Download was superseded by another waiter');
-    const savePath = opts.path ?? download.suggestedFilename();
+    const savePath = opts.path ?? sanitizeUntrustedFileName(download.suggestedFilename() || 'download.bin', 'download.bin');
     await assertSafeOutputPath(savePath, opts.allowedOutputRoots);
     return await saveDownloadPayload(download, savePath);
   } catch (err) {
