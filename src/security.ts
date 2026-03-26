@@ -618,7 +618,7 @@ export function resolvePathWithinRoot(params: {
 }): PathResult {
   const root = resolve(params.rootDir);
   const raw = params.requestedPath.trim();
-  const effectivePath = raw === '' && params.defaultFileName ? params.defaultFileName : raw;
+  const effectivePath = raw === '' && params.defaultFileName != null && params.defaultFileName !== '' ? params.defaultFileName : raw;
   if (effectivePath === '') return { ok: false, error: `Empty path is not allowed (${params.scopeLabel}).` };
 
   const resolved = resolve(root, effectivePath);
