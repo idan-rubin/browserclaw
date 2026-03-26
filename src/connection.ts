@@ -513,7 +513,8 @@ export async function disconnectBrowser(): Promise<void> {
     }
   }
   for (const cur of cachedByCdpUrl.values()) {
-    if (cur.onDisconnected && typeof cur.browser.off === 'function') cur.browser.off('disconnected', cur.onDisconnected);
+    if (cur.onDisconnected && typeof cur.browser.off === 'function')
+      cur.browser.off('disconnected', cur.onDisconnected);
     await cur.browser.close().catch(() => {
       /* noop */
     });
@@ -531,7 +532,8 @@ export async function closePlaywrightBrowserConnection(opts?: { cdpUrl?: string 
     cachedByCdpUrl.delete(normalized);
     connectingByCdpUrl.delete(normalized);
     if (!cur) return;
-    if (cur.onDisconnected && typeof cur.browser.off === 'function') cur.browser.off('disconnected', cur.onDisconnected);
+    if (cur.onDisconnected && typeof cur.browser.off === 'function')
+      cur.browser.off('disconnected', cur.onDisconnected);
     await cur.browser.close().catch(() => {
       /* noop */
     });
