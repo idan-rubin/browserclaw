@@ -71,57 +71,62 @@ async function awaitEvalWithAbort(evalPromise: Promise<unknown>, abortPromise?: 
   }
 }
 
-// Browser-side evaluator that wraps async results with a timeout via Promise.race.
-// This runs inside the browser sandbox (not Node.js) — `new Function` is the standard
-// pattern for browser-context evaluation with timeout, matching OpenClaw's implementation.
+// Browser-side evaluators: intentionally use eval() to execute user-provided
+// browser-side code. This is the core purpose — running arbitrary JS in the
+// page sandbox. The fallback path handles statement-form code (template
+// literals, multi-statement blocks) that fail expression-mode eval.
 
 // eslint-disable-next-line @typescript-eslint/no-implied-eval
 const BROWSER_EVALUATOR = new Function(
   'args',
-  `
-  "use strict";
-  var fnBody = args.fnBody, timeoutMs = args.timeoutMs;
-  try {
-    var candidate = eval("(" + fnBody + ")");
-    var result = typeof candidate === "function" ? candidate() : candidate;
-    if (result && typeof result.then === "function") {
-      return Promise.race([
-        result,
-        new Promise(function(_, reject) {
-          setTimeout(function() { reject(new Error("evaluate timed out after " + timeoutMs + "ms")); }, timeoutMs);
-        })
-      ]);
-    }
-    return result;
-  } catch (err) {
-    throw new Error("Invalid evaluate function: " + (err && err.message ? err.message : String(err)));
-  }
-`,
+  [
+    '"use strict";',
+    'var fnBody = args.fnBody, timeoutMs = args.timeoutMs;',
+    'try {',
+    '  var candidate;',
+    '  try { candidate = eval("(" + fnBody + ")"); }',
+    '  catch (_) { candidate = (0, eval)(fnBody); }',
+    '  var result = typeof candidate === "function" ? candidate() : candidate;',
+    '  if (result && typeof result.then === "function") {',
+    '    return Promise.race([',
+    '      result,',
+    '      new Promise(function(_, reject) {',
+    '        setTimeout(function() { reject(new Error("evaluate timed out after " + timeoutMs + "ms")); }, timeoutMs);',
+    '      })',
+    '    ]);',
+    '  }',
+    '  return result;',
+    '} catch (err) {',
+    '  throw new Error("Invalid evaluate function: " + (err && err.message ? err.message : String(err)));',
+    '}',
+  ].join('\n'),
 );
 
 // eslint-disable-next-line @typescript-eslint/no-implied-eval
 const ELEMENT_EVALUATOR = new Function(
   'el',
   'args',
-  `
-  "use strict";
-  var fnBody = args.fnBody, timeoutMs = args.timeoutMs;
-  try {
-    var candidate = eval("(" + fnBody + ")");
-    var result = typeof candidate === "function" ? candidate(el) : candidate;
-    if (result && typeof result.then === "function") {
-      return Promise.race([
-        result,
-        new Promise(function(_, reject) {
-          setTimeout(function() { reject(new Error("evaluate timed out after " + timeoutMs + "ms")); }, timeoutMs);
-        })
-      ]);
-    }
-    return result;
-  } catch (err) {
-    throw new Error("Invalid evaluate function: " + (err && err.message ? err.message : String(err)));
-  }
-`,
+  [
+    '"use strict";',
+    'var fnBody = args.fnBody, timeoutMs = args.timeoutMs;',
+    'try {',
+    '  var candidate;',
+    '  try { candidate = eval("(" + fnBody + ")"); }',
+    '  catch (_) { candidate = (0, eval)(fnBody); }',
+    '  var result = typeof candidate === "function" ? candidate(el) : candidate;',
+    '  if (result && typeof result.then === "function") {',
+    '    return Promise.race([',
+    '      result,',
+    '      new Promise(function(_, reject) {',
+    '        setTimeout(function() { reject(new Error("evaluate timed out after " + timeoutMs + "ms")); }, timeoutMs);',
+    '      })',
+    '    ]);',
+    '  }',
+    '  return result;',
+    '} catch (err) {',
+    '  throw new Error("Invalid evaluate function: " + (err && err.message ? err.message : String(err)));',
+    '}',
+  ].join('\n'),
 );
 
 /**

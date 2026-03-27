@@ -1,8 +1,11 @@
+import type { Browser, BrowserContext } from 'playwright-core';
+
 import {
   connectBrowser,
   getPageForTargetId,
   ensurePageState,
   ensureContextState,
+  observeContext,
   pageTargetId,
   getAllPages,
   forceDisconnectPlaywrightForTarget,
@@ -16,6 +19,24 @@ import {
   withBrowserNavigationPolicy,
 } from '../security.js';
 import type { BrowserTab, SsrfPolicy } from '../types.js';
+
+const recordingContexts = new Map<string, BrowserContext>();
+
+export function clearRecordingContext(cdpUrl: string): void {
+  recordingContexts.delete(cdpUrl);
+}
+
+async function createRecordingContext(
+  browser: Browser,
+  cdpUrl: string,
+  recordVideo: { dir: string; size?: { width: number; height: number } },
+): Promise<BrowserContext> {
+  const context = await browser.newContext({ recordVideo });
+  observeContext(context);
+  recordingContexts.set(cdpUrl, context);
+  context.on('close', () => recordingContexts.delete(cdpUrl));
+  return context;
+}
 
 function isRetryableNavigateError(err: unknown): boolean {
   const msg = typeof err === 'string' ? err.toLowerCase() : err instanceof Error ? err.message.toLowerCase() : '';
@@ -94,9 +115,12 @@ export async function createPageViaPlaywright(opts: {
   ssrfPolicy?: SsrfPolicy;
   /** @deprecated Use ssrfPolicy: { dangerouslyAllowPrivateNetwork: true } instead */
   allowInternal?: boolean;
+  recordVideo?: { dir: string; size?: { width: number; height: number } };
 }): Promise<BrowserTab> {
   const { browser } = await connectBrowser(opts.cdpUrl);
-  const context = browser.contexts()[0] ?? (await browser.newContext());
+  const context = opts.recordVideo
+    ? (recordingContexts.get(opts.cdpUrl) ?? (await createRecordingContext(browser, opts.cdpUrl, opts.recordVideo)))
+    : (browser.contexts()[0] ?? (await browser.newContext()));
   ensureContextState(context);
   const page = await context.newPage();
   ensurePageState(page);

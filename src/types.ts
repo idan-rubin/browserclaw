@@ -89,6 +89,11 @@ export interface LaunchOptions {
    * @deprecated Use `ssrfPolicy: { dangerouslyAllowPrivateNetwork: true }` instead.
    */
   allowInternal?: boolean;
+  /**
+   * Record video for all pages. Requires a directory to save video files.
+   * Videos are saved when the page or context is closed.
+   */
+  recordVideo?: { dir: string; size?: { width: number; height: number } };
 }
 
 /** Options for connecting to an existing browser instance. */
@@ -110,6 +115,11 @@ export interface ConnectOptions {
    * (e.g. OpenClaw browser control with gateway.auth.token).
    */
   authToken?: string;
+  /**
+   * Record video for all pages. Requires a directory to save video files.
+   * Videos are saved when the page or context is closed.
+   */
+  recordVideo?: { dir: string; size?: { width: number; height: number } };
 }
 
 // ── Snapshot ──

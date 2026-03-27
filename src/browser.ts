@@ -16,6 +16,9 @@ import {
 import { evaluateViaPlaywright, evaluateInAllFramesViaPlaywright, type FrameEvalResult } from './actions/evaluate.js';
 import {
   clickViaPlaywright,
+  mouseClickViaPlaywright,
+  clickByTextViaPlaywright,
+  clickByRoleViaPlaywright,
   hoverViaPlaywright,
   typeViaPlaywright,
   selectOptionViaPlaywright,
@@ -35,6 +38,7 @@ import {
   closePageByTargetIdViaPlaywright,
   focusPageByTargetIdViaPlaywright,
   resizeViewportViaPlaywright,
+  clearRecordingContext,
 } from './actions/navigation.js';
 import { waitForViaPlaywright } from './actions/wait.js';
 import { detectChallengeViaPlaywright, waitForChallengeViaPlaywright } from './anti-bot.js';
@@ -47,7 +51,7 @@ import { pdfViaPlaywright } from './capture/pdf.js';
 import { responseBodyViaPlaywright } from './capture/response.js';
 import { takeScreenshotViaPlaywright, screenshotWithLabelsViaPlaywright } from './capture/screenshot.js';
 import { traceStartViaPlaywright, traceStopViaPlaywright } from './capture/trace.js';
-import { launchChrome, stopChrome, isChromeReachable } from './chrome-launcher.js';
+import { launchChrome, stopChrome, isChromeReachable, discoverChromeCdpUrl } from './chrome-launcher.js';
 import {
   connectBrowser,
   disconnectBrowser,
@@ -230,6 +234,108 @@ export class CrawlPage {
       button: opts?.button,
       modifiers: opts?.modifiers,
       delayMs: opts?.delayMs,
+      timeoutMs: opts?.timeoutMs,
+    });
+  }
+
+  /**
+   * Click at specific page coordinates.
+   *
+   * Useful for canvas elements, custom widgets, or elements without ARIA roles.
+   *
+   * @param x - X coordinate in pixels
+   * @param y - Y coordinate in pixels
+   * @param opts - Click options (button, clickCount, delayMs)
+   *
+   * @example
+   * ```ts
+   * await page.mouseClick(100, 200);
+   * await page.mouseClick(100, 200, { button: 'right' });
+   * await page.mouseClick(100, 200, { clickCount: 2 }); // double-click
+   * ```
+   */
+  async mouseClick(
+    x: number,
+    y: number,
+    opts?: { button?: 'left' | 'right' | 'middle'; clickCount?: number; delayMs?: number },
+  ): Promise<void> {
+    return mouseClickViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this.targetId,
+      x,
+      y,
+      button: opts?.button,
+      clickCount: opts?.clickCount,
+      delayMs: opts?.delayMs,
+    });
+  }
+
+  /**
+   * Click an element by its visible text content (no snapshot/ref needed).
+   *
+   * Finds and clicks atomically — no stale ref problem.
+   *
+   * @param text - Text content to match
+   * @param opts - Options (exact: require full match, button, modifiers)
+   *
+   * @example
+   * ```ts
+   * await page.clickByText('Submit');
+   * await page.clickByText('Save Changes', { exact: true });
+   * ```
+   */
+  async clickByText(
+    text: string,
+    opts?: {
+      exact?: boolean;
+      button?: 'left' | 'right' | 'middle';
+      modifiers?: ('Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift')[];
+      timeoutMs?: number;
+    },
+  ): Promise<void> {
+    return clickByTextViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this.targetId,
+      text,
+      exact: opts?.exact,
+      button: opts?.button,
+      modifiers: opts?.modifiers,
+      timeoutMs: opts?.timeoutMs,
+    });
+  }
+
+  /**
+   * Click an element by its ARIA role and accessible name (no snapshot/ref needed).
+   *
+   * Finds and clicks atomically — no stale ref problem.
+   *
+   * @param role - ARIA role (e.g. `'button'`, `'link'`, `'menuitem'`)
+   * @param name - Accessible name to match (optional)
+   * @param opts - Click options
+   *
+   * @example
+   * ```ts
+   * await page.clickByRole('button', 'Save');
+   * await page.clickByRole('link', 'Settings');
+   * await page.clickByRole('menuitem', 'Delete');
+   * ```
+   */
+  async clickByRole(
+    role: string,
+    name?: string,
+    opts?: {
+      button?: 'left' | 'right' | 'middle';
+      modifiers?: ('Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift')[];
+      timeoutMs?: number;
+    },
+  ): Promise<void> {
+    return clickByRoleViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this.targetId,
+      role,
+      name,
+      button: opts?.button,
+      modifiers: opts?.modifiers,
       timeoutMs: opts?.timeoutMs,
     });
   }
@@ -1167,12 +1273,19 @@ export class CrawlPage {
 export class BrowserClaw {
   private readonly cdpUrl: string;
   private readonly ssrfPolicy: SsrfPolicy | undefined;
+  private readonly recordVideo: { dir: string; size?: { width: number; height: number } } | undefined;
   private chrome: RunningChrome | null;
 
-  private constructor(cdpUrl: string, chrome: RunningChrome | null, ssrfPolicy?: SsrfPolicy) {
+  private constructor(
+    cdpUrl: string,
+    chrome: RunningChrome | null,
+    ssrfPolicy?: SsrfPolicy,
+    recordVideo?: { dir: string; size?: { width: number; height: number } },
+  ) {
     this.cdpUrl = cdpUrl;
     this.chrome = chrome;
     this.ssrfPolicy = ssrfPolicy;
+    this.recordVideo = recordVideo;
   }
 
   /**
@@ -1205,7 +1318,7 @@ export class BrowserClaw {
     const ssrfPolicy =
       opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
     /* eslint-enable @typescript-eslint/no-deprecated */
-    return new BrowserClaw(cdpUrl, chrome, ssrfPolicy);
+    return new BrowserClaw(cdpUrl, chrome, ssrfPolicy, opts.recordVideo);
   }
 
   /**
@@ -1222,16 +1335,26 @@ export class BrowserClaw {
    * const browser = await BrowserClaw.connect('http://localhost:9222');
    * ```
    */
-  static async connect(cdpUrl: string, opts?: ConnectOptions): Promise<BrowserClaw> {
-    if (!(await isChromeReachable(cdpUrl, 3000, opts?.authToken))) {
-      throw new Error(`Cannot connect to Chrome at ${cdpUrl}. Is Chrome running with --remote-debugging-port?`);
+  static async connect(cdpUrl?: string, opts?: ConnectOptions): Promise<BrowserClaw> {
+    let resolvedUrl = cdpUrl;
+    if (resolvedUrl === undefined || resolvedUrl === '') {
+      const discovered = await discoverChromeCdpUrl();
+      if (discovered === null) {
+        throw new Error(
+          'No Chrome instance found on common CDP ports (9222-9226, 9229). Start Chrome with --remote-debugging-port=9222, or pass a CDP URL.',
+        );
+      }
+      resolvedUrl = discovered;
     }
-    await connectBrowser(cdpUrl, opts?.authToken);
+    if (!(await isChromeReachable(resolvedUrl, 3000, opts?.authToken))) {
+      throw new Error(`Cannot connect to Chrome at ${resolvedUrl}. Is Chrome running with --remote-debugging-port?`);
+    }
+    await connectBrowser(resolvedUrl, opts?.authToken);
     /* eslint-disable @typescript-eslint/no-deprecated -- backward-compat bridge for allowInternal */
     const ssrfPolicy =
       opts?.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts?.ssrfPolicy;
     /* eslint-enable @typescript-eslint/no-deprecated */
-    return new BrowserClaw(cdpUrl, null, ssrfPolicy);
+    return new BrowserClaw(resolvedUrl, null, ssrfPolicy, opts?.recordVideo);
   }
 
   /**
@@ -1247,7 +1370,12 @@ export class BrowserClaw {
    * ```
    */
   async open(url: string): Promise<CrawlPage> {
-    const tab = await createPageViaPlaywright({ cdpUrl: this.cdpUrl, url, ssrfPolicy: this.ssrfPolicy });
+    const tab = await createPageViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      url,
+      ssrfPolicy: this.ssrfPolicy,
+      recordVideo: this.recordVideo,
+    });
     return new CrawlPage(this.cdpUrl, tab.targetId, this.ssrfPolicy);
   }
 
@@ -1317,6 +1445,7 @@ export class BrowserClaw {
    * Playwright connection is closed.
    */
   async stop(): Promise<void> {
+    clearRecordingContext(this.cdpUrl);
     await disconnectBrowser();
     if (this.chrome) {
       await stopChrome(this.chrome);

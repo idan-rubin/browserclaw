@@ -552,6 +552,18 @@ async function fetchChromeVersion(
   }
 }
 
+const COMMON_CDP_PORTS = [9222, 9223, 9224, 9225, 9226, 9229];
+
+export async function discoverChromeCdpUrl(timeoutMs = 500): Promise<string | null> {
+  const results = await Promise.all(
+    COMMON_CDP_PORTS.map(async (port) => {
+      const url = `http://127.0.0.1:${String(port)}`;
+      return (await isChromeReachable(url, timeoutMs)) ? url : null;
+    }),
+  );
+  return results.find((url) => url !== null) ?? null;
+}
+
 export async function isChromeReachable(cdpUrl: string, timeoutMs = 500, authToken?: string): Promise<boolean> {
   if (isWebSocketUrl(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs);
   const version = await fetchChromeVersion(cdpUrl, timeoutMs, authToken);
