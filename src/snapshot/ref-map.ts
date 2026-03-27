@@ -257,6 +257,17 @@ export function buildRoleSnapshotFromAiSnapshot(
   }
 
   if (options.interactive === true) {
+    let interactiveMaxRef = 0;
+    for (const line of lines) {
+      const refMatch = /\[ref=e(\d+)\]/.exec(line);
+      if (refMatch) interactiveMaxRef = Math.max(interactiveMaxRef, Number.parseInt(refMatch[1], 10));
+    }
+    let interactiveCounter = interactiveMaxRef;
+    const nextInteractiveRef = () => {
+      interactiveCounter++;
+      return `e${String(interactiveCounter)}`;
+    };
+
     const out: string[] = [];
     for (const line of lines) {
       const parsed = matchInteractiveSnapshotLine(line, options);
@@ -264,13 +275,33 @@ export function buildRoleSnapshotFromAiSnapshot(
       const { roleRaw, role, name, suffix } = parsed;
       if (!INTERACTIVE_ROLES.has(role)) continue;
       const ref = parseAiSnapshotRef(suffix);
-      if (ref === null) continue;
       const prefix = /^(\s*-\s*)/.exec(line)?.[1] ?? '';
-      refs[ref] = { role, ...(name !== undefined && name !== '' ? { name } : {}) };
-      out.push(`${prefix}${roleRaw}${name !== undefined && name !== '' ? ` "${name}"` : ''}${suffix}`);
+      if (ref !== null) {
+        refs[ref] = { role, ...(name !== undefined && name !== '' ? { name } : {}) };
+        out.push(`${prefix}${roleRaw}${name !== undefined && name !== '' ? ` "${name}"` : ''}${suffix}`);
+      } else {
+        const generatedRef = nextInteractiveRef();
+        refs[generatedRef] = { role, ...(name !== undefined && name !== '' ? { name } : {}) };
+        let enhanced = `${prefix}${roleRaw}`;
+        if (name !== undefined && name !== '') enhanced += ` "${name}"`;
+        enhanced += ` [ref=${generatedRef}]`;
+        if (suffix.trim() !== '') enhanced += suffix;
+        out.push(enhanced);
+      }
     }
     return { snapshot: out.join('\n') || '(no interactive elements)', refs };
   }
+
+  let maxRef = 0;
+  for (const line of lines) {
+    const refMatch = /\[ref=e(\d+)\]/.exec(line);
+    if (refMatch) maxRef = Math.max(maxRef, Number.parseInt(refMatch[1], 10));
+  }
+  let generatedCounter = maxRef;
+  const nextGeneratedRef = () => {
+    generatedCounter++;
+    return `e${String(generatedCounter)}`;
+  };
 
   const out: string[] = [];
   for (const line of lines) {
@@ -281,7 +312,7 @@ export function buildRoleSnapshotFromAiSnapshot(
       out.push(line);
       continue;
     }
-    const [, , roleRaw, name, suffix] = match;
+    const [, prefix, roleRaw, name, suffix] = match;
     if (roleRaw.startsWith('/')) {
       out.push(line);
       continue;
@@ -290,8 +321,20 @@ export function buildRoleSnapshotFromAiSnapshot(
     const isStructural = STRUCTURAL_ROLES.has(role);
     if (options.compact === true && isStructural && name === '') continue;
     const ref = parseAiSnapshotRef(suffix);
-    if (ref !== null) refs[ref] = { role, ...(name !== '' ? { name } : {}) };
-    out.push(line);
+    if (ref !== null) {
+      refs[ref] = { role, ...(name !== '' ? { name } : {}) };
+      out.push(line);
+    } else if (INTERACTIVE_ROLES.has(role)) {
+      const generatedRef = nextGeneratedRef();
+      refs[generatedRef] = { role, ...(name !== '' ? { name } : {}) };
+      let enhanced = `${prefix}${roleRaw}`;
+      if (name !== '') enhanced += ` "${name}"`;
+      enhanced += ` [ref=${generatedRef}]`;
+      if (suffix.trim() !== '') enhanced += suffix;
+      out.push(enhanced);
+    } else {
+      out.push(line);
+    }
   }
   const tree = out.join('\n') || '(empty)';
   return { snapshot: options.compact === true ? compactTree(tree) : tree, refs };

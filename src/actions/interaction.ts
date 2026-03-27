@@ -30,6 +30,66 @@ function resolveLocator(page: Page, resolved: { ref?: string; selector?: string 
   return page.locator(sel);
 }
 
+export async function mouseClickViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId?: string;
+  x: number;
+  y: number;
+  button?: MouseButton;
+  clickCount?: number;
+  delayMs?: number;
+}): Promise<void> {
+  const page = await getRestoredPageForTarget(opts);
+  await page.mouse.click(opts.x, opts.y, {
+    button: opts.button,
+    clickCount: opts.clickCount,
+    delay: opts.delayMs,
+  });
+}
+
+export async function clickByTextViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId?: string;
+  text: string;
+  exact?: boolean;
+  button?: MouseButton;
+  modifiers?: KeyModifier[];
+  timeoutMs?: number;
+}): Promise<void> {
+  const page = await getRestoredPageForTarget(opts);
+  const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
+  try {
+    await page
+      .getByText(opts.text, { exact: opts.exact })
+      .click({ timeout, button: opts.button, modifiers: opts.modifiers });
+  } catch (err) {
+    throw toAIFriendlyError(err, `text="${opts.text}"`);
+  }
+}
+
+export async function clickByRoleViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId?: string;
+  role: string;
+  name?: string;
+  button?: MouseButton;
+  modifiers?: KeyModifier[];
+  timeoutMs?: number;
+}): Promise<void> {
+  const page = await getRestoredPageForTarget(opts);
+  const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
+  try {
+    await page
+      .getByRole(opts.role as Parameters<typeof page.getByRole>[0], { name: opts.name })
+      .click({ timeout, button: opts.button, modifiers: opts.modifiers });
+  } catch (err) {
+    throw toAIFriendlyError(
+      err,
+      `role=${opts.role}${opts.name !== undefined && opts.name !== '' ? ` name="${opts.name}"` : ''}`,
+    );
+  }
+}
+
 export async function clickViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
@@ -335,11 +395,15 @@ export async function armDialogViaPlaywright(opts: {
     .waitForEvent('dialog', { timeout })
     .then(async (dialog) => {
       if (state.armIdDialog !== armId) return;
-      if (opts.accept) await dialog.accept(opts.promptText);
-      else await dialog.dismiss();
+      try {
+        if (opts.accept) await dialog.accept(opts.promptText);
+        else await dialog.dismiss();
+      } finally {
+        if (state.armIdDialog === armId) state.armIdDialog = 0;
+      }
     })
     .catch(() => {
-      /* intentional no-op */
+      if (state.armIdDialog === armId) state.armIdDialog = 0;
     });
 }
 

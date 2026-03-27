@@ -29,10 +29,12 @@ export async function waitForViaPlaywright(opts: {
     await page.waitForTimeout(resolveBoundedDelayMs(opts.timeMs, 'wait timeMs', MAX_WAIT_TIME_MS));
   }
   if (opts.text !== undefined && opts.text !== '') {
-    await page.getByText(opts.text).first().waitFor({ state: 'visible', timeout });
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- document.body is null before DOM ready
+    await page.waitForFunction((text) => (document.body?.innerText ?? '').includes(text), opts.text, { timeout });
   }
   if (opts.textGone !== undefined && opts.textGone !== '') {
-    await page.getByText(opts.textGone).first().waitFor({ state: 'hidden', timeout });
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- document.body is null before DOM ready
+    await page.waitForFunction((text) => !(document.body?.innerText ?? '').includes(text), opts.textGone, { timeout });
   }
   if (opts.selector !== undefined && opts.selector !== '') {
     const selector = opts.selector.trim();

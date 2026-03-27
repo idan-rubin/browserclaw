@@ -349,6 +349,13 @@ export function ensurePageState(page: Page): PageState {
       }
     });
 
+    page.on('dialog', (dialog) => {
+      if (state.armIdDialog > 0) return;
+      dialog.dismiss().catch((err: unknown) => {
+        console.warn(`[browserclaw] Failed to dismiss dialog: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    });
+
     page.on('close', () => {
       pageStates.delete(page);
       observedPages.delete(page);
@@ -367,7 +374,7 @@ function applyStealthToPage(page: Page): void {
   });
 }
 
-function observeContext(context: BrowserContext): void {
+export function observeContext(context: BrowserContext): void {
   if (observedContexts.has(context)) return;
   observedContexts.add(context);
   ensureContextState(context);
