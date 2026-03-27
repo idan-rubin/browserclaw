@@ -2,11 +2,40 @@ import { randomUUID } from 'node:crypto';
 import { lookup as dnsLookupCb } from 'node:dns';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { lstat, realpath, rename, rm } from 'node:fs/promises';
-import { resolve, normalize, dirname, basename, join, sep, relative, posix, win32 } from 'node:path';
+import { tmpdir } from 'node:os';
+import {
+  resolve,
+  normalize,
+  dirname,
+  basename,
+  join,
+  sep,
+  relative,
+  posix,
+  win32,
+  isAbsolute as pathIsAbsolute,
+} from 'node:path';
 
 import * as ipaddr from 'ipaddr.js';
 
 import type { SsrfPolicy, PinnedHostname } from './types.js';
+
+// ── Default temp directories for downloads/uploads ──
+
+function resolveDefaultBrowserTmpDir(): string {
+  try {
+    if (process.platform === 'linux' || process.platform === 'darwin') {
+      return '/tmp/browserclaw';
+    }
+  } catch {
+    /* fallback below */
+  }
+  return join(tmpdir(), 'browserclaw');
+}
+
+export const DEFAULT_BROWSER_TMP_DIR = resolveDefaultBrowserTmpDir();
+export const DEFAULT_DOWNLOAD_DIR = join(DEFAULT_BROWSER_TMP_DIR, 'downloads');
+export const DEFAULT_UPLOAD_DIR = join(DEFAULT_BROWSER_TMP_DIR, 'uploads');
 
 export type LookupFn = typeof dnsLookup;
 
@@ -339,6 +368,8 @@ export function createPinnedLookup(params: {
   fallback?: typeof dnsLookupCb;
 }): typeof dnsLookupCb {
   const normalizedHost = normalizeHostname(params.hostname);
+  if (params.addresses.length === 0)
+    throw new Error(`Pinned lookup requires at least one address for ${params.hostname}`);
   const fallback = params.fallback ?? dnsLookupCb;
   const records = params.addresses.map((address) => ({
     address,
@@ -581,6 +612,161 @@ export async function resolveStrictExistingUploadPaths(params: {
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+// ── Path confinement utilities ──
+
+type PathResult = { ok: true; path: string } | { ok: false; error: string };
+type PathsResult = { ok: true; paths: string[] } | { ok: false; error: string };
+
+/**
+ * Lexical confinement: resolve(root, raw) must not escape root.
+ */
+export function resolvePathWithinRoot(params: {
+  rootDir: string;
+  requestedPath: string;
+  scopeLabel: string;
+  defaultFileName?: string;
+}): PathResult {
+  const root = resolve(params.rootDir);
+  const raw = params.requestedPath.trim();
+  const effectivePath =
+    raw === '' && params.defaultFileName != null && params.defaultFileName !== '' ? params.defaultFileName : raw;
+  if (effectivePath === '') return { ok: false, error: `Empty path is not allowed (${params.scopeLabel}).` };
+
+  const resolved = resolve(root, effectivePath);
+  const rel = relative(root, resolved);
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || pathIsAbsolute(rel)) {
+    return { ok: false, error: `Path escapes ${params.scopeLabel}: "${params.requestedPath}".` };
+  }
+  return { ok: true, path: resolved };
+}
+
+/**
+ * Async writable-path check: verifies parent dir realpath is within root,
+ * and that the target (if it exists) is not a symlink.
+ */
+export async function resolveWritablePathWithinRoot(params: {
+  rootDir: string;
+  requestedPath: string;
+  scopeLabel: string;
+  defaultFileName?: string;
+}): Promise<PathResult> {
+  const lexical = resolvePathWithinRoot(params);
+  if (!lexical.ok) return lexical;
+
+  const root = resolve(params.rootDir);
+  const target = lexical.path;
+
+  let parentReal: string;
+  try {
+    parentReal = await realpath(dirname(target));
+  } catch {
+    return {
+      ok: false,
+      error: `Parent directory is inaccessible for "${params.requestedPath}" (${params.scopeLabel}).`,
+    };
+  }
+
+  const parentRel = relative(root, parentReal);
+  if (parentRel === '..' || parentRel.startsWith(`..${sep}`) || pathIsAbsolute(parentRel)) {
+    return { ok: false, error: `Path escapes ${params.scopeLabel} via symlink: "${params.requestedPath}".` };
+  }
+
+  try {
+    const stat = await lstat(target);
+    if (stat.isSymbolicLink()) {
+      return { ok: false, error: `Path is a symbolic link (${params.scopeLabel}): "${params.requestedPath}".` };
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return {
+        ok: false,
+        error: `Cannot stat "${params.requestedPath}" (${params.scopeLabel}): ${(e as Error).message}`,
+      };
+    }
+  }
+
+  return { ok: true, path: target };
+}
+
+/**
+ * For each path: lexical check then realpath check. Missing files are allowed
+ * (returns the fallback resolved path).
+ */
+export async function resolveExistingPathsWithinRoot(params: {
+  rootDir: string;
+  requestedPaths: string[];
+  scopeLabel: string;
+}): Promise<PathsResult> {
+  const root = resolve(params.rootDir);
+  const resolved: string[] = [];
+
+  for (const raw of params.requestedPaths) {
+    const lexical = resolvePathWithinRoot({ rootDir: root, requestedPath: raw, scopeLabel: params.scopeLabel });
+    if (!lexical.ok) return lexical;
+
+    try {
+      const real = await realpath(lexical.path);
+      const rel = relative(root, real);
+      if (rel === '..' || rel.startsWith(`..${sep}`) || pathIsAbsolute(rel)) {
+        return { ok: false, error: `Path escapes ${params.scopeLabel} via symlink: "${raw}".` };
+      }
+      resolved.push(real);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        resolved.push(lexical.path);
+      } else {
+        return { ok: false, error: `Cannot resolve "${raw}" (${params.scopeLabel}): ${(e as Error).message}` };
+      }
+    }
+  }
+
+  return { ok: true, paths: resolved };
+}
+
+/**
+ * Same as resolveExistingPathsWithinRoot but missing files are NOT allowed.
+ */
+export async function resolveStrictExistingPathsWithinRoot(params: {
+  rootDir: string;
+  requestedPaths: string[];
+  scopeLabel: string;
+}): Promise<PathsResult> {
+  const root = resolve(params.rootDir);
+  const resolved: string[] = [];
+
+  for (const raw of params.requestedPaths) {
+    const lexical = resolvePathWithinRoot({ rootDir: root, requestedPath: raw, scopeLabel: params.scopeLabel });
+    if (!lexical.ok) return lexical;
+
+    let real: string;
+    try {
+      real = await realpath(lexical.path);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { ok: false, error: `Path does not exist (${params.scopeLabel}): "${raw}".` };
+      }
+      return { ok: false, error: `Cannot resolve "${raw}" (${params.scopeLabel}): ${(e as Error).message}` };
+    }
+
+    const rel = relative(root, real);
+    if (rel === '..' || rel.startsWith(`..${sep}`) || pathIsAbsolute(rel)) {
+      return { ok: false, error: `Path escapes ${params.scopeLabel} via symlink: "${raw}".` };
+    }
+
+    const stat = await lstat(real);
+    if (stat.isSymbolicLink()) {
+      return { ok: false, error: `Path is a symbolic link (${params.scopeLabel}): "${raw}".` };
+    }
+    if (!stat.isFile()) {
+      return { ok: false, error: `Path is not a regular file (${params.scopeLabel}): "${raw}".` };
+    }
+
+    resolved.push(real);
+  }
+
+  return { ok: true, paths: resolved };
 }
 
 // ── Atomic file write utilities ──
