@@ -360,14 +360,22 @@ export function ensurePageState(page: Page): PageState {
           type: dialog.type(),
           message: dialog.message(),
           defaultValue: dialog.defaultValue(),
-          accept: (promptText?: string) => { handled = true; return dialog.accept(promptText); },
-          dismiss: () => { handled = true; return dialog.dismiss(); },
+          accept: (promptText?: string) => {
+            handled = true;
+            return dialog.accept(promptText);
+          },
+          dismiss: () => {
+            handled = true;
+            return dialog.dismiss();
+          },
         };
         Promise.resolve(state.dialogHandler(event))
           .then(() => {
             if (!handled) {
               dialog.dismiss().catch((err: unknown) => {
-                console.warn(`[browserclaw] Failed to auto-dismiss dialog: ${err instanceof Error ? err.message : String(err)}`);
+                console.warn(
+                  `[browserclaw] Failed to auto-dismiss dialog: ${err instanceof Error ? err.message : String(err)}`,
+                );
               });
             }
           })
@@ -375,7 +383,9 @@ export function ensurePageState(page: Page): PageState {
             console.warn(`[browserclaw] onDialog handler error: ${err instanceof Error ? err.message : String(err)}`);
             if (!handled) {
               dialog.dismiss().catch((dismissErr: unknown) => {
-                console.warn(`[browserclaw] Failed to dismiss dialog after handler error: ${dismissErr instanceof Error ? dismissErr.message : String(dismissErr)}`);
+                console.warn(
+                  `[browserclaw] Failed to dismiss dialog after handler error: ${dismissErr instanceof Error ? dismissErr.message : String(dismissErr)}`,
+                );
               });
             }
           });
