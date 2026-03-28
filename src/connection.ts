@@ -12,7 +12,7 @@ import {
   hasProxyEnvConfigured,
 } from './chrome-launcher.js';
 import { STEALTH_SCRIPT } from './stealth.js';
-import type { PageState, ContextState, RoleRefs, NetworkRequest } from './types.js';
+import type { PageState, ContextState, RoleRefs, NetworkRequest, DialogHandler } from './types.js';
 
 // ── Errors ──
 
@@ -350,7 +350,39 @@ export function ensurePageState(page: Page): PageState {
     });
 
     page.on('dialog', (dialog) => {
+      // If a one-shot armDialog is active, let it handle the dialog.
       if (state.armIdDialog > 0) return;
+
+      // If a persistent onDialog handler is registered, invoke it.
+      if (state.dialogHandler) {
+        let handled = false;
+        const event = {
+          type: dialog.type(),
+          message: dialog.message(),
+          defaultValue: dialog.defaultValue(),
+          accept: (promptText?: string) => { handled = true; return dialog.accept(promptText); },
+          dismiss: () => { handled = true; return dialog.dismiss(); },
+        };
+        Promise.resolve(state.dialogHandler(event))
+          .then(() => {
+            if (!handled) {
+              dialog.dismiss().catch((err: unknown) => {
+                console.warn(`[browserclaw] Failed to auto-dismiss dialog: ${err instanceof Error ? err.message : String(err)}`);
+              });
+            }
+          })
+          .catch((err: unknown) => {
+            console.warn(`[browserclaw] onDialog handler error: ${err instanceof Error ? err.message : String(err)}`);
+            if (!handled) {
+              dialog.dismiss().catch((dismissErr: unknown) => {
+                console.warn(`[browserclaw] Failed to dismiss dialog after handler error: ${dismissErr instanceof Error ? dismissErr.message : String(dismissErr)}`);
+              });
+            }
+          });
+        return;
+      }
+
+      // Default: auto-dismiss unexpected dialogs.
       dialog.dismiss().catch((err: unknown) => {
         console.warn(`[browserclaw] Failed to dismiss dialog: ${err instanceof Error ? err.message : String(err)}`);
       });
@@ -363,6 +395,23 @@ export function ensurePageState(page: Page): PageState {
   }
 
   return state;
+}
+
+// ── Dialog Handler ──
+
+/**
+ * Set or clear a persistent dialog handler for a page.
+ * When set, this handler is called for every dialog that is not covered by armDialog().
+ * Pass `undefined` to clear the handler and restore default auto-dismiss.
+ */
+export async function setDialogHandler(opts: {
+  cdpUrl: string;
+  targetId?: string;
+  handler?: DialogHandler;
+}): Promise<void> {
+  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const state = ensurePageState(page);
+  state.dialogHandler = opts.handler;
 }
 
 // ── Stealth ──

@@ -432,6 +432,23 @@ export interface DialogOptions {
   timeoutMs?: number;
 }
 
+/** Information about a dialog event passed to `onDialog` handlers. */
+export interface DialogEvent {
+  /** Dialog type: `'alert'`, `'confirm'`, `'prompt'`, or `'beforeunload'` */
+  type: string;
+  /** The message displayed in the dialog */
+  message: string;
+  /** The default prompt value (for prompt dialogs) */
+  defaultValue: string;
+  /** Accept the dialog (optionally with prompt text) */
+  accept: (promptText?: string) => Promise<void>;
+  /** Dismiss the dialog */
+  dismiss: () => Promise<void>;
+}
+
+/** Callback for persistent dialog handling. */
+export type DialogHandler = (event: DialogEvent) => void | Promise<void>;
+
 // ── Response Body ──
 
 /** Result of intercepting a response body. */
@@ -511,6 +528,7 @@ export interface PageState {
   armIdUpload: number;
   armIdDialog: number;
   armIdDownload: number;
+  dialogHandler?: DialogHandler;
 }
 
 // ── Anti-Bot ──

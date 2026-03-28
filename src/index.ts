@@ -31,6 +31,7 @@ export {
   resolveInteractionTimeoutMs,
   resolveBoundedDelayMs,
   getRestoredPageForTarget,
+  setDialogHandler,
   parseRoleRef,
   BrowserTabNotFoundError,
 } from './connection.js';
@@ -66,6 +67,8 @@ export type {
   ChromeExecutable,
   DownloadResult,
   DialogOptions,
+  DialogEvent,
+  DialogHandler,
   ResponseBodyResult,
   TraceStartOptions,
   ColorScheme,

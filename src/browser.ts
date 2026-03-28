@@ -1,4 +1,4 @@
-import type { BrowserContext } from 'playwright-core';
+import type { BrowserContext, Page, Locator } from 'playwright-core';
 
 import { batchViaPlaywright } from './actions/batch.js';
 import type { BatchAction, BatchActionResult } from './actions/batch.js';
@@ -60,6 +60,8 @@ import {
   pageTargetId,
   getAllPages,
   normalizeTimeoutMs,
+  setDialogHandler,
+  getRestoredPageForTarget,
 } from './connection.js';
 import { snapshotAi } from './snapshot/ai-snapshot.js';
 import { snapshotRole, snapshotAria } from './snapshot/aria-snapshot.js';
@@ -92,6 +94,7 @@ import type {
   SsrfPolicy,
   DownloadResult,
   DialogOptions,
+  DialogHandler,
   ResponseBodyResult,
   TraceStartOptions,
   ColorScheme,
@@ -230,6 +233,33 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this.targetId,
       ref,
+      doubleClick: opts?.doubleClick,
+      button: opts?.button,
+      modifiers: opts?.modifiers,
+      delayMs: opts?.delayMs,
+      timeoutMs: opts?.timeoutMs,
+    });
+  }
+
+  /**
+   * Click an element by CSS selector (no snapshot/ref needed).
+   *
+   * Finds and clicks atomically — no stale ref problem.
+   *
+   * @param selector - CSS selector (e.g. `'#submit-btn'`, `'.modal button'`)
+   * @param opts - Click options (double-click, button, modifiers)
+   *
+   * @example
+   * ```ts
+   * await page.clickBySelector('#submit-btn');
+   * await page.clickBySelector('.modal .close', { button: 'right' });
+   * ```
+   */
+  async clickBySelector(selector: string, opts?: ClickOptions): Promise<void> {
+    return clickViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this.targetId,
+      selector,
       doubleClick: opts?.doubleClick,
       button: opts?.button,
       modifiers: opts?.modifiers,
@@ -510,6 +540,49 @@ export class CrawlPage {
       accept: opts.accept,
       promptText: opts.promptText,
       timeoutMs: opts.timeoutMs,
+    });
+  }
+
+  /**
+   * Register a persistent dialog handler for all dialogs (alert, confirm, prompt, beforeunload).
+   *
+   * Unlike `armDialog()` which handles a single expected dialog, `onDialog()` handles
+   * every dialog that appears until cleared. This prevents unexpected dialogs from
+   * blocking the page.
+   *
+   * The handler receives a `DialogEvent` with `accept()` and `dismiss()` methods.
+   * If the handler throws or doesn't call either, the dialog is auto-dismissed.
+   *
+   * Pass `undefined` or `null` to clear the handler and restore default auto-dismiss.
+   *
+   * Note: `armDialog()` takes priority — if a one-shot handler is armed, it handles
+   * the next dialog instead of the persistent handler.
+   *
+   * @param handler - Callback for dialog events, or `undefined`/`null` to clear
+   *
+   * @example
+   * ```ts
+   * // Accept all confirm dialogs, dismiss everything else
+   * page.onDialog((event) => {
+   *   if (event.type === 'confirm') event.accept();
+   *   else event.dismiss();
+   * });
+   *
+   * // Log and auto-accept all dialogs
+   * page.onDialog(async (event) => {
+   *   console.log(`Dialog: ${event.type} — ${event.message}`);
+   *   await event.accept();
+   * });
+   *
+   * // Clear the handler (restore default auto-dismiss)
+   * page.onDialog(undefined);
+   * ```
+   */
+  async onDialog(handler: DialogHandler | undefined | null): Promise<void> {
+    return setDialogHandler({
+      cdpUrl: this.cdpUrl,
+      targetId: this.targetId,
+      handler: handler ?? undefined,
     });
   }
 
@@ -1246,6 +1319,61 @@ export class CrawlPage {
       timeoutMs: opts?.timeoutMs,
       pollMs: opts?.pollMs,
     });
+  }
+
+  // ── Playwright Escape Hatches ─────────────────────────────────
+
+  /**
+   * Get the underlying Playwright `Page` object for this tab.
+   *
+   * Use this when browserclaw's API doesn't cover your use case and you need
+   * direct access to Playwright's full API (custom locator strategies,
+   * frame manipulation, request interception, etc.).
+   *
+   * **Warning:** Modifications made via the raw Playwright page may conflict
+   * with browserclaw's internal state (e.g. ref tracking). Use with care.
+   *
+   * @returns The Playwright `Page` instance
+   *
+   * @example
+   * ```ts
+   * const pwPage = await page.playwrightPage();
+   *
+   * // Use Playwright's full API directly
+   * await pwPage.locator('.my-component').waitFor({ state: 'visible' });
+   * await pwPage.route('**\/api/**', route => route.fulfill({ body: '{}' }));
+   *
+   * // Access frames
+   * const frame = pwPage.frameLocator('#my-iframe');
+   * ```
+   */
+  async playwrightPage(): Promise<Page> {
+    return getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+  }
+
+  /**
+   * Create a Playwright `Locator` for a CSS selector on this page.
+   *
+   * Convenience method that returns a Playwright locator without needing
+   * to first obtain the Page object. Useful for one-off Playwright operations.
+   *
+   * @param selector - CSS selector or Playwright selector string
+   * @returns A Playwright `Locator` instance
+   *
+   * @example
+   * ```ts
+   * const loc = await page.locator('.modal-dialog button.confirm');
+   * await loc.waitFor({ state: 'visible' });
+   * await loc.click();
+   *
+   * // Use Playwright selectors
+   * const input = await page.locator('input[name="email"]');
+   * await input.fill('test@example.com');
+   * ```
+   */
+  async locator(selector: string): Promise<Locator> {
+    const pwPage = await getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    return pwPage.locator(selector);
   }
 }
 
