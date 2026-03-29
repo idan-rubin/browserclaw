@@ -36,6 +36,7 @@ export const CONTENT_ROLES = new Set([
 export const STRUCTURAL_ROLES = new Set([
   'generic',
   'group',
+  'ignored',
   'list',
   'table',
   'row',

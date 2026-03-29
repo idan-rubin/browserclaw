@@ -120,7 +120,17 @@ const BLOCKED_IPV4_RANGES = new Set([
   'reserved',
 ]);
 
-const BLOCKED_IPV6_RANGES = new Set(['unspecified', 'loopback', 'linkLocal', 'uniqueLocal', 'multicast']);
+const BLOCKED_IPV6_RANGES = new Set([
+  'unspecified',
+  'loopback',
+  'linkLocal',
+  'uniqueLocal',
+  'multicast',
+  'reserved',
+  'benchmarking',
+  'discard',
+  'orchid2',
+]);
 
 const RFC2544_BENCHMARK_PREFIX: [ipaddr.IPv4, number] = [ipaddr.IPv4.parse('198.18.0.0'), 15];
 
