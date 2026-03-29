@@ -662,6 +662,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   const spawnChrome = () => {
     const args = [
       `--remote-debugging-port=${String(cdpPort)}`,
+      '--remote-debugging-address=127.0.0.1',
       `--user-data-dir=${userDataDir}`,
       '--no-first-run',
       '--no-default-browser-check',
