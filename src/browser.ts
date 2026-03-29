@@ -17,6 +17,7 @@ import { evaluateViaPlaywright, evaluateInAllFramesViaPlaywright, type FrameEval
 import {
   clickViaPlaywright,
   mouseClickViaPlaywright,
+  pressAndHoldViaCdp,
   clickByTextViaPlaywright,
   clickByRoleViaPlaywright,
   hoverViaPlaywright,
@@ -297,6 +298,32 @@ export class CrawlPage {
       button: opts?.button,
       clickCount: opts?.clickCount,
       delayMs: opts?.delayMs,
+    });
+  }
+
+  /**
+   * Press and hold at page coordinates using raw CDP events.
+   *
+   * Bypasses Playwright's automation layer by dispatching CDP
+   * `Input.dispatchMouseEvent` directly — useful for anti-bot challenges
+   * that detect automated clicks.
+   *
+   * @param x - X coordinate in CSS pixels
+   * @param y - Y coordinate in CSS pixels
+   * @param opts - Options (holdMs: hold duration, default 1000, max 30000)
+   *
+   * @example
+   * ```ts
+   * await page.pressAndHold(400, 300, { holdMs: 5000 });
+   * ```
+   */
+  async pressAndHold(x: number, y: number, opts?: { holdMs?: number }): Promise<void> {
+    return pressAndHoldViaCdp({
+      cdpUrl: this.cdpUrl,
+      targetId: this.targetId,
+      x,
+      y,
+      holdMs: opts?.holdMs,
     });
   }
 

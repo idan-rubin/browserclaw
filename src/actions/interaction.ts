@@ -14,6 +14,7 @@ import {
   resolveBoundedDelayMs,
   getRestoredPageForTarget,
   parseRoleRef,
+  withPageScopedCdpClient,
 } from '../connection.js';
 import { resolveStrictExistingPathsWithinRoot, DEFAULT_UPLOAD_DIR } from '../security.js';
 import type { FormField } from '../types.js';
@@ -44,6 +45,35 @@ export async function mouseClickViaPlaywright(opts: {
     button: opts.button,
     clickCount: opts.clickCount,
     delay: opts.delayMs,
+  });
+}
+
+const MAX_HOLD_MS = 30_000;
+
+export async function pressAndHoldViaCdp(opts: {
+  cdpUrl: string;
+  targetId?: string;
+  x: number;
+  y: number;
+  holdMs?: number;
+}): Promise<void> {
+  const holdMs = resolveBoundedDelayMs(opts.holdMs ?? 1000, 'holdMs', MAX_HOLD_MS);
+  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  ensurePageState(page);
+
+  const pos = { x: opts.x, y: opts.y };
+  const btn = { button: 'left' as const, clickCount: 1 };
+
+  await withPageScopedCdpClient({
+    cdpUrl: opts.cdpUrl,
+    page,
+    targetId: opts.targetId,
+    fn: async (send) => {
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...pos });
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...pos, ...btn });
+      await new Promise((r) => setTimeout(r, holdMs));
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...pos, ...btn });
+    },
   });
 }
 
