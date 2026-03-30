@@ -35,6 +35,7 @@ export {
   parseRoleRef,
   BrowserTabNotFoundError,
 } from './connection.js';
+export { pressAndHoldViaCdp } from './actions/interaction.js';
 export type { FrameEvalResult } from './actions/evaluate.js';
 export { batchViaPlaywright, executeSingleAction } from './actions/batch.js';
 export type { BatchAction, BatchActionResult } from './actions/batch.js';
