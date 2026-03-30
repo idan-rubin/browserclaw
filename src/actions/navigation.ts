@@ -194,7 +194,8 @@ export async function waitForTabViaPlaywright(opts: {
   titleContains?: string;
   timeoutMs?: number;
 }): Promise<BrowserTab> {
-  if (!opts.urlContains && !opts.titleContains) throw new Error('urlContains or titleContains is required');
+  if (opts.urlContains === undefined && opts.titleContains === undefined)
+    throw new Error('urlContains or titleContains is required');
   const timeout = Math.max(1000, Math.min(120000, opts.timeoutMs ?? 30000));
   const start = Date.now();
   const POLL_INTERVAL_MS = 250;
