@@ -48,31 +48,29 @@ export async function mouseClickViaPlaywright(opts: {
   });
 }
 
-const MAX_HOLD_MS = 30_000;
-
 export async function pressAndHoldViaCdp(opts: {
   cdpUrl: string;
   targetId?: string;
   x: number;
   y: number;
+  delay?: number;
   holdMs?: number;
 }): Promise<void> {
-  const holdMs = resolveBoundedDelayMs(opts.holdMs ?? 1000, 'holdMs', MAX_HOLD_MS);
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
 
-  const pos = { x: opts.x, y: opts.y };
-  const btn = { button: 'left' as const, clickCount: 1 };
+  const { x, y } = opts;
 
   await withPageScopedCdpClient({
     cdpUrl: opts.cdpUrl,
     page,
     targetId: opts.targetId,
     fn: async (send) => {
-      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...pos });
-      await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...pos, ...btn });
-      await new Promise((r) => setTimeout(r, holdMs));
-      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...pos, ...btn });
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' });
+      if (opts.delay !== undefined && opts.delay !== 0) await new Promise((r) => setTimeout(r, opts.delay));
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+      if (opts.holdMs !== undefined && opts.holdMs !== 0) await new Promise((r) => setTimeout(r, opts.holdMs));
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
     },
   });
 }
