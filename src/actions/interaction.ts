@@ -89,6 +89,7 @@ export async function clickByTextViaPlaywright(opts: {
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
   const locator = page
     .getByText(opts.text, { exact: opts.exact })
+    .and(page.locator(':visible'))
     .or(page.getByTitle(opts.text, { exact: opts.exact }))
     .first();
   try {
