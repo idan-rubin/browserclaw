@@ -310,19 +310,20 @@ export class CrawlPage {
    *
    * @param x - X coordinate in CSS pixels
    * @param y - Y coordinate in CSS pixels
-   * @param opts - Options (holdMs: hold duration, default 1000, max 30000)
+   * @param opts - Options (delay: ms before press, holdMs: hold duration)
    *
    * @example
    * ```ts
-   * await page.pressAndHold(400, 300, { holdMs: 5000 });
+   * await page.pressAndHold(400, 300, { delay: 150, holdMs: 5000 });
    * ```
    */
-  async pressAndHold(x: number, y: number, opts?: { holdMs?: number }): Promise<void> {
+  async pressAndHold(x: number, y: number, opts?: { delay?: number; holdMs?: number }): Promise<void> {
     return pressAndHoldViaCdp({
       cdpUrl: this.cdpUrl,
       targetId: this.targetId,
       x,
       y,
+      delay: opts?.delay,
       holdMs: opts?.holdMs,
     });
   }

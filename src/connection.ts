@@ -60,7 +60,13 @@ function appendCdpPath(cdpUrl: string, cdpPath: string): string {
  * Run a function with a scoped Playwright CDP session, detaching when done.
  */
 export async function withPlaywrightPageCdpSession<T>(page: Page, fn: (session: CDPSession) => Promise<T>): Promise<T> {
-  const session = await page.context().newCDPSession(page);
+  const CDP_SESSION_TIMEOUT_MS = 10_000;
+  const session = await Promise.race([
+    page.context().newCDPSession(page),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('newCDPSession timed out after 10s')), CDP_SESSION_TIMEOUT_MS),
+    ),
+  ]);
   try {
     return await fn(session);
   } finally {
