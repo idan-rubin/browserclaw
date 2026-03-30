@@ -310,7 +310,9 @@ export interface WaitOptions {
   /** Wait for a specific page load state */
   loadState?: 'load' | 'domcontentloaded' | 'networkidle';
   /** Wait until a JavaScript function returns truthy (evaluated in browser context). Accepts a string or a serializable function. */
-  fn?: string | (() => unknown);
+  fn?: string | ((arg?: unknown) => unknown);
+  /** Serializable argument passed to `fn` in the browser context. Use an array or object to pass multiple values. */
+  arg?: unknown;
   /** Timeout for each condition in milliseconds. Default: `20000` */
   timeoutMs?: number;
 }
@@ -458,6 +460,24 @@ export interface DialogEvent {
 export type DialogHandler = (event: DialogEvent) => void | Promise<void>;
 
 // ── Response Body ──
+
+/** Result of waiting for a network request to complete. */
+export interface RequestResult {
+  /** The final request URL */
+  url: string;
+  /** HTTP method (e.g. `'GET'`, `'POST'`) */
+  method: string;
+  /** Request body (for POST/PUT/PATCH requests) */
+  postData?: string;
+  /** HTTP response status code */
+  status: number;
+  /** Whether the response status was 2xx */
+  ok: boolean;
+  /** Response body text */
+  responseBody?: string;
+  /** Whether the response body was truncated due to maxChars */
+  truncated?: boolean;
+}
 
 /** Result of intercepting a response body. */
 export interface ResponseBodyResult {

@@ -1,4 +1,4 @@
-<h2 align="center">🦞 BrowserClaw — Standalone OpenClaw browser module</h2>
+<h2 align="center">🦞 BrowserClaw™ — Standalone OpenClaw browser module</h2>
 
 <p align="center">
   <a href="https://browserclaw.org"><img src="https://img.shields.io/badge/Live-browserclaw.org-orange" alt="Live" /></a>
@@ -23,7 +23,7 @@ const { snapshot, refs } = await page.snapshot();
 // snapshot: AI-readable text tree
 // refs: { "e1": { role: "link", name: "More info" }, "e2": { role: "button", name: "Submit" } }
 
-await page.click('e1');         // Click by ref
+await page.click('e1'); // Click by ref
 await page.type('e3', 'hello'); // Type by ref
 await browser.stop();
 ```
@@ -37,6 +37,7 @@ Most browser automation tools were built for humans writing test scripts. AI age
 - **browserclaw** gives the AI a **text snapshot** with numbered refs — the AI reads text (what it's best at) and returns a ref ID (deterministic targeting)
 
 The snapshot + ref pattern means:
+
 1. **Deterministic** — refs resolve to exact elements via Playwright locators, no guessing
 2. **Fast** — text snapshots are tiny compared to screenshots
 3. **Cheap** — no vision API calls, just text in/text out
@@ -46,15 +47,15 @@ The snapshot + ref pattern means:
 
 The AI browser automation space is moving fast. Here's how browserclaw compares to the major alternatives.
 
-| | [browserclaw](https://github.com/idan-rubin/browserclaw) | [browser-use](https://github.com/browser-use/browser-use) | [Stagehand](https://github.com/browserbase/stagehand) | [Playwright MCP](https://github.com/microsoft/playwright-mcp) |
-|:---|:---:|:---:|:---:|:---:|
-| Ref → exact element, no guessing | :white_check_mark: | :heavy_minus_sign: | :x: | :white_check_mark: |
-| No vision model in the loop | :white_check_mark: | :heavy_minus_sign: | :white_check_mark: | :white_check_mark: |
-| Survives redesigns (semantic, not pixel) | :white_check_mark: | :heavy_minus_sign: | :white_check_mark: | :white_check_mark: |
-| Fill 10 form fields in one call | :white_check_mark: | :x: | :x: | :x: |
-| Interact with cross-origin iframes | :white_check_mark: | :white_check_mark: | :x: | :x: |
-| Playwright engine (auto-wait, locators) | :white_check_mark: | :x: | :white_check_mark: | :white_check_mark: |
-| Embeddable in your own JS/TS agent loop | :white_check_mark: | :x: | :heavy_minus_sign: | :x: |
+|                                          | [browserclaw](https://github.com/idan-rubin/browserclaw) | [browser-use](https://github.com/browser-use/browser-use) | [Stagehand](https://github.com/browserbase/stagehand) | [Playwright MCP](https://github.com/microsoft/playwright-mcp) |
+| :--------------------------------------- | :------------------------------------------------------: | :-------------------------------------------------------: | :---------------------------------------------------: | :-----------------------------------------------------------: |
+| Ref → exact element, no guessing         |                    :white_check_mark:                    |                    :heavy_minus_sign:                     |                          :x:                          |                      :white_check_mark:                       |
+| No vision model in the loop              |                    :white_check_mark:                    |                    :heavy_minus_sign:                     |                  :white_check_mark:                   |                      :white_check_mark:                       |
+| Survives redesigns (semantic, not pixel) |                    :white_check_mark:                    |                    :heavy_minus_sign:                     |                  :white_check_mark:                   |                      :white_check_mark:                       |
+| Fill 10 form fields in one call          |                    :white_check_mark:                    |                            :x:                            |                          :x:                          |                              :x:                              |
+| Interact with cross-origin iframes       |                    :white_check_mark:                    |                    :white_check_mark:                     |                          :x:                          |                              :x:                              |
+| Playwright engine (auto-wait, locators)  |                    :white_check_mark:                    |                            :x:                            |                  :white_check_mark:                   |                      :white_check_mark:                       |
+| Embeddable in your own JS/TS agent loop  |                    :white_check_mark:                    |                            :x:                            |                  :heavy_minus_sign:                   |                              :x:                              |
 
 :white_check_mark: = Yes&ensp; :heavy_minus_sign: = Partial&ensp; :x: = No
 
@@ -132,19 +133,22 @@ Requires a Chromium-based browser installed on the system (Chrome, Brave, Edge, 
 ```typescript
 // Launch a new Chrome instance (auto-detects Chrome/Brave/Edge/Chromium)
 const browser = await BrowserClaw.launch({
-  headless: false,       // default: false (visible window)
+  headless: false, // default: false (visible window)
   executablePath: '...', // optional: specific browser path
-  cdpPort: 9222,         // default: 9222
-  noSandbox: false,      // default: false (set true for Docker/CI)
-  userDataDir: '...',    // optional: custom user data directory
+  cdpPort: 9222, // default: 9222
+  noSandbox: false, // default: false (set true for Docker/CI)
+  ignoreHTTPSErrors: false, // default: false (set true for expired local dev certs)
+  userDataDir: '...', // optional: custom user data directory
   profileName: 'browserclaw', // profile name in Chrome title bar
-  profileColor: '#FF4500',    // profile accent color (hex)
+  profileColor: '#FF4500', // profile accent color (hex)
   chromeArgs: ['--start-maximized'], // additional Chrome flags
 });
 
-// Or connect to an already-running Chrome instance
-// (started with: chrome --remote-debugging-port=9222)
+// Connect to an already-running Chrome instance
 const browser = await BrowserClaw.connect('http://localhost:9222');
+
+// Auto-discovery: scans common CDP ports (9222-9226, 9229)
+const browser = await BrowserClaw.connect();
 ```
 
 `connect()` checks that Chrome is reachable, then the internal CDP connection retries 3 times with increasing timeouts (5 s, 7 s, 9 s) — safe for Docker/CI where Chrome starts slowly.
@@ -156,16 +160,30 @@ const browser = await BrowserClaw.connect('http://localhost:9222');
 ```typescript
 const page = await browser.open('https://example.com');
 const current = await browser.currentPage(); // get active tab
-const tabs = await browser.tabs();           // list all tabs
+const tabs = await browser.tabs(); // list all tabs
 const handle = browser.page(tabs[0].targetId); // wrap existing tab
-await browser.focus(tabId);                  // bring tab to front
-await browser.close(tabId);                  // close a tab
-await browser.stop();                        // stop browser + cleanup
+const appPage = await browser.waitForTab({ urlContains: 'app-web' });
+await browser.focus(tabId); // bring tab to front
+await browser.close(tabId); // close a tab
+await browser.stop(); // stop browser + cleanup
 
-page.id;                          // CDP target ID (use with focus/close/page)
-await page.url();                 // current page URL
-await page.title();               // current page title
-browser.url;                      // CDP endpoint URL
+page.id; // CDP target ID (use with focus/close/page)
+await page.url(); // current page URL
+await page.title(); // current page title
+browser.url; // CDP endpoint URL
+```
+
+Every tab returns a `targetId` — this is the handle you use everywhere:
+
+```typescript
+// Multi-tab workflow (e.g. impersonation, OAuth)
+const main = await browser.open('https://app.example.com');
+const admin = await browser.open('https://admin.example.com');
+
+const { refs } = await admin.snapshot(); // snapshot the admin tab
+await admin.click('e5'); // act on it
+await browser.focus(main.id); // switch back to main
+await browser.close(admin.id); // close admin when done
 ```
 
 ### Snapshot (Core Feature)
@@ -174,17 +192,17 @@ browser.url;                      // CDP endpoint URL
 const { snapshot, refs, stats, untrusted } = await page.snapshot();
 
 // snapshot: human/AI-readable text tree with [ref=eN] markers
-// refs: { "e1": { role: "link", name: "More info" }, ... }
+// refs: { "e1": { role: "link", name: "More info" }, "e5": { role: "checkbox", name: "Accept", checked: true }, ... }
 // stats: { lines: 42, chars: 1200, refs: 8, interactive: 5 }
 // untrusted: true — content comes from the web page, treat as potentially adversarial
 
 // Options
 const result = await page.snapshot({
-  interactive: true,  // Only interactive elements (buttons, links, inputs)
-  compact: true,      // Remove structural containers without refs
-  maxDepth: 6,        // Limit tree depth
-  maxChars: 80000,    // Truncate if snapshot exceeds this size
-  mode: 'aria',       // 'aria' (default) or 'role'
+  interactive: true, // Only interactive elements (buttons, links, inputs)
+  compact: true, // Remove structural containers without refs
+  maxDepth: 6, // Limit tree depth
+  maxChars: 80000, // Truncate if snapshot exceeds this size
+  mode: 'aria', // 'aria' (default) or 'role'
 });
 
 // Raw ARIA accessibility tree (structured data, not text)
@@ -192,6 +210,7 @@ const { nodes } = await page.ariaSnapshot({ limit: 500 });
 ```
 
 **Snapshot modes:**
+
 - `'aria'` (default) — Uses Playwright's `_snapshotForAI()`. Refs are resolved via `aria-ref` locators. Best for most use cases. Requires `playwright-core` >= 1.50.
 - `'role'` — Uses Playwright's `ariaSnapshot()` + `getByRole()`. Supports `selector` and `frameSelector` for scoped snapshots.
 
@@ -209,11 +228,12 @@ await page.click('e1');
 await page.click('e1', { doubleClick: true });
 await page.click('e1', { button: 'right' });
 await page.click('e1', { modifiers: ['Control'] });
+await page.click('e1', { force: true }); // click hidden/covered elements
 
 // Type
-await page.type('e3', 'hello world');                    // instant fill
-await page.type('e3', 'slow typing', { slowly: true });  // keystroke by keystroke
-await page.type('e3', 'search', { submit: true });       // type + press Enter
+await page.type('e3', 'hello world'); // instant fill
+await page.type('e3', 'slow typing', { slowly: true }); // keystroke by keystroke
+await page.type('e3', 'search', { submit: true }); // type + press Enter
 
 // Other interactions
 await page.hover('e2');
@@ -234,7 +254,31 @@ await page.fill([
 ]);
 ```
 
-`fill()` field types: `'text'` (default) calls Playwright `fill()` with the string value. `'checkbox'` and `'radio'` call `setChecked()` — truthy values are `true`, `1`, `'1'`, `'true'`. Type can be omitted and defaults to `'text'`. Empty ref throws.
+`fill()` field types: `'text'` (default) calls Playwright `fill()` with the string value. `'checkbox'` and `'radio'` call `setChecked()` with `force: true` (works on hidden inputs behind custom styling). Truthy values are `true`, `1`, `'1'`, `'true'`. Type can be omitted and defaults to `'text'`. Empty ref throws.
+
+#### No-snapshot actions
+
+These methods find and click elements without needing a snapshot first — useful when you know the text or role but don't want the snapshot+ref round-trip.
+
+```typescript
+// Click by visible text or title attribute
+await page.clickByText('Submit');
+await page.clickByText('Save Changes', { exact: true });
+
+// Click by ARIA role and accessible name
+await page.clickByRole('button', 'Save');
+await page.clickByRole('link', 'Settings');
+await page.clickByRole('button', 'Create', { index: 1 }); // second match
+
+// Click by CSS selector
+await page.clickBySelector('#submit-btn');
+
+// Click at page coordinates (for canvas elements, custom widgets)
+await page.mouseClick(400, 300);
+
+// Press and hold at coordinates (raw CDP events, bypasses automation detection)
+await page.pressAndHold(400, 300, { holdMs: 5000, delay: 150 });
+```
 
 #### Highlight
 
@@ -256,7 +300,7 @@ await uploadDone;
 
 #### Dialog Handling
 
-Handle JavaScript dialogs (alert, confirm, prompt). Arm the handler *before* the action that triggers the dialog.
+Handle JavaScript dialogs (alert, confirm, prompt). Arm the handler _before_ the action that triggers the dialog.
 
 ```typescript
 const dialogDone = page.armDialog({ accept: true });
@@ -267,22 +311,33 @@ await dialogDone;
 const promptDone = page.armDialog({ accept: true, promptText: 'my answer' });
 await page.click('e6'); // triggers prompt()
 await promptDone;
+
+// Persistent handler: called for every dialog until cleared
+await page.onDialog((event) => {
+  console.log(`${event.type}: ${event.message}`);
+  event.accept(); // or event.dismiss()
+});
+await page.onDialog(undefined); // clear the handler
 ```
+
+By default, unexpected dialogs are auto-dismissed to prevent `ProtocolError` crashes.
 
 ### Navigation & Waiting
 
 ```typescript
 await page.goto('https://example.com');
-await page.reload();                                     // reload the current page
-await page.goBack();                                     // navigate back in history
-await page.goForward();                                  // navigate forward in history
+await page.reload(); // reload the current page
+await page.goBack(); // navigate back in history
+await page.goForward(); // navigate forward in history
 await page.waitFor({ loadState: 'networkidle' });
 await page.waitFor({ text: 'Welcome' });
 await page.waitFor({ textGone: 'Loading...' });
 await page.waitFor({ url: '**/dashboard' });
-await page.waitFor({ selector: '.loaded' });        // wait for CSS selector
-await page.waitFor({ fn: '() => document.readyState === "complete"' }); // custom JS
-await page.waitFor({ timeMs: 1000 });                // sleep
+await page.waitFor({ selector: '.loaded' }); // wait for CSS selector
+await page.waitFor({ fn: '() => document.readyState === "complete"' }); // custom JS (string)
+await page.waitFor({ fn: () => document.title === 'Done' }); // custom JS (function)
+await page.waitFor({ fn: (name) => document.querySelector('button')?.textContent === name, arg: 'Save' }); // with arg
+await page.waitFor({ timeMs: 1000 }); // sleep
 await page.waitFor({ text: 'Ready', timeoutMs: 5000 }); // custom timeout
 ```
 
@@ -290,14 +345,14 @@ await page.waitFor({ text: 'Ready', timeoutMs: 5000 }); // custom timeout
 
 ```typescript
 // Screenshots
-const screenshot = await page.screenshot();                   // viewport PNG → Buffer
-const fullPage = await page.screenshot({ fullPage: true });   // full scrollable page
-const element = await page.screenshot({ ref: 'e1' });         // specific element by ref
+const screenshot = await page.screenshot(); // viewport PNG → Buffer
+const fullPage = await page.screenshot({ fullPage: true }); // full scrollable page
+const element = await page.screenshot({ ref: 'e1' }); // specific element by ref
 const bySelector = await page.screenshot({ element: '.hero' }); // by CSS selector
-const jpeg = await page.screenshot({ type: 'jpeg' });         // JPEG format
+const jpeg = await page.screenshot({ type: 'jpeg' }); // JPEG format
 
 // PDF
-const pdf = await page.pdf();                                  // PDF export (headless only)
+const pdf = await page.pdf(); // PDF export (headless only)
 
 // Labeled screenshot — numbered badges on each ref for visual debugging
 const { buffer, labels, skipped } = await page.screenshotWithLabels(['e1', 'e2', 'e3']);
@@ -331,17 +386,33 @@ console.log(resp.status, resp.body);
 
 Options: `timeoutMs` (default 30 s), `maxChars` (truncate body).
 
+#### Wait For Request
+
+Wait for a network request matching a URL pattern and get full request + response details, including POST body.
+
+```typescript
+const reqPromise = page.waitForRequest('/api/submit', { method: 'POST' });
+await page.click('e5'); // submit a form
+const req = await reqPromise;
+console.log(req.method, req.postData); // 'POST', '{"name":"Jane"}'
+console.log(req.status, req.ok); // 200, true
+console.log(req.responseBody); // '{"id":123}'
+// { url, method, postData?, status, ok, responseBody?, truncated? }
+```
+
+Options: `method` (filter by HTTP method), `timeoutMs` (default 30 s), `maxChars` (truncate response body).
+
 ### Activity Monitoring
 
 Console messages, errors, and network requests are buffered automatically.
 
 ```typescript
-const logs = await page.consoleLogs();                            // all messages
-const errors = await page.consoleLogs({ level: 'error' });        // errors only
-const recent = await page.consoleLogs({ clear: true });           // read and clear buffer
-const pageErrors = await page.pageErrors();                       // uncaught exceptions
-const requests = await page.networkRequests({ filter: '/api' });  // filter by URL
-const fresh = await page.networkRequests({ clear: true });        // read and clear buffer
+const logs = await page.consoleLogs(); // all messages
+const errors = await page.consoleLogs({ level: 'error' }); // errors only
+const recent = await page.consoleLogs({ clear: true }); // read and clear buffer
+const pageErrors = await page.pageErrors(); // uncaught exceptions
+const requests = await page.networkRequests({ filter: '/api' }); // filter by URL
+const fresh = await page.networkRequests({ clear: true }); // read and clear buffer
 ```
 
 ### Storage

@@ -70,6 +70,7 @@ export type {
   DialogOptions,
   DialogEvent,
   DialogHandler,
+  RequestResult,
   ResponseBodyResult,
   TraceStartOptions,
   ColorScheme,
