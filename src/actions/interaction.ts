@@ -24,7 +24,7 @@ type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
 
 const MAX_CLICK_DELAY_MS = 5000;
 const DEFAULT_SCROLL_TIMEOUT_MS = 20_000;
-const CHECKABLE_ROLES = new Set(['menuitemcheckbox', 'menuitemradio', 'checkbox', 'switch']);
+const CHECKABLE_ROLES = new Set(['menuitemcheckbox', 'menuitemradio', 'checkbox', 'radio', 'switch']);
 
 /**
  * Fallback for setChecked on hidden styled inputs (opacity:0, position:absolute).
