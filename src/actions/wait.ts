@@ -49,7 +49,7 @@ export async function waitForViaPlaywright(opts: {
   }
   if (opts.fn !== undefined) {
     if (typeof opts.fn === 'function') {
-      await page.waitForFunction(opts.fn, undefined, { timeout });
+      await page.waitForFunction(opts.fn, { timeout });
     } else {
       const fn = opts.fn.trim();
       if (fn !== '') await page.waitForFunction(fn, undefined, { timeout });
