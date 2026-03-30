@@ -1,6 +1,7 @@
 import type { Browser, BrowserContext } from 'playwright-core';
 
 import {
+  BrowserTabNotFoundError,
   connectBrowser,
   getPageForTargetId,
   ensurePageState,
@@ -158,7 +159,12 @@ export async function closePageViaPlaywright(opts: { cdpUrl: string; targetId?: 
 }
 
 export async function closePageByTargetIdViaPlaywright(opts: { cdpUrl: string; targetId: string }): Promise<void> {
-  await (await resolvePageByTargetIdOrThrow(opts)).close();
+  try {
+    await (await resolvePageByTargetIdOrThrow(opts)).close();
+  } catch (err) {
+    if (err instanceof BrowserTabNotFoundError) return;
+    throw err;
+  }
 }
 
 export async function focusPageByTargetIdViaPlaywright(opts: { cdpUrl: string; targetId: string }): Promise<void> {
