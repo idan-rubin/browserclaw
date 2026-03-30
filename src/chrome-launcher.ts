@@ -681,6 +681,9 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
     if (opts.noSandbox === true) {
       args.push('--no-sandbox', '--disable-setuid-sandbox');
     }
+    if (opts.ignoreHTTPSErrors === true) {
+      args.push('--ignore-certificate-errors');
+    }
     if (process.platform === 'linux') args.push('--disable-dev-shm-usage');
     const extraArgs = Array.isArray(opts.chromeArgs)
       ? opts.chromeArgs.filter((a): a is string => typeof a === 'string' && a.trim().length > 0)

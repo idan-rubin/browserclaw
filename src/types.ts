@@ -78,6 +78,8 @@ export interface LaunchOptions {
   profileColor?: string;
   /** Additional Chrome command-line arguments (e.g. `['--start-maximized']`). */
   chromeArgs?: string[];
+  /** Ignore HTTPS certificate errors (e.g. expired local dev certs). Default: `false` */
+  ignoreHTTPSErrors?: boolean;
   /**
    * SSRF policy controlling which URLs navigation is allowed to reach.
    * Defaults to trusted-network mode (private/internal addresses allowed).
@@ -135,6 +137,10 @@ export interface RoleRefInfo {
   name?: string;
   /** Disambiguation index when multiple elements share the same role + name */
   nth?: number;
+  /** Whether the element is disabled (from `[disabled]` or `aria-disabled`) */
+  disabled?: boolean;
+  /** Whether a checkbox/radio/switch is checked */
+  checked?: boolean | 'mixed';
 }
 
 /** Map of ref IDs (e.g. `'e1'`, `'e2'`) to their element information. */
@@ -272,6 +278,8 @@ export interface ClickOptions {
   delayMs?: number;
   /** Timeout in milliseconds. Default: `8000` */
   timeoutMs?: number;
+  /** Force click even if element is hidden or covered. Dispatches the event regardless of visibility. */
+  force?: boolean;
 }
 
 /** Options for type actions. */
@@ -301,8 +309,8 @@ export interface WaitOptions {
   url?: string;
   /** Wait for a specific page load state */
   loadState?: 'load' | 'domcontentloaded' | 'networkidle';
-  /** Wait until a JavaScript function returns truthy (evaluated in browser context) */
-  fn?: string;
+  /** Wait until a JavaScript function returns truthy (evaluated in browser context). Accepts a string or a serializable function. */
+  fn?: string | (() => unknown);
   /** Timeout for each condition in milliseconds. Default: `20000` */
   timeoutMs?: number;
 }
