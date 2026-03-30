@@ -1,4 +1,4 @@
-import type { Page } from 'playwright-core';
+import type { Locator, Page } from 'playwright-core';
 
 import {
   getPageForTargetId,
@@ -25,6 +25,22 @@ type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
 const MAX_CLICK_DELAY_MS = 5000;
 const DEFAULT_SCROLL_TIMEOUT_MS = 20_000;
 const CHECKABLE_ROLES = new Set(['menuitemcheckbox', 'menuitemradio', 'checkbox', 'switch']);
+
+/**
+ * Fallback for setChecked on hidden styled inputs (opacity:0, position:absolute).
+ * Sets the checked property directly via the native setter and dispatches events.
+ */
+async function setCheckedViaEvaluate(locator: Locator, checked: boolean): Promise<void> {
+  await locator.evaluate((el: Element, desired: boolean) => {
+    const input = el as HTMLInputElement;
+    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
+    if (desc?.set) desc.set.call(input, desired);
+    else input.checked = desired;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.click();
+  }, checked);
+}
 
 function resolveLocator(page: Page, resolved: { ref?: string; selector?: string }) {
   if (resolved.ref !== undefined && resolved.ref !== '') return refLocator(page, resolved.ref);
@@ -321,8 +337,12 @@ export async function fillFormViaPlaywright(opts: {
       const checked = rawValue === true || rawValue === 1 || rawValue === '1' || rawValue === 'true';
       try {
         await locator.setChecked(checked, { timeout, force: true });
-      } catch (err) {
-        throw toAIFriendlyError(err, ref);
+      } catch {
+        try {
+          await setCheckedViaEvaluate(locator, checked);
+        } catch (err) {
+          throw toAIFriendlyError(err, ref);
+        }
       }
       continue;
     }
