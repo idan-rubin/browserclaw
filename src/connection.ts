@@ -63,9 +63,11 @@ export async function withPlaywrightPageCdpSession<T>(page: Page, fn: (session: 
   const CDP_SESSION_TIMEOUT_MS = 10_000;
   const session = await Promise.race([
     page.context().newCDPSession(page),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('newCDPSession timed out after 10s')), CDP_SESSION_TIMEOUT_MS),
-    ),
+    new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error('newCDPSession timed out after 10s'));
+      }, CDP_SESSION_TIMEOUT_MS);
+    }),
   ]);
   try {
     return await fn(session);
