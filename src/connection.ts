@@ -986,7 +986,18 @@ export function toAIFriendlyError(error: unknown, selector: string): Error {
       `Element "${selector}" is not interactable (hidden or covered). Try scrolling it into view, closing overlays, or re-snapshotting.`,
     );
   }
-  return error instanceof Error ? error : new Error(message);
+  const timeoutMatch = /Timeout (\d+)ms exceeded/.exec(message);
+  if (timeoutMatch) {
+    return new Error(
+      `Element "${selector}" timed out after ${timeoutMatch[1]}ms — element may be hidden or not interactable. Run a new snapshot to see current page elements.`,
+    );
+  }
+  // Strip Playwright locator internals so AI agents don't see implementation details
+  const cleaned = message
+    .replace(/locator\([^)]*\)\./g, '')
+    .replace(/waiting for locator\([^)]*\)/g, '')
+    .trim();
+  return new Error(cleaned || message);
 }
 
 export function normalizeTimeoutMs(timeoutMs: number | undefined, fallback: number, maxMs = 120000): number {

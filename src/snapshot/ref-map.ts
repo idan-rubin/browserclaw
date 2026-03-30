@@ -1,4 +1,12 @@
-import type { RoleRefs } from '../types.js';
+import type { RoleRefInfo, RoleRefs } from '../types.js';
+
+function parseStateFromSuffix(suffix: string): Pick<RoleRefInfo, 'disabled' | 'checked'> {
+  const state: Pick<RoleRefInfo, 'disabled' | 'checked'> = {};
+  if (/\[disabled\]/i.test(suffix)) state.disabled = true;
+  if (/\[checked\s*=\s*"?mixed"?\]/i.test(suffix)) state.checked = 'mixed';
+  else if (/\[checked\]/i.test(suffix)) state.checked = true;
+  return state;
+}
 
 export const INTERACTIVE_ROLES = new Set([
   'button',
@@ -188,7 +196,8 @@ export function buildRoleSnapshotFromAriaSnapshot(
       const ref = nextRef();
       const nth = tracker.getNextIndex(role, name);
       tracker.trackRef(role, name, ref);
-      refs[ref] = { role, name, nth };
+      const state = parseStateFromSuffix(suffix);
+      refs[ref] = { role, name, nth, ...state };
       let enhanced = `${prefix}${roleRaw}`;
       if (name !== undefined && name !== '') enhanced += ` "${name}"`;
       enhanced += ` [ref=${ref}]`;
@@ -227,7 +236,8 @@ export function buildRoleSnapshotFromAriaSnapshot(
     const ref = nextRef();
     const nth = tracker.getNextIndex(role, name);
     tracker.trackRef(role, name, ref);
-    refs[ref] = { role, name, nth };
+    const state = parseStateFromSuffix(suffix);
+    refs[ref] = { role, name, nth, ...state };
 
     let enhanced = `${prefix}${roleRaw}`;
     if (name !== '') enhanced += ` "${name}"`;
@@ -277,12 +287,13 @@ export function buildRoleSnapshotFromAiSnapshot(
       if (!INTERACTIVE_ROLES.has(role)) continue;
       const ref = parseAiSnapshotRef(suffix);
       const prefix = /^(\s*-\s*)/.exec(line)?.[1] ?? '';
+      const state = parseStateFromSuffix(suffix);
       if (ref !== null) {
-        refs[ref] = { role, ...(name !== undefined && name !== '' ? { name } : {}) };
+        refs[ref] = { role, ...(name !== undefined && name !== '' ? { name } : {}), ...state };
         out.push(`${prefix}${roleRaw}${name !== undefined && name !== '' ? ` "${name}"` : ''}${suffix}`);
       } else {
         const generatedRef = nextInteractiveRef();
-        refs[generatedRef] = { role, ...(name !== undefined && name !== '' ? { name } : {}) };
+        refs[generatedRef] = { role, ...(name !== undefined && name !== '' ? { name } : {}), ...state };
         let enhanced = `${prefix}${roleRaw}`;
         if (name !== undefined && name !== '') enhanced += ` "${name}"`;
         enhanced += ` [ref=${generatedRef}]`;
@@ -322,12 +333,13 @@ export function buildRoleSnapshotFromAiSnapshot(
     const isStructural = STRUCTURAL_ROLES.has(role);
     if (options.compact === true && isStructural && name === '') continue;
     const ref = parseAiSnapshotRef(suffix);
+    const state = parseStateFromSuffix(suffix);
     if (ref !== null) {
-      refs[ref] = { role, ...(name !== '' ? { name } : {}) };
+      refs[ref] = { role, ...(name !== '' ? { name } : {}), ...state };
       out.push(line);
     } else if (INTERACTIVE_ROLES.has(role)) {
       const generatedRef = nextGeneratedRef();
-      refs[generatedRef] = { role, ...(name !== '' ? { name } : {}) };
+      refs[generatedRef] = { role, ...(name !== '' ? { name } : {}), ...state };
       let enhanced = `${prefix}${roleRaw}`;
       if (name !== '') enhanced += ` "${name}"`;
       enhanced += ` [ref=${generatedRef}]`;

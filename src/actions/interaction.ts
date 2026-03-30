@@ -23,6 +23,7 @@ type MouseButton = 'left' | 'right' | 'middle';
 type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
 
 const MAX_CLICK_DELAY_MS = 5000;
+const DEFAULT_SCROLL_TIMEOUT_MS = 20_000;
 const CHECKABLE_ROLES = new Set(['menuitemcheckbox', 'menuitemradio', 'checkbox', 'switch']);
 
 function resolveLocator(page: Page, resolved: { ref?: string; selector?: string }) {
@@ -86,10 +87,12 @@ export async function clickByTextViaPlaywright(opts: {
 }): Promise<void> {
   const page = await getRestoredPageForTarget(opts);
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
+  const locator = page
+    .getByText(opts.text, { exact: opts.exact })
+    .or(page.getByTitle(opts.text, { exact: opts.exact }))
+    .first();
   try {
-    await page
-      .getByText(opts.text, { exact: opts.exact })
-      .click({ timeout, button: opts.button, modifiers: opts.modifiers });
+    await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
   } catch (err) {
     throw toAIFriendlyError(err, `text="${opts.text}"`);
   }
@@ -100,21 +103,21 @@ export async function clickByRoleViaPlaywright(opts: {
   targetId?: string;
   role: string;
   name?: string;
+  index?: number;
   button?: MouseButton;
   modifiers?: KeyModifier[];
   timeoutMs?: number;
 }): Promise<void> {
   const page = await getRestoredPageForTarget(opts);
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
+  const label = `role=${opts.role}${opts.name !== undefined && opts.name !== '' ? ` name="${opts.name}"` : ''}`;
+  const locator = page
+    .getByRole(opts.role as Parameters<typeof page.getByRole>[0], { name: opts.name })
+    .nth(opts.index ?? 0);
   try {
-    await page
-      .getByRole(opts.role as Parameters<typeof page.getByRole>[0], { name: opts.name })
-      .click({ timeout, button: opts.button, modifiers: opts.modifiers });
+    await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
   } catch (err) {
-    throw toAIFriendlyError(
-      err,
-      `role=${opts.role}${opts.name !== undefined && opts.name !== '' ? ` name="${opts.name}"` : ''}`,
-    );
+    throw toAIFriendlyError(err, label);
   }
 }
 
@@ -128,6 +131,7 @@ export async function clickViaPlaywright(opts: {
   modifiers?: KeyModifier[];
   delayMs?: number;
   timeoutMs?: number;
+  force?: boolean;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   const page = await getRestoredPageForTarget(opts);
@@ -149,7 +153,7 @@ export async function clickViaPlaywright(opts: {
   try {
     const delayMs = resolveBoundedDelayMs(opts.delayMs, 'click delayMs', MAX_CLICK_DELAY_MS);
     if (delayMs > 0) {
-      await locator.hover({ timeout });
+      await locator.hover({ timeout, force: opts.force });
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
 
@@ -160,9 +164,9 @@ export async function clickViaPlaywright(opts: {
     }
 
     if (opts.doubleClick === true) {
-      await locator.dblclick({ timeout, button: opts.button, modifiers: opts.modifiers });
+      await locator.dblclick({ timeout, button: opts.button, modifiers: opts.modifiers, force: opts.force });
     } else {
-      await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
+      await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers, force: opts.force });
     }
 
     // If this is a checkable role and aria-checked didn't change, fall back to JS click.
@@ -315,7 +319,7 @@ export async function fillFormViaPlaywright(opts: {
     if (type === 'checkbox' || type === 'radio') {
       const checked = rawValue === true || rawValue === 1 || rawValue === '1' || rawValue === 'true';
       try {
-        await locator.setChecked(checked, { timeout });
+        await locator.setChecked(checked, { timeout, force: true });
       } catch (err) {
         throw toAIFriendlyError(err, ref);
       }
@@ -343,7 +347,13 @@ export async function scrollIntoViewViaPlaywright(opts: {
   const locator = resolveLocator(page, resolved);
 
   try {
-    await locator.scrollIntoViewIfNeeded({ timeout: normalizeTimeoutMs(opts.timeoutMs, 20000) });
+    await locator.waitFor({
+      state: 'attached',
+      timeout: normalizeTimeoutMs(opts.timeoutMs, DEFAULT_SCROLL_TIMEOUT_MS),
+    });
+    await locator.evaluate((el: Element) => {
+      el.scrollIntoView({ block: 'center', behavior: 'instant' });
+    });
   } catch (err) {
     throw toAIFriendlyError(err, label);
   }

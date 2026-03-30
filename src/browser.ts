@@ -239,6 +239,7 @@ export class CrawlPage {
       modifiers: opts?.modifiers,
       delayMs: opts?.delayMs,
       timeoutMs: opts?.timeoutMs,
+      force: opts?.force,
     });
   }
 
@@ -266,6 +267,7 @@ export class CrawlPage {
       modifiers: opts?.modifiers,
       delayMs: opts?.delayMs,
       timeoutMs: opts?.timeoutMs,
+      force: opts?.force,
     });
   }
 
@@ -382,6 +384,7 @@ export class CrawlPage {
     role: string,
     name?: string,
     opts?: {
+      index?: number;
       button?: 'left' | 'right' | 'middle';
       modifiers?: ('Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift')[];
       timeoutMs?: number;
@@ -392,6 +395,7 @@ export class CrawlPage {
       targetId: this.targetId,
       role,
       name,
+      index: opts?.index,
       button: opts?.button,
       modifiers: opts?.modifiers,
       timeoutMs: opts?.timeoutMs,
