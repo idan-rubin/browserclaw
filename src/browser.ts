@@ -38,6 +38,7 @@ import {
   createPageViaPlaywright,
   closePageByTargetIdViaPlaywright,
   focusPageByTargetIdViaPlaywright,
+  waitForTabViaPlaywright,
   resizeViewportViaPlaywright,
   clearRecordingContext,
 } from './actions/navigation.js';
@@ -49,7 +50,7 @@ import {
   getNetworkRequestsViaPlaywright,
 } from './capture/activity.js';
 import { pdfViaPlaywright } from './capture/pdf.js';
-import { responseBodyViaPlaywright } from './capture/response.js';
+import { responseBodyViaPlaywright, waitForRequestViaPlaywright } from './capture/response.js';
 import { takeScreenshotViaPlaywright, screenshotWithLabelsViaPlaywright } from './capture/screenshot.js';
 import { traceStartViaPlaywright, traceStopViaPlaywright } from './capture/trace.js';
 import { launchChrome, stopChrome, isChromeReachable, discoverChromeCdpUrl } from './chrome-launcher.js';
@@ -96,6 +97,7 @@ import type {
   DownloadResult,
   DialogOptions,
   DialogHandler,
+  RequestResult,
   ResponseBodyResult,
   TraceStartOptions,
   ColorScheme,
@@ -964,6 +966,39 @@ export class CrawlPage {
   }
 
   /**
+   * Wait for a network request matching a URL pattern and return request + response details.
+   *
+   * Unlike `networkRequests()` which only captures metadata, this method captures
+   * the full request body (POST data) and response body.
+   *
+   * @param url - URL string or pattern to match (supports `*` wildcards and substring matching)
+   * @param opts - Options (method filter, timeoutMs, maxChars for response body)
+   * @returns Request method, postData, response status, and response body
+   *
+   * @example
+   * ```ts
+   * const reqPromise = page.waitForRequest('/api/submit', { method: 'POST' });
+   * await page.click('e5'); // submit a form
+   * const req = await reqPromise;
+   * console.log(req.postData); // form body
+   * console.log(req.status, req.responseBody); // response
+   * ```
+   */
+  async waitForRequest(
+    url: string,
+    opts?: { method?: string; timeoutMs?: number; maxChars?: number },
+  ): Promise<RequestResult> {
+    return waitForRequestViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this.targetId,
+      url,
+      method: opts?.method,
+      timeoutMs: opts?.timeoutMs,
+      maxChars: opts?.maxChars,
+    });
+  }
+
+  /**
    * Get console messages captured from the page.
    *
    * Messages are buffered automatically. Use `level` to filter by minimum severity.
@@ -1560,6 +1595,32 @@ export class BrowserClaw {
    */
   async tabs(): Promise<BrowserTab[]> {
     return listPagesViaPlaywright({ cdpUrl: this.cdpUrl });
+  }
+
+  /**
+   * Wait for a tab matching the given criteria and return a page handle.
+   *
+   * Polls open tabs until one matches, then focuses it and returns a CrawlPage.
+   *
+   * @param opts - Match criteria (urlContains, titleContains) and timeout
+   * @returns A CrawlPage for the matched tab
+   *
+   * @example
+   * ```ts
+   * await page.click('e5'); // opens a new tab
+   * const appPage = await browser.waitForTab({ urlContains: 'app-web' });
+   * const { snapshot } = await appPage.snapshot();
+   * ```
+   */
+  async waitForTab(opts: { urlContains?: string; titleContains?: string; timeoutMs?: number }): Promise<CrawlPage> {
+    const tab = await waitForTabViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      urlContains: opts.urlContains,
+      titleContains: opts.titleContains,
+      timeoutMs: opts.timeoutMs,
+    });
+    await focusPageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId: tab.targetId });
+    return new CrawlPage(this.cdpUrl, tab.targetId, this.ssrfPolicy);
   }
 
   /**

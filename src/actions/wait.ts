@@ -18,7 +18,8 @@ export async function waitForViaPlaywright(opts: {
   selector?: string;
   url?: string;
   loadState?: 'load' | 'domcontentloaded' | 'networkidle';
-  fn?: string | (() => unknown);
+  fn?: string | ((arg?: unknown) => unknown);
+  arg?: unknown;
   timeoutMs?: number;
 }): Promise<void> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
@@ -49,10 +50,10 @@ export async function waitForViaPlaywright(opts: {
   }
   if (opts.fn !== undefined) {
     if (typeof opts.fn === 'function') {
-      await page.waitForFunction(opts.fn, { timeout });
+      await page.waitForFunction(opts.fn, opts.arg, { timeout });
     } else {
       const fn = opts.fn.trim();
-      if (fn !== '') await page.waitForFunction(fn, undefined, { timeout });
+      if (fn !== '') await page.waitForFunction(fn, opts.arg, { timeout });
     }
   }
 }

@@ -67,6 +67,7 @@ export type BatchAction =
       url?: string;
       loadState?: 'load' | 'domcontentloaded' | 'networkidle';
       fn?: string;
+      arg?: unknown;
       targetId?: string;
       timeoutMs?: number;
     }
@@ -192,6 +193,7 @@ export async function executeSingleAction(
         url: action.url,
         loadState: action.loadState,
         fn: action.fn,
+        arg: action.arg,
         timeoutMs: action.timeoutMs,
       });
       break;

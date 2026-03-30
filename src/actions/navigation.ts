@@ -188,6 +188,34 @@ export async function focusPageByTargetIdViaPlaywright(opts: { cdpUrl: string; t
   }
 }
 
+export async function waitForTabViaPlaywright(opts: {
+  cdpUrl: string;
+  urlContains?: string;
+  titleContains?: string;
+  timeoutMs?: number;
+}): Promise<BrowserTab> {
+  if (!opts.urlContains && !opts.titleContains) throw new Error('urlContains or titleContains is required');
+  const timeout = Math.max(1000, Math.min(120000, opts.timeoutMs ?? 30000));
+  const start = Date.now();
+  const POLL_INTERVAL_MS = 250;
+
+  while (Date.now() - start < timeout) {
+    const tabs = await listPagesViaPlaywright({ cdpUrl: opts.cdpUrl });
+    const match = tabs.find((t) => {
+      if (opts.urlContains !== undefined && !t.url.includes(opts.urlContains)) return false;
+      if (opts.titleContains !== undefined && !t.title.includes(opts.titleContains)) return false;
+      return true;
+    });
+    if (match) return match;
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  }
+
+  const criteria: string[] = [];
+  if (opts.urlContains !== undefined) criteria.push(`url contains "${opts.urlContains}"`);
+  if (opts.titleContains !== undefined) criteria.push(`title contains "${opts.titleContains}"`);
+  throw new Error(`Timed out waiting for tab: ${criteria.join(', ')}`);
+}
+
 export async function resizeViewportViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
