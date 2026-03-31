@@ -1,4 +1,4 @@
-<h2 align="center">🦞 BrowserClaw™ — Standalone OpenClaw browser module</h2>
+<h2 align="center">🦞 BrowserClaw™ — AI-native browser automation for agents</h2>
 
 <p align="center">
   <a href="https://browserclaw.org"><img src="https://img.shields.io/badge/Live-browserclaw.org-orange" alt="Live" /></a>
@@ -10,7 +10,7 @@
 
 > **DISCLAIMER: This project is NOT affiliated with browserclaw.com in any form. We have no connection to that site and recommend treating it with caution.**
 
-Extracted and refined from [OpenClaw](https://github.com/openclaw/openclaw)'s browser automation module. A standalone, typed library for AI-friendly browser control with **snapshot + ref targeting** — no CSS selectors, no XPath, no vision, just numbered refs that map to interactive elements.
+The AI-native browser automation library — born from [OpenClaw](https://github.com/openclaw/openclaw), built for agents. **Snapshot + ref targeting** — no CSS selectors, no XPath, no vision, just numbered refs that map to interactive elements.
 
 ```typescript
 import { BrowserClaw } from 'browserclaw';
@@ -530,7 +530,7 @@ Contributions welcome! Please:
 
 ## Acknowledgments
 
-browserclaw is extracted and refined from the browser automation module in [OpenClaw](https://github.com/openclaw/openclaw), built by [Peter Steinberger](https://github.com/steipete) and an [amazing community of contributors](https://github.com/openclaw/openclaw?tab=readme-ov-file#community). The snapshot + ref system, CDP connection management, and Playwright integration originate from that project.
+browserclaw was born from the browser automation module in [OpenClaw](https://github.com/openclaw/openclaw), built by [Peter Steinberger](https://github.com/steipete) and an [amazing community of contributors](https://github.com/openclaw/openclaw?tab=readme-ov-file#community). The snapshot + ref system, CDP connection management, and Playwright integration originate from that project.
 
 ## License
 
