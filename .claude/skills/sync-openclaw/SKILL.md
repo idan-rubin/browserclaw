@@ -33,34 +33,42 @@ Skip anything that is:
 - Channel/messaging/plugin-specific
 - OpenClaw profile/decoration-specific (browserclaw has its own simpler profile system)
 
-## 4. Deep-compare implementations
+## 4. Diff OpenClaw against browserclaw
 
-For each potentially relevant change:
-1. Read the OpenClaw type definitions: `dist/plugin-sdk/browser/*.d.ts`
-2. Read the actual implementation bundles (filenames change per version): `dist/plugin-sdk/chrome-*.js`, `dist/plugin-sdk/ssrf-*.js`, `dist/plugin-sdk/pw-ai-*.js`, `dist/plugin-sdk/fs-safe-*.js`
-3. Compare against browserclaw source files:
-   - CDP/connection → `src/connection.ts`
-   - Chrome launching → `src/chrome-launcher.ts`
-   - Accessibility snapshots → `src/snapshot/aria-snapshot.ts`, `src/snapshot/ai-snapshot.ts`
-   - Ref map → `src/snapshot/ref-map.ts`
-   - Page interactions → `src/actions/interaction.ts`
-   - Navigation → `src/actions/navigation.ts`
-   - Security/SSRF → `src/security.ts`
-   - Downloads → `src/actions/download.ts`
-   - Traces → `src/capture/trace.ts`
-   - Types → `src/types.ts`
-   - Evaluate → `src/actions/evaluate.ts`
+For each potentially relevant change, **diff** the OpenClaw implementation against the corresponding browserclaw source to identify the specific lines that differ. Only carry forward the actual differences — new lines added or existing lines modified in OpenClaw.
+
+OpenClaw sources:
+- Type definitions: `dist/plugin-sdk/browser/*.d.ts`
+- Implementation bundles: `dist/plugin-sdk/chrome-*.js`, `dist/plugin-sdk/ssrf-*.js`, `dist/plugin-sdk/pw-ai-*.js`, `dist/plugin-sdk/fs-safe-*.js`
+
+Browserclaw source mapping:
+- CDP/connection → `src/connection.ts`
+- Chrome launching → `src/chrome-launcher.ts`
+- Accessibility snapshots → `src/snapshot/aria-snapshot.ts`, `src/snapshot/ai-snapshot.ts`
+- Ref map → `src/snapshot/ref-map.ts`
+- Page interactions → `src/actions/interaction.ts`
+- Navigation → `src/actions/navigation.ts`
+- Security/SSRF → `src/security.ts`
+- Downloads → `src/actions/download.ts`
+- Traces → `src/capture/trace.ts`
+- Types → `src/types.ts`
+- Evaluate → `src/actions/evaluate.ts`
 
 Type signatures alone don't reveal logic changes — always read the JS bundle implementation.
 
-## 5. Apply changes
+**Browserclaw will have code that OpenClaw does not.** That is expected — it's browserclaw-only functionality. If something exists in browserclaw but not in OpenClaw, that is not a diff to act on. Ignore it.
 
-Port each relevant change to browserclaw, adapting for architecture differences. Run `npx tsc --noEmit` to verify.
+## 5. Apply diffs
+
+For each diff identified in step 4, edit only the specific lines that changed in OpenClaw. Do not overwrite or rewrite entire files or functions. Do not remove existing code — if you didn't write it, don't delete it.
+
+Run `npx tsc --noEmit` to verify after each file change.
 
 ## 6. Bump, build, commit
 
 - Bump version in `package.json`
 - `npm run build`
+- Run `node scripts/check-exports.js` — **abort if it fails**
 - Commit as `"Updates from OpenClaw YYYY.M.DD"`
 - **ASK the user before running `npm publish`** — never publish without explicit approval
 
@@ -74,4 +82,5 @@ Before committing, verify:
 - [ ] TypeScript compiles clean (`npx tsc --noEmit`)
 - [ ] New exports added to `src/index.ts` if any public API was added
 - [ ] No unnecessary dependencies added
+- [ ] No browserclaw-only APIs were removed (run `node scripts/check-exports.js`)
 - [ ] Commit message follows format: `"Updates from OpenClaw YYYY.M.DD"`
