@@ -55,9 +55,9 @@ Type signatures alone don't reveal logic changes — always read the JS bundle i
 
 ## 5. Apply changes
 
-Port each relevant change to browserclaw, adapting for architecture differences. Run `npx tsc --noEmit` to verify.
+For each change identified in step 4, apply it as a **targeted diff** to the browserclaw source. Read the relevant browserclaw file, identify the specific lines that need to change, and edit only those lines. Do not overwrite or rewrite entire files. Do not remove existing code — only add or modify. If you didn't write it, don't delete it.
 
-**Do not remove existing code.** Only add or modify. If you didn't write it, don't delete it.
+Run `npx tsc --noEmit` to verify after each file change.
 
 ## 6. Bump, build, commit
 
