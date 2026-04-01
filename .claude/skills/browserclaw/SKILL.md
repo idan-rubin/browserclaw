@@ -13,7 +13,8 @@ You are operating a real browser. You can see pages through `snapshot()` and act
 import { BrowserClaw } from 'browserclaw';
 
 const browser = await BrowserClaw.launch({ headless: false });
-const page = await browser.open('https://example.com');
+const page = await browser.currentPage();  // reuse the existing tab Chrome opened
+await page.goto('https://example.com');    // don't use browser.open() — it opens a duplicate tab
 // or connect to existing: await BrowserClaw.connect('http://localhost:9222')
 ```
 
@@ -206,12 +207,15 @@ await page.waitFor({ timeMs: 2000 });                       // fixed delay (last
 ```typescript
 const tabs = await browser.tabs();  // list all tabs: [{ targetId, title, url }]
 
+// Open a new tab explicitly (only when you actually want a second tab)
 const page2 = await browser.open('https://other.example.com');
 // ... work on page2 ...
 
 await browser.focus(page.id);       // switch back to first tab
 await browser.close(page2.id);      // close a tab
 ```
+
+For tab lifecycle management in production (detecting new tabs opened by clicks, switching automatically), see [`tab-manager.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/tab-manager.ts).
 
 ---
 
@@ -260,6 +264,24 @@ const errors = await page.pageErrors();         // JS errors
 const logs = await page.consoleLogs();          // console.log output
 const requests = await page.networkRequests();  // XHR/fetch calls
 ```
+
+---
+
+## Production Skill Reference
+
+**Don't reinvent — reuse.** The browserclaw-agent repo contains battle-tested implementations for the hard problems. When you hit any of the scenarios below, read the relevant file before writing your own solution.
+
+All skills live at: https://github.com/idan-rubin/browserclaw-agent/tree/main/src/Services/Browser/src/skills
+
+| Scenario | File | What it handles |
+|---|---|---|
+| PerimeterX / "press and hold" challenge | [`press-and-hold.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/press-and-hold.ts) | Finds button at bottom-center +60px, holds 4–10s with randomized jitter and delay, refreshes and retries if still blocked |
+| Cloudflare "Verify you are human" checkbox | [`cloudflare-checkbox.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/cloudflare-checkbox.ts) | Locates the Cloudflare iframe checkbox and clicks it via CDP |
+| Cookie banners and generic popups | [`dismiss-popup.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/dismiss-popup.ts) | Detects and dismisses common cookie consent banners and modal overlays |
+| Tab opened by a click | [`tab-manager.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/tab-manager.ts) | Tracks known tab IDs, detects new tabs after clicks, switches focus automatically |
+| Agent stuck repeating the same action | [`loop-detection.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/loop-detection.ts) | Counts repeated action+ref pairs over a sliding window; escalates nudge from gentle → warning → urgent at 5/8/12 repetitions |
+
+**If you encounter an anti-bot challenge, popup, or tab management need: read the relevant file above first.** These are production implementations that handle edge cases you'll otherwise spend hours debugging.
 
 ---
 
