@@ -20,6 +20,10 @@ const CHROMIUM_BUNDLE_IDS = new Set([
   'com.microsoft.EdgeBeta',
   'com.microsoft.EdgeDev',
   'com.microsoft.EdgeCanary',
+  'com.microsoft.edgemac',
+  'com.microsoft.edgemac.beta',
+  'com.microsoft.edgemac.dev',
+  'com.microsoft.edgemac.canary',
   'org.chromium.Chromium',
   'com.vivaldi.Vivaldi',
   'com.operasoftware.Opera',
@@ -92,12 +96,12 @@ function fileExists(filePath: string): boolean {
   }
 }
 
-function execText(command: string, args: string[], timeoutMs = 1200): string | null {
+function execText(command: string, args: string[], timeoutMs = 1200, maxBuffer = 1024 * 1024): string | null {
   try {
     const output = execFileSync(command, args, {
       timeout: timeoutMs,
       encoding: 'utf8',
-      maxBuffer: 1024 * 1024,
+      maxBuffer,
     });
     return output.trim() || null;
   } catch {
@@ -139,7 +143,12 @@ function detectDefaultBrowserBundleIdMac(): string | null {
     'Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist',
   );
   if (!fileExists(plistPath)) return null;
-  const handlersRaw = execText('/usr/bin/plutil', ['-extract', 'LSHandlers', 'json', '-o', '-', '--', plistPath], 2000);
+  const handlersRaw = execText(
+    '/usr/bin/plutil',
+    ['-extract', 'LSHandlers', 'json', '-o', '-', '--', plistPath],
+    2000,
+    5 * 1024 * 1024,
+  );
   if (handlersRaw === null) return null;
   let handlers: unknown[];
   try {
@@ -198,6 +207,36 @@ function findChromeMac(): ChromeExecutable | null {
   ]);
 }
 
+function splitExecLine(line: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  let quoteChar = '';
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if ((ch === '"' || ch === "'") && (!inQuotes || ch === quoteChar)) {
+      if (inQuotes) {
+        inQuotes = false;
+        quoteChar = '';
+      } else {
+        inQuotes = true;
+        quoteChar = ch;
+      }
+      continue;
+    }
+    if (!inQuotes && /\s/.test(ch)) {
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (current) tokens.push(current);
+  return tokens;
+}
+
 // ── Linux Detection ──
 
 function detectDefaultChromiumLinux(): ChromeExecutable | null {
@@ -237,10 +276,10 @@ function detectDefaultChromiumLinux(): ChromeExecutable | null {
   }
   if (execLine === null) return null;
 
-  const tokens = execLine.split(/\s+/);
+  const tokens = splitExecLine(execLine);
   let command: string | null = null;
   for (const token of tokens) {
-    if (!token || token === 'env' || (token.includes('=') && !token.startsWith('/'))) continue;
+    if (!token || token === 'env' || (token.includes('=') && !token.startsWith('/') && !token.includes('\\'))) continue;
     command = token.replace(/^["']|["']$/g, '');
     break;
   }
@@ -303,6 +342,56 @@ function findChromeWindows(): ChromeExecutable | null {
   return findFirstExe(candidates);
 }
 
+// ── Windows Default Browser Detection ──
+
+function readWindowsProgId(): string | null {
+  const output = execText('reg', [
+    'query',
+    'HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http\\UserChoice',
+    '/v',
+    'ProgId',
+  ]);
+  if (!output) return null;
+  return output.match(/ProgId\s+REG_\w+\s+(.+)$/im)?.[1]?.trim() || null;
+}
+
+function readWindowsCommandForProgId(progId: string): string | null {
+  const output = execText('reg', [
+    'query',
+    progId === 'http' ? 'HKCR\\http\\shell\\open\\command' : `HKCR\\${progId}\\shell\\open\\command`,
+    '/ve',
+  ]);
+  if (!output) return null;
+  return output.match(/REG_\w+\s+(.+)$/im)?.[1]?.trim() || null;
+}
+
+function expandWindowsEnvVars(value: string): string {
+  return value.replace(/%([^%]+)%/g, (_match, name: string) => {
+    const key = String(name ?? '').trim();
+    return key ? (process.env[key] ?? `%${key}%`) : _match;
+  });
+}
+
+function extractWindowsExecutablePath(command: string): string | null {
+  const quoted = command.match(/"([^"]+\.exe)"/i);
+  if (quoted?.[1]) return quoted[1];
+  const unquoted = command.match(/([^\s]+\.exe)/i);
+  if (unquoted?.[1]) return unquoted[1];
+  return null;
+}
+
+function detectDefaultChromiumWindows(): ChromeExecutable | null {
+  const progId = readWindowsProgId();
+  const command = (progId ? readWindowsCommandForProgId(progId) : null) ?? readWindowsCommandForProgId('http');
+  if (!command) return null;
+  const exePath = extractWindowsExecutablePath(expandWindowsEnvVars(command));
+  if (!exePath) return null;
+  if (!fileExists(exePath)) return null;
+  const exeName = path.win32.basename(exePath).toLowerCase();
+  if (!CHROMIUM_EXE_NAMES.has(exeName)) return null;
+  return { kind: inferKindFromExeName(exeName), path: exePath };
+}
+
 // ── Resolve Executable ──
 
 export function resolveBrowserExecutable(opts?: { executablePath?: string }): ChromeExecutable | null {
@@ -313,7 +402,7 @@ export function resolveBrowserExecutable(opts?: { executablePath?: string }): Ch
   const platform = process.platform;
   if (platform === 'darwin') return detectDefaultChromiumMac() ?? findChromeMac();
   if (platform === 'linux') return detectDefaultChromiumLinux() ?? findChromeLinux();
-  if (platform === 'win32') return findChromeWindows();
+  if (platform === 'win32') return detectDefaultChromiumWindows() ?? findChromeWindows();
   return null;
 }
 
