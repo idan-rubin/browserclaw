@@ -29,7 +29,8 @@
     "lint:fix": "eslint src/ --fix",
     "format": "prettier --write src/",
     "format:check": "prettier --check src/",
-    "prepublishOnly": "npm run build",
+    "check-exports": "node scripts/check-exports.js",
+    "prepublishOnly": "npm run build && node scripts/check-exports.js",
     "test": "echo \"No tests yet\" && exit 0"
   },
   "keywords": [

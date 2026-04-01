@@ -57,10 +57,13 @@ Type signatures alone don't reveal logic changes — always read the JS bundle i
 
 Port each relevant change to browserclaw, adapting for architecture differences. Run `npx tsc --noEmit` to verify.
 
+**Sync is additive only.** If browserclaw has code that OpenClaw does not, that is a browserclaw-only feature — leave it alone. Never delete, overwrite, or modify code just because it is absent from OpenClaw.
+
 ## 6. Bump, build, commit
 
 - Bump version in `package.json`
 - `npm run build`
+- Run `node scripts/check-exports.js` — **abort if it fails**
 - Commit as `"Updates from OpenClaw YYYY.M.DD"`
 - **ASK the user before running `npm publish`** — never publish without explicit approval
 
@@ -74,4 +77,5 @@ Before committing, verify:
 - [ ] TypeScript compiles clean (`npx tsc --noEmit`)
 - [ ] New exports added to `src/index.ts` if any public API was added
 - [ ] No unnecessary dependencies added
+- [ ] No browserclaw-only APIs were removed (run `node scripts/check-exports.js`)
 - [ ] Commit message follows format: `"Updates from OpenClaw YYYY.M.DD"`
