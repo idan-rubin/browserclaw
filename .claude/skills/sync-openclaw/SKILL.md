@@ -57,7 +57,7 @@ Type signatures alone don't reveal logic changes — always read the JS bundle i
 
 Port each relevant change to browserclaw, adapting for architecture differences. Run `npx tsc --noEmit` to verify.
 
-**Sync is additive only.** If browserclaw has code that OpenClaw does not, that is a browserclaw-only feature — leave it alone. Never delete, overwrite, or modify code just because it is absent from OpenClaw.
+**Never remove browserclaw-only code.** If browserclaw has code that OpenClaw does not, that is a browserclaw-only feature — leave it alone. Never delete, overwrite, or modify it just because it is absent from OpenClaw. The only reason to change shared code is to port a bug fix or new feature from OpenClaw.
 
 ## 6. Bump, build, commit
 
