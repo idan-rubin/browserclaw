@@ -212,8 +212,7 @@ function splitExecLine(line: string): string[] {
   let current = '';
   let inQuotes = false;
   let quoteChar = '';
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
+  for (const ch of line) {
     if ((ch === '"' || ch === "'") && (!inQuotes || ch === quoteChar)) {
       if (inQuotes) {
         inQuotes = false;
@@ -351,8 +350,8 @@ function readWindowsProgId(): string | null {
     '/v',
     'ProgId',
   ]);
-  if (!output) return null;
-  return output.match(/ProgId\s+REG_\w+\s+(.+)$/im)?.[1]?.trim() || null;
+  if (output === null) return null;
+  return /ProgId\s+REG_\w+\s+(.+)$/im.exec(output)?.[1]?.trim() ?? null;
 }
 
 function readWindowsCommandForProgId(progId: string): string | null {
@@ -361,31 +360,31 @@ function readWindowsCommandForProgId(progId: string): string | null {
     progId === 'http' ? 'HKCR\\http\\shell\\open\\command' : `HKCR\\${progId}\\shell\\open\\command`,
     '/ve',
   ]);
-  if (!output) return null;
-  return output.match(/REG_\w+\s+(.+)$/im)?.[1]?.trim() || null;
+  if (output === null) return null;
+  return /REG_\w+\s+(.+)$/im.exec(output)?.[1]?.trim() ?? null;
 }
 
 function expandWindowsEnvVars(value: string): string {
   return value.replace(/%([^%]+)%/g, (_match, name: string) => {
-    const key = String(name ?? '').trim();
-    return key ? (process.env[key] ?? `%${key}%`) : _match;
+    const key = name.trim();
+    return key !== '' ? (process.env[key] ?? `%${key}%`) : _match;
   });
 }
 
 function extractWindowsExecutablePath(command: string): string | null {
-  const quoted = command.match(/"([^"]+\.exe)"/i);
-  if (quoted?.[1]) return quoted[1];
-  const unquoted = command.match(/([^\s]+\.exe)/i);
-  if (unquoted?.[1]) return unquoted[1];
+  const quoted = /"([^"]+\.exe)"/i.exec(command);
+  if (quoted?.[1] !== undefined) return quoted[1];
+  const unquoted = /([^\s]+\.exe)/i.exec(command);
+  if (unquoted?.[1] !== undefined) return unquoted[1];
   return null;
 }
 
 function detectDefaultChromiumWindows(): ChromeExecutable | null {
   const progId = readWindowsProgId();
-  const command = (progId ? readWindowsCommandForProgId(progId) : null) ?? readWindowsCommandForProgId('http');
-  if (!command) return null;
+  const command = (progId !== null ? readWindowsCommandForProgId(progId) : null) ?? readWindowsCommandForProgId('http');
+  if (command === null) return null;
   const exePath = extractWindowsExecutablePath(expandWindowsEnvVars(command));
-  if (!exePath) return null;
+  if (exePath === null) return null;
   if (!fileExists(exePath)) return null;
   const exeName = path.win32.basename(exePath).toLowerCase();
   if (!CHROMIUM_EXE_NAMES.has(exeName)) return null;
