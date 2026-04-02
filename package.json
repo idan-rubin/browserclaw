@@ -29,8 +29,8 @@
     "lint:fix": "eslint src/ --fix",
     "format": "prettier --write src/",
     "format:check": "prettier --check src/",
-    "check-exports": "node scripts/check-exports.js",
-    "prepublishOnly": "npm run build && node scripts/check-exports.js",
+    "check-exports": "npx tsx scripts/check-exports.ts",
+    "prepublishOnly": "npm run build && npx tsx scripts/check-exports.ts",
     "test": "echo \"No tests yet\" && exit 0"
   },
   "keywords": [

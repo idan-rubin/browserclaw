@@ -2,18 +2,20 @@
  * Browserclaw skill test: StreetEasy studio apartments in Chelsea under $4,500
  */
 
-const { BrowserClaw } = require('./dist/index.cjs');
-const fs = require('fs');
+import { BrowserClaw } from './src/index.js';
+import fs from 'fs';
 
-function log(msg) {
+function log(msg: string) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
-async function waitForLoad(page, label) {
+async function waitForLoad(page: Page, label: string) {
   await page.waitFor({ loadState: 'networkidle', timeoutMs: 20000 }).catch(() => log(`load timeout (${label})`));
 }
 
-async function snapshotWithRetry(page, label) {
+type Page = Awaited<ReturnType<BrowserClaw['currentPage']>>;
+
+async function snapshotWithRetry(page: Page, label: string) {
   for (let i = 0; i < 5; i++) {
     const { snapshot, refs } = await page.snapshot({ interactive: true, compact: true });
     const lines = snapshot.split('\n').filter((l) => l.trim());
@@ -31,7 +33,7 @@ async function snapshotWithRetry(page, label) {
 const BUTTON_Y_OFFSET = 60;
 const PRESS_HOLD_PATTERN = /press.*hold|hold.*to.*confirm/i;
 
-async function findPressHoldCoords(page) {
+async function findPressHoldCoords(page: Page) {
   const result = await page.evaluate(`
     (function() {
       var PATTERN = /press.*hold|verify.*human|hold.*to.*confirm|not a bot/i;
@@ -112,7 +114,7 @@ async function findPressHoldCoords(page) {
   return parsed.best;
 }
 
-async function handlePressAndHold(page) {
+async function handlePressAndHold(page: Page) {
   const coords = await findPressHoldCoords(page);
   if (!coords) {
     log('Press & Hold button not found');

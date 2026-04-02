@@ -26,13 +26,9 @@ const REQUIRED_EXPORTS = [
 ];
 
 // Methods that must exist on CrawlPage (checked via declaration in the .d.ts)
-const REQUIRED_METHODS = [
-  'pressAndHold',
-  'waitForRequest',
-  'waitForTab',
-];
+const REQUIRED_METHODS = ['pressAndHold', 'waitForRequest', 'waitForTab'];
 
-let dts;
+let dts: string;
 try {
   dts = readFileSync(DTS_PATH, 'utf8');
 } catch {
@@ -40,7 +36,7 @@ try {
   process.exit(1);
 }
 
-const failures = [];
+const failures: string[] = [];
 
 for (const name of REQUIRED_EXPORTS) {
   if (!dts.includes(name)) {
@@ -66,4 +62,6 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log(`Export check passed — ${REQUIRED_EXPORTS.length} exports and ${REQUIRED_METHODS.length} methods verified.`);
+console.log(
+  `Export check passed — ${REQUIRED_EXPORTS.length} exports and ${REQUIRED_METHODS.length} methods verified.`,
+);
