@@ -239,6 +239,88 @@ export function bumpDownloadArmId(): number {
   return nextDownloadArmId;
 }
 
+// ── Blocked Target Tracking ──
+
+export class BlockedBrowserTargetError extends Error {
+  constructor() {
+    super('Browser target is unavailable after SSRF policy blocked its navigation.');
+    this.name = 'BlockedBrowserTargetError';
+  }
+}
+
+const blockedTargetsByCdpUrl = new Set<string>();
+const blockedPageRefsByCdpUrl = new Map<string, WeakSet<Page>>();
+
+function blockedTargetKey(cdpUrl: string, targetId: string): string {
+  return `${normalizeCdpUrl(cdpUrl)}::${targetId}`;
+}
+
+export function isBlockedTarget(cdpUrl: string, targetId?: string): boolean {
+  const normalized = targetId?.trim() ?? '';
+  if (normalized === '') return false;
+  return blockedTargetsByCdpUrl.has(blockedTargetKey(cdpUrl, normalized));
+}
+
+export function markTargetBlocked(cdpUrl: string, targetId?: string): void {
+  const normalized = targetId?.trim() ?? '';
+  if (normalized === '') return;
+  blockedTargetsByCdpUrl.add(blockedTargetKey(cdpUrl, normalized));
+}
+
+export function clearBlockedTarget(cdpUrl: string, targetId?: string): void {
+  const normalized = targetId?.trim() ?? '';
+  if (normalized === '') return;
+  blockedTargetsByCdpUrl.delete(blockedTargetKey(cdpUrl, normalized));
+}
+
+function hasBlockedTargetsForCdpUrl(cdpUrl: string): boolean {
+  const prefix = `${normalizeCdpUrl(cdpUrl)}::`;
+  for (const key of blockedTargetsByCdpUrl) {
+    if (key.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+function clearBlockedTargetsForCdpUrl(cdpUrl?: string): void {
+  if (cdpUrl === undefined) {
+    blockedTargetsByCdpUrl.clear();
+    return;
+  }
+  const prefix = `${normalizeCdpUrl(cdpUrl)}::`;
+  for (const key of blockedTargetsByCdpUrl) {
+    if (key.startsWith(prefix)) blockedTargetsByCdpUrl.delete(key);
+  }
+}
+
+function blockedPageRefsForCdpUrl(cdpUrl: string): WeakSet<Page> {
+  const normalized = normalizeCdpUrl(cdpUrl);
+  const existing = blockedPageRefsByCdpUrl.get(normalized);
+  if (existing) return existing;
+  const created = new WeakSet<Page>();
+  blockedPageRefsByCdpUrl.set(normalized, created);
+  return created;
+}
+
+export function isBlockedPageRef(cdpUrl: string, page: Page): boolean {
+  return blockedPageRefsByCdpUrl.get(normalizeCdpUrl(cdpUrl))?.has(page) ?? false;
+}
+
+export function markPageRefBlocked(cdpUrl: string, page: Page): void {
+  blockedPageRefsForCdpUrl(cdpUrl).add(page);
+}
+
+function clearBlockedPageRefsForCdpUrl(cdpUrl?: string): void {
+  if (cdpUrl === undefined) {
+    blockedPageRefsByCdpUrl.clear();
+    return;
+  }
+  blockedPageRefsByCdpUrl.delete(normalizeCdpUrl(cdpUrl));
+}
+
+export function clearBlockedPageRef(cdpUrl: string, page: Page): void {
+  blockedPageRefsByCdpUrl.get(normalizeCdpUrl(cdpUrl))?.delete(page);
+}
+
 // ── Context State Management ──
 
 export function ensureContextState(context: BrowserContext): ContextState {
@@ -602,6 +684,8 @@ export async function disconnectBrowser(): Promise<void> {
 export async function closePlaywrightBrowserConnection(opts?: { cdpUrl?: string }): Promise<void> {
   if (opts?.cdpUrl !== undefined && opts.cdpUrl !== '') {
     const normalized = normalizeCdpUrl(opts.cdpUrl);
+    clearBlockedTargetsForCdpUrl(normalized);
+    clearBlockedPageRefsForCdpUrl(normalized);
     const cur = cachedByCdpUrl.get(normalized);
     cachedByCdpUrl.delete(normalized);
     connectingByCdpUrl.delete(normalized);
@@ -612,6 +696,8 @@ export async function closePlaywrightBrowserConnection(opts?: { cdpUrl?: string 
       /* noop */
     });
   } else {
+    clearBlockedTargetsForCdpUrl();
+    clearBlockedPageRefsForCdpUrl();
     await disconnectBrowser();
   }
 }
@@ -833,11 +919,47 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
   return null;
 }
 
+async function partitionAccessiblePages(opts: {
+  cdpUrl: string;
+  pages: Page[];
+}): Promise<{ accessible: Page[]; blockedCount: number }> {
+  const accessible: Page[] = [];
+  let blockedCount = 0;
+  for (const page of opts.pages) {
+    if (isBlockedPageRef(opts.cdpUrl, page)) {
+      blockedCount += 1;
+      continue;
+    }
+    const targetId = await pageTargetId(page).catch(() => null);
+    if (targetId === null || targetId === '') {
+      if (hasBlockedTargetsForCdpUrl(opts.cdpUrl)) {
+        blockedCount += 1;
+        continue;
+      }
+      accessible.push(page);
+      continue;
+    }
+    if (isBlockedTarget(opts.cdpUrl, targetId)) {
+      blockedCount += 1;
+      continue;
+    }
+    accessible.push(page);
+  }
+  return { accessible, blockedCount };
+}
+
 export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: string }) {
+  if (opts.targetId !== undefined && opts.targetId !== '' && isBlockedTarget(opts.cdpUrl, opts.targetId))
+    throw new BlockedBrowserTargetError();
   const { browser } = await connectBrowser(opts.cdpUrl);
   const pages = getAllPages(browser);
   if (!pages.length) throw new Error('No pages available in the connected browser.');
-  const first = pages[0];
+  const { accessible, blockedCount } = await partitionAccessiblePages({ cdpUrl: opts.cdpUrl, pages });
+  if (!accessible.length) {
+    if (blockedCount > 0) throw new BlockedBrowserTargetError();
+    throw new Error('No pages available in the connected browser.');
+  }
+  const first = accessible[0];
   if (opts.targetId === undefined || opts.targetId === '') return first;
   const found = await findPageByTargetId(browser, opts.targetId, opts.cdpUrl);
   if (!found) {
@@ -846,6 +968,10 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
       `Tab not found (targetId: ${opts.targetId}). Call browser.tabs() to list open tabs.`,
     );
   }
+  if (isBlockedPageRef(opts.cdpUrl, found)) throw new BlockedBrowserTargetError();
+  const foundTargetId = await pageTargetId(found).catch(() => null);
+  if (foundTargetId !== null && foundTargetId !== '' && isBlockedTarget(opts.cdpUrl, foundTargetId))
+    throw new BlockedBrowserTargetError();
   return found;
 }
 
