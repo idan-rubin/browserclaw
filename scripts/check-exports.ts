@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 /**
  * Verifies that the built dist/index.d.ts contains all expected public APIs.
  * Run after `npm run build` to catch accidental removals before publishing.
