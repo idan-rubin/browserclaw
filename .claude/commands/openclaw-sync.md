@@ -176,7 +176,7 @@ Append an entry to `sync/run-log.md`:
 ### 2. Review and update the process
 Read `sync/run-log.md` for recurring patterns across runs. Then make changes:
 
-- **This skill file** (`.claude/commands/sync.md`) — if a phase was slow, unclear, or produced false positives, rewrite it. If a new step is needed, add it. If a step is wasteful, remove it.
+- **This skill file** (`.claude/commands/openclaw-sync.md`) — if a phase was slow, unclear, or produced false positives, rewrite it. If a new step is needed, add it. If a step is wasteful, remove it. **This update is mandatory after every run, not optional.** Even if no code changed, confirm the file is still accurate.
 - **`sync/known-differences.md`** — if a false positive keeps appearing, add it to the registry so it's never flagged again. If a known difference is no longer valid, remove it.
 - **`sync/function-map.md`** — if functions were hard to find, add region line numbers or better search hints.
 
