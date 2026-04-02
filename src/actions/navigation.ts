@@ -1,7 +1,8 @@
-import type { Browser, BrowserContext } from 'playwright-core';
+import type { Browser, BrowserContext, Page, Route, Request } from 'playwright-core';
 
 import {
   BrowserTabNotFoundError,
+  BlockedBrowserTargetError,
   connectBrowser,
   getPageForTargetId,
   ensurePageState,
@@ -12,8 +13,15 @@ import {
   forceDisconnectPlaywrightForTarget,
   resolvePageByTargetIdOrThrow,
   withPageScopedCdpClient,
+  isBlockedTarget,
+  isBlockedPageRef,
+  markTargetBlocked,
+  markPageRefBlocked,
+  clearBlockedPageRef,
+  clearBlockedTarget,
 } from '../connection.js';
 import {
+  InvalidBrowserNavigationUrlError,
   assertBrowserNavigationAllowed,
   assertBrowserNavigationResultAllowed,
   assertBrowserNavigationRedirectChainAllowed,
@@ -44,6 +52,100 @@ function isRetryableNavigateError(err: unknown): boolean {
   return msg.includes('frame has been detached') || msg.includes('target page, context or browser has been closed');
 }
 
+function isPolicyDenyNavigationError(err: unknown): boolean {
+  return err instanceof InvalidBrowserNavigationUrlError;
+}
+
+function isTopLevelNavigationRequest(page: Page, request: Request): boolean {
+  if (!request.isNavigationRequest()) return false;
+  try {
+    return request.frame() === page.mainFrame();
+  } catch {
+    return true;
+  }
+}
+
+async function closeBlockedNavigationTarget(opts: { cdpUrl: string; page: Page; targetId?: string }): Promise<void> {
+  markPageRefBlocked(opts.cdpUrl, opts.page);
+  const resolvedTargetId = await pageTargetId(opts.page).catch(() => null);
+  const fallbackTargetId = opts.targetId?.trim() ?? '';
+  const targetIdToBlock = resolvedTargetId ?? fallbackTargetId;
+  if (targetIdToBlock) markTargetBlocked(opts.cdpUrl, targetIdToBlock);
+  await opts.page.close().catch((e: unknown) => {
+    console.warn('[browserclaw] failed to close blocked page', e);
+  });
+}
+
+async function assertPageNavigationCompletedSafely(opts: {
+  cdpUrl: string;
+  page: Page;
+  response: Awaited<ReturnType<Page['goto']>>;
+  ssrfPolicy?: SsrfPolicy;
+  targetId?: string;
+}): Promise<void> {
+  const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy);
+  try {
+    await assertBrowserNavigationRedirectChainAllowed({ request: opts.response?.request(), ...navigationPolicy });
+    await assertBrowserNavigationResultAllowed({ url: opts.page.url(), ...navigationPolicy });
+  } catch (err) {
+    if (isPolicyDenyNavigationError(err))
+      await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page: opts.page, targetId: opts.targetId });
+    throw err;
+  }
+}
+
+async function gotoPageWithNavigationGuard(opts: {
+  cdpUrl: string;
+  page: Page;
+  url: string;
+  timeoutMs: number;
+  ssrfPolicy?: SsrfPolicy;
+  targetId?: string;
+}): Promise<Awaited<ReturnType<Page['goto']>>> {
+  const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy);
+  const state: { blocked: Error | null } = { blocked: null };
+  const handler = async (route: Route, request: Request) => {
+    if (state.blocked !== null) {
+      await route.abort().catch((e: unknown) => {
+        console.warn('[browserclaw] route abort failed', e);
+      });
+      return;
+    }
+    if (!isTopLevelNavigationRequest(opts.page, request)) {
+      await route.continue();
+      return;
+    }
+    try {
+      await assertBrowserNavigationAllowed({ url: request.url(), ...navigationPolicy });
+    } catch (err) {
+      if (isPolicyDenyNavigationError(err)) {
+        state.blocked = err as Error;
+        await route.abort().catch((e: unknown) => {
+          console.warn('[browserclaw] route abort failed', e);
+        });
+        return;
+      }
+      throw err;
+    }
+    await route.continue();
+  };
+  await opts.page.route('**', handler);
+  try {
+    const response = await opts.page.goto(opts.url, { timeout: opts.timeoutMs });
+    if (state.blocked !== null) throw state.blocked;
+    return response;
+  } catch (err) {
+    if (state.blocked !== null) throw state.blocked;
+    throw err;
+  } finally {
+    await opts.page.unroute('**', handler).catch((e: unknown) => {
+      console.warn('[browserclaw] route unroute failed', e);
+    });
+    if (state.blocked !== null)
+      await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page: opts.page, targetId: opts.targetId });
+  }
+}
+
 export async function navigateViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
@@ -65,7 +167,15 @@ export async function navigateViaPlaywright(opts: {
   let page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
 
-  const navigate = async () => await page.goto(url, { timeout });
+  const navigate = async () =>
+    await gotoPageWithNavigationGuard({
+      cdpUrl: opts.cdpUrl,
+      page,
+      url,
+      timeoutMs: timeout,
+      ssrfPolicy: policy,
+      targetId: opts.targetId,
+    });
 
   let response;
   try {
@@ -84,13 +194,14 @@ export async function navigateViaPlaywright(opts: {
     response = await navigate();
   }
 
-  await assertBrowserNavigationRedirectChainAllowed({
-    request: response?.request(),
-    ...withBrowserNavigationPolicy(policy),
+  await assertPageNavigationCompletedSafely({
+    cdpUrl: opts.cdpUrl,
+    page,
+    response,
+    ssrfPolicy: policy,
+    targetId: opts.targetId,
   });
-  const finalUrl = page.url();
-  await assertBrowserNavigationResultAllowed({ url: finalUrl, ...withBrowserNavigationPolicy(policy) });
-  return { url: finalUrl };
+  return { url: page.url() };
 }
 
 export async function listPagesViaPlaywright(opts: { cdpUrl: string }): Promise<BrowserTab[]> {
@@ -98,8 +209,9 @@ export async function listPagesViaPlaywright(opts: { cdpUrl: string }): Promise<
   const pages = getAllPages(browser);
   const results: BrowserTab[] = [];
   for (const page of pages) {
+    if (isBlockedPageRef(opts.cdpUrl, page)) continue;
     const tid = await pageTargetId(page).catch(() => null);
-    if (tid !== null && tid !== '')
+    if (tid !== null && tid !== '' && !isBlockedTarget(opts.cdpUrl, tid))
       results.push({
         targetId: tid,
         title: await page.title().catch(() => ''),
@@ -125,6 +237,9 @@ export async function createPageViaPlaywright(opts: {
   ensureContextState(context);
   const page = await context.newPage();
   ensurePageState(page);
+  clearBlockedPageRef(opts.cdpUrl, page);
+  const createdTargetId = await pageTargetId(page).catch(() => null);
+  clearBlockedTarget(opts.cdpUrl, createdTargetId ?? undefined);
 
   const targetUrl = (opts.url ?? '').trim() || 'about:blank';
   /* eslint-disable @typescript-eslint/no-deprecated */
@@ -133,16 +248,30 @@ export async function createPageViaPlaywright(opts: {
   /* eslint-enable @typescript-eslint/no-deprecated */
 
   if (targetUrl !== 'about:blank') {
-    const navigationPolicy = withBrowserNavigationPolicy(policy);
-    await assertBrowserNavigationAllowed({ url: targetUrl, ...navigationPolicy });
-    await assertBrowserNavigationRedirectChainAllowed({
-      request: (await page.goto(targetUrl, { timeout: 30000 }).catch(() => null))?.request(),
-      ...navigationPolicy,
+    await assertBrowserNavigationAllowed({ url: targetUrl, ...withBrowserNavigationPolicy(policy) });
+    let response: Awaited<ReturnType<Page['goto']>> = null;
+    try {
+      response = await gotoPageWithNavigationGuard({
+        cdpUrl: opts.cdpUrl,
+        page,
+        url: targetUrl,
+        timeoutMs: 30000,
+        ssrfPolicy: policy,
+        targetId: createdTargetId ?? undefined,
+      });
+    } catch (err) {
+      if (isPolicyDenyNavigationError(err) || err instanceof BlockedBrowserTargetError) throw err;
+    }
+    await assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page,
+      response,
+      ssrfPolicy: policy,
+      targetId: createdTargetId ?? undefined,
     });
-    await assertBrowserNavigationResultAllowed({ url: page.url(), ...navigationPolicy });
   }
 
-  const tid = await pageTargetId(page).catch(() => null);
+  const tid = createdTargetId ?? (await pageTargetId(page).catch(() => null));
   if (tid === null || tid === '') throw new Error('Failed to get targetId for new page');
   return {
     targetId: tid,

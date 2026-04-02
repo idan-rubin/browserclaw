@@ -516,7 +516,8 @@ function isWebSocketUrl(url: string): boolean {
 }
 
 export function isLoopbackHost(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
+  const h = hostname.replace(/\.+$/, '');
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
 }
 
 const PROXY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];
