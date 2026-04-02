@@ -1,11 +1,10 @@
 import { BrowserClaw } from '../src/index.js';
 
 async function main() {
-  const browser = await BrowserClaw.launch({ headless: false });
+  const browser = await BrowserClaw.launch({ url: 'https://httpbin.org/forms/post' });
 
   try {
-    // Open a page with a form
-    const page = await browser.open('https://httpbin.org/forms/post');
+    const page = await browser.currentPage();
 
     // Take a snapshot to see form fields
     const { snapshot, refs } = await page.snapshot();
@@ -22,10 +21,14 @@ async function main() {
     const fields = textboxes.map(([ref, info]) => ({
       ref,
       type: 'text' as const,
-      value: info.name === 'Customer name' ? 'Jane Doe'
-        : info.name === 'Telephone' ? '555-1234'
-          : info.name === 'E-mail address' ? 'jane@example.com'
-            : 'test',
+      value:
+        info.name === 'Customer name'
+          ? 'Jane Doe'
+          : info.name === 'Telephone'
+            ? '555-1234'
+            : info.name === 'E-mail address'
+              ? 'jane@example.com'
+              : 'test',
     }));
 
     console.log('\nBatch filling fields:');

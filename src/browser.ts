@@ -1454,8 +1454,8 @@ export class CrawlPage {
  * ```ts
  * import { BrowserClaw } from 'browserclaw';
  *
- * const browser = await BrowserClaw.launch({ headless: false });
- * const page = await browser.open('https://example.com');
+ * const browser = await BrowserClaw.launch({ url: 'https://example.com' });
+ * const page = await browser.currentPage();
  *
  * const { snapshot, refs } = await page.snapshot();
  * console.log(snapshot); // AI-readable page tree
@@ -1494,14 +1494,15 @@ export class BrowserClaw {
    *
    * @example
    * ```ts
-   * // Default: visible Chrome window
-   * const browser = await BrowserClaw.launch();
+   * // Launch and navigate to a URL
+   * const browser = await BrowserClaw.launch({ url: 'https://example.com' });
    *
    * // Headless mode
-   * const browser = await BrowserClaw.launch({ headless: true });
+   * const browser = await BrowserClaw.launch({ url: 'https://example.com', headless: true });
    *
    * // Specific browser
    * const browser = await BrowserClaw.launch({
+   *   url: 'https://example.com',
    *   executablePath: '/usr/bin/google-chrome',
    * });
    * ```
@@ -1513,7 +1514,12 @@ export class BrowserClaw {
     const ssrfPolicy =
       opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
     /* eslint-enable @typescript-eslint/no-deprecated */
-    return new BrowserClaw(cdpUrl, chrome, ssrfPolicy, opts.recordVideo);
+    const browser = new BrowserClaw(cdpUrl, chrome, ssrfPolicy, opts.recordVideo);
+    if (opts.url !== undefined && opts.url !== '') {
+      const page = await browser.currentPage();
+      await page.goto(opts.url);
+    }
+    return browser;
   }
 
   /**
