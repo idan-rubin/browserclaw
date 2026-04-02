@@ -12,9 +12,8 @@ You are operating a real browser. You can see pages through `snapshot()` and act
 ```typescript
 import { BrowserClaw } from 'browserclaw';
 
-const browser = await BrowserClaw.launch({ headless: false });
-const page = await browser.currentPage();  // reuse the existing tab Chrome opened
-await page.goto('https://example.com');    // don't use browser.open() — it opens a duplicate tab
+const browser = await BrowserClaw.launch({ url: 'https://example.com' });
+const page = await browser.currentPage();
 // or connect to existing: await BrowserClaw.connect('http://localhost:9222')
 ```
 
@@ -45,6 +44,7 @@ Always use `{ interactive: true, compact: true }`. This filters to actionable el
 **What snapshot returns:**
 
 `snapshot` — a text tree of the page. Example:
+
 ```
 - heading "Search Results" [level=2]
 - link "Blue Widget - $24.99" [ref=e3]
@@ -54,6 +54,7 @@ Always use `{ interactive: true, compact: true }`. This filters to actionable el
 ```
 
 `refs` — a map of ref → element info:
+
 ```typescript
 {
   "e3": { role: "link", name: "Blue Widget - $24.99" },
@@ -67,6 +68,7 @@ Always use `{ interactive: true, compact: true }`. This filters to actionable el
 **Refs are ephemeral.** After navigation or DOM changes, re-snapshot — old refs are invalid.
 
 **If the snapshot looks empty or skeleton-like** (few elements, very little text), the page is still loading. Wait and try again:
+
 ```typescript
 await page.waitFor({ timeMs: 1500 });
 const { snapshot } = await page.snapshot({ interactive: true, compact: true });
@@ -77,17 +79,20 @@ const { snapshot } = await page.snapshot({ interactive: true, compact: true });
 ## Core Actions
 
 ### Navigate
+
 ```typescript
 await page.goto('https://example.com');
 // After navigation, always re-snapshot before acting
 ```
 
 ### Click
+
 ```typescript
-await page.click('e8');  // ref from snapshot
+await page.click('e8'); // ref from snapshot
 ```
 
 ### Type
+
 ```typescript
 await page.type('e2', 'search query');
 // type() clears the field first, then types
@@ -99,12 +104,14 @@ await page.type('e2', 'search query', { submit: true });
 **After typing in any field — check for autocomplete.** Re-snapshot immediately and look for `combobox`, `listbox`, or suggestion items. If a dropdown appeared, click the correct option — do NOT press Enter.
 
 ### Select (dropdowns)
+
 ```typescript
 await page.select('e11', 'Price: Low to High');
 // Pass the option's visible text or value
 ```
 
 ### Press a key
+
 ```typescript
 await page.press('Enter');
 await page.press('Tab');
@@ -112,19 +119,22 @@ await page.press('Escape');
 ```
 
 ### Scroll
+
 ```typescript
-await page.evaluate('window.scrollBy(0, 500)');   // scroll down
-await page.evaluate('window.scrollBy(0, -500)');  // scroll up
-await page.scrollIntoView('e15');                  // scroll element into view
+await page.evaluate('window.scrollBy(0, 500)'); // scroll down
+await page.evaluate('window.scrollBy(0, -500)'); // scroll up
+await page.scrollIntoView('e15'); // scroll element into view
 ```
 
 ### Screenshot (visual check)
+
 ```typescript
 const buf = await page.screenshot();
 // Returns a Buffer — write to file or display
 ```
 
 ### Evaluate arbitrary JS
+
 ```typescript
 const text = await page.evaluate('document.title');
 const count = await page.evaluate('document.querySelectorAll(".item").length');
@@ -135,6 +145,7 @@ const count = await page.evaluate('document.querySelectorAll(".item").length');
 ## Common Patterns
 
 ### Fill a form
+
 ```typescript
 // Snapshot first to get refs
 const { snapshot } = await page.snapshot({ interactive: true, compact: true });
@@ -148,7 +159,7 @@ await page.fill([
 ]);
 
 // Then find and click the submit button
-await page.click('e9');  // ref of submit button
+await page.click('e9'); // ref of submit button
 
 // Re-snapshot to confirm submission
 await page.waitFor({ timeMs: 1000 });
@@ -156,6 +167,7 @@ const { snapshot: after } = await page.snapshot({ interactive: true, compact: tr
 ```
 
 ### Navigate a multi-page flow
+
 ```typescript
 // Page 1: fill and submit
 await page.goto('https://checkout.example.com/step1');
@@ -170,6 +182,7 @@ await page.waitFor({ loadState: 'networkidle', timeoutMs: 10000 });
 ```
 
 ### Extract data from a listing
+
 ```typescript
 await page.goto('https://example.com/products');
 const { snapshot } = await page.snapshot({ interactive: true, compact: true });
@@ -187,32 +200,35 @@ const items = await page.evaluate(`
 ```
 
 ### Handle a dialog (alert/confirm/prompt)
+
 ```typescript
 // Arm before the action that triggers the dialog
 const dialogDone = page.armDialog({ accept: true });
-await page.click('e7');   // triggers confirm()
-await dialogDone;         // resolves when dialog is handled
+await page.click('e7'); // triggers confirm()
+await dialogDone; // resolves when dialog is handled
 ```
 
 ### Wait for something specific
+
 ```typescript
-await page.waitFor({ text: 'Order confirmed' });           // wait for text to appear
-await page.waitFor({ selector: '.results-list' });          // wait for element
-await page.waitFor({ url: 'checkout/success' });            // wait for URL
-await page.waitFor({ loadState: 'networkidle' });           // wait for network quiet
-await page.waitFor({ timeMs: 2000 });                       // fixed delay (last resort)
+await page.waitFor({ text: 'Order confirmed' }); // wait for text to appear
+await page.waitFor({ selector: '.results-list' }); // wait for element
+await page.waitFor({ url: 'checkout/success' }); // wait for URL
+await page.waitFor({ loadState: 'networkidle' }); // wait for network quiet
+await page.waitFor({ timeMs: 2000 }); // fixed delay (last resort)
 ```
 
 ### Multi-tab browsing
+
 ```typescript
-const tabs = await browser.tabs();  // list all tabs: [{ targetId, title, url }]
+const tabs = await browser.tabs(); // list all tabs: [{ targetId, title, url }]
 
 // Open a new tab explicitly (only when you actually want a second tab)
 const page2 = await browser.open('https://other.example.com');
 // ... work on page2 ...
 
-await browser.focus(page.id);       // switch back to first tab
-await browser.close(page2.id);      // close a tab
+await browser.focus(page.id); // switch back to first tab
+await browser.close(page2.id); // close a tab
 ```
 
 For tab lifecycle management in production (detecting new tabs opened by clicks, switching automatically), see [`tab-manager.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/tab-manager.ts).
@@ -222,33 +238,38 @@ For tab lifecycle management in production (detecting new tabs opened by clicks,
 ## Error Handling
 
 **Click didn't work / element not found:**
+
 1. Re-snapshot — the page may have changed, the ref is stale
 2. Look for the element by a different ref
 3. Try `page.scrollIntoView(ref)` then click again
 4. Try `page.clickByText('Button Label')` as fallback
 
 **Page loads slowly:**
+
 ```typescript
 await page.waitFor({ loadState: 'networkidle', timeoutMs: 15000 });
 // or poll with snapshot readiness check:
 for (let i = 0; i < 5; i++) {
   const { snapshot } = await page.snapshot({ interactive: true, compact: true });
-  const lines = snapshot.split('\n').filter(l => l.trim());
-  if (lines.length > 10) break;  // page has content
+  const lines = snapshot.split('\n').filter((l) => l.trim());
+  if (lines.length > 10) break; // page has content
   await page.waitFor({ timeMs: 1500 });
 }
 ```
 
 **Repeated action isn't making progress:**
+
 - You may be stuck in a loop. Try a different element, a different approach, or navigate away and back.
 - Check `await page.url()` and `await page.title()` to confirm you're on the expected page.
 
 **Autocomplete / search suggestions appeared:**
+
 - Do NOT press Enter — that usually submits without selecting
 - Re-snapshot to see the suggestions
 - Click the matching suggestion ref
 
 **Form submission succeeded but then nothing happened:**
+
 - Check for error messages in the next snapshot
 - Check `await page.consoleLogs()` for JS errors
 - Try `await page.waitFor({ loadState: 'networkidle' })` then re-snapshot
@@ -260,9 +281,9 @@ for (let i = 0; i < 5; i++) {
 ```typescript
 const url = await page.url();
 const title = await page.title();
-const errors = await page.pageErrors();         // JS errors
-const logs = await page.consoleLogs();          // console.log output
-const requests = await page.networkRequests();  // XHR/fetch calls
+const errors = await page.pageErrors(); // JS errors
+const logs = await page.consoleLogs(); // console.log output
+const requests = await page.networkRequests(); // XHR/fetch calls
 ```
 
 ---
@@ -273,13 +294,13 @@ const requests = await page.networkRequests();  // XHR/fetch calls
 
 All skills live at: https://github.com/idan-rubin/browserclaw-agent/tree/main/src/Services/Browser/src/skills
 
-| Scenario | File | What it handles |
-|---|---|---|
-| PerimeterX / "press and hold" challenge | [`press-and-hold.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/press-and-hold.ts) | Finds button at bottom-center +60px, holds 4–10s with randomized jitter and delay, refreshes and retries if still blocked |
-| Cloudflare "Verify you are human" checkbox | [`cloudflare-checkbox.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/cloudflare-checkbox.ts) | Locates the Cloudflare iframe checkbox and clicks it via CDP |
-| Cookie banners and generic popups | [`dismiss-popup.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/dismiss-popup.ts) | Detects and dismisses common cookie consent banners and modal overlays |
-| Tab opened by a click | [`tab-manager.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/tab-manager.ts) | Tracks known tab IDs, detects new tabs after clicks, switches focus automatically |
-| Agent stuck repeating the same action | [`loop-detection.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/loop-detection.ts) | Counts repeated action+ref pairs over a sliding window; escalates nudge from gentle → warning → urgent at 5/8/12 repetitions |
+| Scenario                                   | File                                                                                                                                         | What it handles                                                                                                              |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| PerimeterX / "press and hold" challenge    | [`press-and-hold.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/press-and-hold.ts)           | Finds button at bottom-center +60px, holds 4–10s with randomized jitter and delay, refreshes and retries if still blocked    |
+| Cloudflare "Verify you are human" checkbox | [`cloudflare-checkbox.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/cloudflare-checkbox.ts) | Locates the Cloudflare iframe checkbox and clicks it via CDP                                                                 |
+| Cookie banners and generic popups          | [`dismiss-popup.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/dismiss-popup.ts)             | Detects and dismisses common cookie consent banners and modal overlays                                                       |
+| Tab opened by a click                      | [`tab-manager.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/tab-manager.ts)                 | Tracks known tab IDs, detects new tabs after clicks, switches focus automatically                                            |
+| Agent stuck repeating the same action      | [`loop-detection.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/loop-detection.ts)           | Counts repeated action+ref pairs over a sliding window; escalates nudge from gentle → warning → urgent at 5/8/12 repetitions |
 
 **If you encounter an anti-bot challenge, popup, or tab management need: read the relevant file above first.** These are production implementations that handle edge cases you'll otherwise spend hours debugging.
 

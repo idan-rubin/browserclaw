@@ -12,7 +12,11 @@
 import { BrowserClaw, type SnapshotResult } from '../src/index.js';
 
 // Placeholder for your AI/LLM integration
-async function askAI(snapshot: string, refs: Record<string, any>, task: string): Promise<{
+async function askAI(
+  snapshot: string,
+  refs: Record<string, any>,
+  task: string,
+): Promise<{
   action: 'click' | 'type' | 'done';
   ref?: string;
   text?: string;
@@ -34,10 +38,10 @@ async function askAI(snapshot: string, refs: Record<string, any>, task: string):
 }
 
 async function main() {
-  const browser = await BrowserClaw.launch({ headless: false });
+  const browser = await BrowserClaw.launch({ url: 'https://example.com' });
 
   try {
-    const page = await browser.open('https://example.com');
+    const page = await browser.currentPage();
     const task = 'Find and click the "More information" link';
 
     let done = false;

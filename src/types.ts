@@ -62,6 +62,8 @@ export interface RunningChrome {
 
 /** Options for launching a new browser instance. */
 export interface LaunchOptions {
+  /** URL to navigate to after launch. If omitted, the initial tab stays on `about:blank`. */
+  url?: string;
   /** Run in headless mode (no visible window). Default: `false` */
   headless?: boolean;
   /** Path to a specific browser executable. Auto-detected if omitted. */

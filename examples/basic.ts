@@ -1,12 +1,11 @@
 import { BrowserClaw } from '../src/index.js';
 
 async function main() {
-  // Launch Chrome
-  const browser = await BrowserClaw.launch({ headless: false });
+  // Launch Chrome and navigate
+  const browser = await BrowserClaw.launch({ url: 'https://example.com' });
 
   try {
-    // Open a page
-    const page = await browser.open('https://example.com');
+    const page = await browser.currentPage();
 
     // Take a snapshot — get AI-readable text with numbered refs
     const { snapshot, refs } = await page.snapshot();

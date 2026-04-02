@@ -15,8 +15,8 @@ The AI-native browser automation library — born from [OpenClaw](https://github
 ```typescript
 import { BrowserClaw } from 'browserclaw';
 
-const browser = await BrowserClaw.launch({ headless: false });
-const page = await browser.open('https://example.com');
+const browser = await BrowserClaw.launch({ url: 'https://example.com' });
+const page = await browser.currentPage();
 
 // Snapshot — the core feature
 const { snapshot, refs } = await page.snapshot();
@@ -133,6 +133,7 @@ Requires a Chromium-based browser installed on the system (Chrome, Brave, Edge, 
 ```typescript
 // Launch a new Chrome instance (auto-detects Chrome/Brave/Edge/Chromium)
 const browser = await BrowserClaw.launch({
+  url: 'https://example.com', // navigate initial tab (no extra tabs)
   headless: false, // default: false (visible window)
   executablePath: '...', // optional: specific browser path
   cdpPort: 9222, // default: 9222
