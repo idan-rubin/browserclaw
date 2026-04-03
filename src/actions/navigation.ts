@@ -10,7 +10,7 @@ import {
   observeContext,
   pageTargetId,
   getAllPages,
-  forceDisconnectPlaywrightForTarget,
+  forceDisconnectPlaywrightConnection,
   resolvePageByTargetIdOrThrow,
   withPageScopedCdpClient,
   isBlockedTarget,
@@ -182,7 +182,7 @@ export async function navigateViaPlaywright(opts: {
     response = await navigate();
   } catch (err) {
     if (!isRetryableNavigateError(err)) throw err;
-    await forceDisconnectPlaywrightForTarget({
+    await forceDisconnectPlaywrightConnection({
       cdpUrl: opts.cdpUrl,
       targetId: opts.targetId,
       reason: 'retry navigate after detached frame',

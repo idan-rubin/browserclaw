@@ -4,7 +4,7 @@ import {
   restoreRoleRefsForTarget,
   refLocator,
   normalizeTimeoutMs,
-  forceDisconnectPlaywrightForTarget,
+  forceDisconnectPlaywrightConnection,
 } from '../connection.js';
 
 export interface FrameEvalResult {
@@ -170,7 +170,7 @@ export async function evaluateViaPlaywright(opts: {
 
   if (signal !== undefined) {
     const disconnect = () => {
-      forceDisconnectPlaywrightForTarget({
+      forceDisconnectPlaywrightConnection({
         cdpUrl: opts.cdpUrl,
         targetId: opts.targetId,
         reason: 'evaluate aborted',

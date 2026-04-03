@@ -22,6 +22,7 @@ export {
 export type { BrowserNavigationPolicyOptions, BrowserNavigationRequestLike, LookupFn } from './security.js';
 export {
   ensureContextState,
+  forceDisconnectPlaywrightConnection,
   forceDisconnectPlaywrightForTarget,
   withPlaywrightPageCdpSession,
   withPageScopedCdpClient,

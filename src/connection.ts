@@ -540,11 +540,13 @@ async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string): Pr
 }
 
 /**
- * Force-disconnect a Playwright browser connection for a given CDP target.
- * Clears the connection cache, sends Runtime.terminateExecution via raw CDP
- * websocket to kill stuck evals (bypassing Playwright), and closes the browser.
+ * Force-disconnect the ENTIRE Playwright browser connection, not just one target.
+ * Clears the connection cache, optionally sends Runtime.terminateExecution to
+ * a specific target via raw CDP websocket to kill stuck evals (bypassing
+ * Playwright), then closes the browser — which disconnects ALL tabs.
+ * The targetId parameter is only used to send Runtime.terminateExecution before closing.
  */
-export async function forceDisconnectPlaywrightForTarget(opts: {
+export async function forceDisconnectPlaywrightConnection(opts: {
   cdpUrl: string;
   targetId?: string;
   reason?: string;
@@ -571,6 +573,9 @@ export async function forceDisconnectPlaywrightForTarget(opts: {
     /* noop */
   });
 }
+
+/** @deprecated Use `forceDisconnectPlaywrightConnection` instead. */
+export const forceDisconnectPlaywrightForTarget = forceDisconnectPlaywrightConnection;
 
 // ── Page Lookup ──
 
