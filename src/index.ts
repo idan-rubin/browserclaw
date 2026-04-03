@@ -23,6 +23,7 @@ export type { BrowserNavigationPolicyOptions, BrowserNavigationRequestLike, Look
 export {
   ensureContextState,
   forceDisconnectPlaywrightConnection,
+  // eslint-disable-next-line @typescript-eslint/no-deprecated
   forceDisconnectPlaywrightForTarget,
   withPlaywrightPageCdpSession,
   withPageScopedCdpClient,
