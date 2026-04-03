@@ -54,6 +54,21 @@ function mockFailingLookup(): LookupFn {
   return (() => Promise.reject(new Error('DNS resolution failed'))) as unknown as LookupFn;
 }
 
+const PROXY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'] as const;
+
+/** Run a callback with all proxy env vars temporarily cleared */
+async function withoutProxyEnv(fn: () => Promise<void>): Promise<void> {
+  const saved = Object.fromEntries(PROXY_ENV_KEYS.map((k) => [k, process.env[k]]));
+  for (const k of PROXY_ENV_KEYS) delete process.env[k];
+  try {
+    await fn();
+  } finally {
+    for (const k of PROXY_ENV_KEYS) {
+      if (saved[k] !== undefined) process.env[k] = saved[k];
+    }
+  }
+}
+
 /** DNS record shape returned by pinned lookup */
 interface DnsRecord {
   address: string;
@@ -546,13 +561,15 @@ describe('security.ts', () => {
     });
 
     it('should allow public URL with mock DNS', async () => {
-      await expect(
-        assertBrowserNavigationAllowed({
-          url: 'https://playwright.dev',
-          lookupFn: mockPublicLookup(),
-          ssrfPolicy: STRICT_POLICY,
-        }),
-      ).resolves.toBeUndefined();
+      await withoutProxyEnv(async () => {
+        await expect(
+          assertBrowserNavigationAllowed({
+            url: 'https://playwright.dev',
+            lookupFn: mockPublicLookup(),
+            ssrfPolicy: STRICT_POLICY,
+          }),
+        ).resolves.toBeUndefined();
+      });
     });
 
     it('should block private IP with strict policy', async () => {
@@ -897,13 +914,15 @@ describe('security.ts', () => {
     });
 
     it('should allow public IP result url with strict policy', async () => {
-      await expect(
-        assertBrowserNavigationResultAllowed({
-          url: 'https://playwright.dev',
-          lookupFn: mockPublicLookup(),
-          ssrfPolicy: STRICT_POLICY,
-        }),
-      ).resolves.toBeUndefined();
+      await withoutProxyEnv(async () => {
+        await expect(
+          assertBrowserNavigationResultAllowed({
+            url: 'https://playwright.dev',
+            lookupFn: mockPublicLookup(),
+            ssrfPolicy: STRICT_POLICY,
+          }),
+        ).resolves.toBeUndefined();
+      });
     });
   });
 
@@ -932,23 +951,25 @@ describe('security.ts', () => {
     });
 
     it('should validate all URLs in a redirect chain', async () => {
-      const chain = {
-        url: () => 'https://final.com',
-        redirectedFrom: () => ({
-          url: () => 'https://middle.com',
+      await withoutProxyEnv(async () => {
+        const chain = {
+          url: () => 'https://final.com',
           redirectedFrom: () => ({
-            url: () => 'https://start.com',
-            redirectedFrom: () => null,
+            url: () => 'https://middle.com',
+            redirectedFrom: () => ({
+              url: () => 'https://start.com',
+              redirectedFrom: () => null,
+            }),
           }),
-        }),
-      };
-      await expect(
-        assertBrowserNavigationRedirectChainAllowed({
-          request: chain,
-          lookupFn: mockPublicLookup(),
-          ssrfPolicy: STRICT_POLICY,
-        }),
-      ).resolves.toBeUndefined();
+        };
+        await expect(
+          assertBrowserNavigationRedirectChainAllowed({
+            request: chain,
+            lookupFn: mockPublicLookup(),
+            ssrfPolicy: STRICT_POLICY,
+          }),
+        ).resolves.toBeUndefined();
+      });
     });
 
     it('should block if any URL in redirect chain is private', async () => {
@@ -1279,7 +1300,7 @@ describe('security.ts', () => {
       if (!result.ok) expect(result.error).toContain('escapes');
     });
 
-    it('should return error when stat fails with non-ENOENT error', async () => {
+    it.skipIf(process.getuid?.() === 0)('should return error when stat fails with non-ENOENT error', async () => {
       // Create a file inside an inaccessible directory to trigger EACCES on lstat
       const subdir = join(tempRoot, 'noaccess');
       await mkdir(subdir);
@@ -1422,7 +1443,7 @@ describe('security.ts', () => {
       expect(result.ok).toBe(false);
     });
 
-    it('should return error when realpath fails with non-ENOENT error', async () => {
+    it.skipIf(process.getuid?.() === 0)('should return error when realpath fails with non-ENOENT error', async () => {
       const subdir = join(tempRoot, 'noaccess');
       await mkdir(subdir);
       await writeFile(join(subdir, 'file.txt'), 'data');
