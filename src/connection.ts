@@ -2,7 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 
 import { chromium } from 'playwright-core';
-import type { Browser, Page, BrowserContext, CDPSession } from 'playwright-core';
+import type { Browser, Page, CDPSession } from 'playwright-core';
 
 import {
   getChromeWebSocketUrl,
