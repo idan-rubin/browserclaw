@@ -18,6 +18,7 @@ export {
   writeViaSiblingTempPath,
   assertSafeUploadPaths,
   resolveStrictExistingUploadPaths,
+  resolveStrictExistingPathsWithinRoot,
 } from './security.js';
 export type { BrowserNavigationPolicyOptions, BrowserNavigationRequestLike, LookupFn } from './security.js';
 export {

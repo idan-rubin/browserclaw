@@ -726,7 +726,8 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
     );
   }
   if (isBlockedPageRef(opts.cdpUrl, found)) throw new BlockedBrowserTargetError();
-  // findPageByTargetId matched found against opts.targetId — reuse it directly
+  // Both resolution paths (CDP match and URL-based fallback) locate the page by opts.targetId —
+  // no need to call pageTargetId(found) again.
   if (isBlockedTarget(opts.cdpUrl, opts.targetId)) throw new BlockedBrowserTargetError();
   return found;
 }
