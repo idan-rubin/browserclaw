@@ -536,11 +536,11 @@ export async function assertSafeOutputPath(path: string, allowedRoots?: string[]
     throw new Error('Output path is required.');
   }
 
-  const normalized = normalize(path);
-
-  if (normalized.includes('..')) {
+  if (path.includes('..')) {
     throw new Error(`Unsafe output path: directory traversal detected in "${path}".`);
   }
+
+  const normalized = normalize(path);
 
   if (allowedRoots !== undefined && allowedRoots.length > 0) {
     const resolved = resolve(normalized);
@@ -831,7 +831,7 @@ export async function writeViaSiblingTempPath(params: {
     !relativeTargetPath ||
     relativeTargetPath === '..' ||
     relativeTargetPath.startsWith(`..${sep}`) ||
-    isAbsolute(relativeTargetPath)
+    pathIsAbsolute(relativeTargetPath)
   ) {
     throw new Error('Target path is outside the allowed root');
   }
@@ -848,10 +848,6 @@ export async function writeViaSiblingTempPath(params: {
         /* noop */
       });
   }
-}
-
-function isAbsolute(p: string): boolean {
-  return p.startsWith('/') || /^[a-zA-Z]:/.test(p);
 }
 
 /**

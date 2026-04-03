@@ -236,7 +236,9 @@ export function getHeadersWithAuth(endpoint: string, baseHeaders: Record<string,
       ).toString('base64');
       headers.Authorization = `Basic ${credentials}`;
     }
-  } catch {}
+  } catch {
+    // endpoint is not a valid URL (e.g. a raw WebSocket path) — skip auth header injection
+  }
   return headers;
 }
 

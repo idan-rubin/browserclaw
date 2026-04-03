@@ -227,7 +227,7 @@ export function buildRoleSnapshotFromAriaSnapshot(
     const isInteractive = INTERACTIVE_ROLES.has(role);
     const isContent = CONTENT_ROLES.has(role);
     const isStructural = STRUCTURAL_ROLES.has(role);
-    if (options.compact === true && isStructural && name === '') continue;
+    if (options.compact === true && isStructural && !name) continue;
     if (!(isInteractive || (isContent && name !== ''))) {
       result.push(line);
       continue;
@@ -331,7 +331,7 @@ export function buildRoleSnapshotFromAiSnapshot(
     }
     const role = roleRaw.toLowerCase();
     const isStructural = STRUCTURAL_ROLES.has(role);
-    if (options.compact === true && isStructural && name === '') continue;
+    if (options.compact === true && isStructural && !name) continue;
     const ref = parseAiSnapshotRef(suffix);
     const state = parseStateFromSuffix(suffix);
     if (ref !== null) {

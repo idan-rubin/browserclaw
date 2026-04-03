@@ -450,7 +450,7 @@ export async function armDialogViaPlaywright(opts: {
   state.armIdDialog = bumpDialogArmId(state);
   const armId = state.armIdDialog;
 
-  page
+  return page
     .waitForEvent('dialog', { timeout })
     .then(async (dialog) => {
       if (state.armIdDialog !== armId) return;
