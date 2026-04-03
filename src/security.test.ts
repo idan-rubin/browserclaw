@@ -594,6 +594,40 @@ describe('security.ts', () => {
         }),
       ).resolves.toBeUndefined();
     });
+
+    it('should block when proxy env vars are set with strict policy (fail closed)', async () => {
+      const original = process.env.HTTP_PROXY;
+      process.env.HTTP_PROXY = 'http://proxy.example.com:8080';
+      try {
+        await expect(
+          assertBrowserNavigationAllowed({
+            url: 'https://example.com',
+            lookupFn: mockPublicLookup(),
+            ssrfPolicy: STRICT_POLICY,
+          }),
+        ).rejects.toThrow('proxy variables are set');
+      } finally {
+        if (original !== undefined) process.env.HTTP_PROXY = original;
+        else delete process.env.HTTP_PROXY;
+      }
+    });
+
+    it('should allow navigation when proxy env vars are set with permissive policy', async () => {
+      const original = process.env.HTTP_PROXY;
+      process.env.HTTP_PROXY = 'http://proxy.example.com:8080';
+      try {
+        await expect(
+          assertBrowserNavigationAllowed({
+            url: 'https://example.com',
+            lookupFn: mockPublicLookup(),
+            ssrfPolicy: PERMISSIVE_POLICY,
+          }),
+        ).resolves.toBeUndefined();
+      } finally {
+        if (original !== undefined) process.env.HTTP_PROXY = original;
+        else delete process.env.HTTP_PROXY;
+      }
+    });
   });
 
   // ────────────────────────────────────────────────
@@ -1066,6 +1100,10 @@ describe('security.ts', () => {
       // Without allowedRoots, only the traversal check applies
       await expect(assertSafeOutputPath('/tmp/test.txt')).resolves.toBeUndefined();
     });
+
+    it('should accept /etc/passwd without allowedRoots (lexical check only)', async () => {
+      await expect(assertSafeOutputPath('/etc/passwd')).resolves.toBeUndefined();
+    });
   });
 
   // ────────────────────────────────────────────────
@@ -1240,6 +1278,26 @@ describe('security.ts', () => {
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.error).toContain('escapes');
     });
+
+    it('should return error when stat fails with non-ENOENT error', async () => {
+      // Create a file inside an inaccessible directory to trigger EACCES on lstat
+      const subdir = join(tempRoot, 'noaccess');
+      await mkdir(subdir);
+      await writeFile(join(subdir, 'file.txt'), 'data');
+      const { chmod } = await import('node:fs/promises');
+      await chmod(subdir, 0o000);
+      try {
+        const result = await resolveWritablePathWithinRoot({
+          rootDir: tempRoot,
+          requestedPath: 'noaccess/file.txt',
+          scopeLabel: 'test',
+        });
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error).toContain('Cannot stat');
+      } finally {
+        await chmod(subdir, 0o755);
+      }
+    });
   });
 
   // ────────────────────────────────────────────────
@@ -1362,6 +1420,25 @@ describe('security.ts', () => {
         scopeLabel: 'test',
       });
       expect(result.ok).toBe(false);
+    });
+
+    it('should return error when realpath fails with non-ENOENT error', async () => {
+      const subdir = join(tempRoot, 'noaccess');
+      await mkdir(subdir);
+      await writeFile(join(subdir, 'file.txt'), 'data');
+      const { chmod } = await import('node:fs/promises');
+      await chmod(subdir, 0o000);
+      try {
+        const result = await resolveStrictExistingPathsWithinRoot({
+          rootDir: tempRoot,
+          requestedPaths: ['noaccess/file.txt'],
+          scopeLabel: 'test',
+        });
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error).toContain('Cannot resolve');
+      } finally {
+        await chmod(subdir, 0o755);
+      }
     });
   });
 
