@@ -47,8 +47,8 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
         frameName: frame.name(),
         result,
       });
-    } catch {
-      // Frame may have been detached or navigation in progress — skip
+    } catch (err) {
+      console.warn('[browserclaw] frame evaluate failed:', err instanceof Error ? err.message : String(err));
     }
   }
 

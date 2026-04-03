@@ -160,6 +160,8 @@ function axValue(v: { value?: string | number | boolean } | undefined): string {
 }
 
 function formatAriaNodes(nodes: CdpAXNode[], limit: number): AriaNode[] {
+  if (nodes.length === 0) return [];
+
   const byId = new Map<string, CdpAXNode>();
   for (const n of nodes) if (n.nodeId) byId.set(n.nodeId, n);
 
