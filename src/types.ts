@@ -520,7 +520,7 @@ export interface GeolocationOptions {
   longitude?: number;
   /** Accuracy in meters */
   accuracy?: number;
-  /** Origin to grant geolocation permission for (e.g. `'https://example.com'`) */
+  /** Origin to grant geolocation permission for (e.g. `'https://demo.playwright.dev'`) */
   origin?: string;
   /** Clear geolocation override */
   clear?: boolean;
