@@ -102,7 +102,7 @@ export async function downloadViaPlaywright(opts: {
   const outPath = opts.path.trim();
   if (!outPath) throw new Error('path is required');
 
-  state.armIdDownload = bumpDownloadArmId();
+  state.armIdDownload = bumpDownloadArmId(state);
   const armId = state.armIdDownload;
   const waiter = createPageDownloadWaiter(page, timeout);
 
@@ -132,7 +132,7 @@ export async function waitForDownloadViaPlaywright(opts: {
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
 
-  state.armIdDownload = bumpDownloadArmId();
+  state.armIdDownload = bumpDownloadArmId(state);
   const armId = state.armIdDownload;
 
   const waiter = createPageDownloadWaiter(page, timeout);
