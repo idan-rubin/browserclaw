@@ -15,16 +15,16 @@ The AI-native browser automation library — born from [OpenClaw](https://github
 ```typescript
 import { BrowserClaw } from 'browserclaw';
 
-const browser = await BrowserClaw.launch({ url: 'https://example.com' });
+const browser = await BrowserClaw.launch({ url: 'https://demo.playwright.dev/todomvc' });
 const page = await browser.currentPage();
 
 // Snapshot — the core feature
 const { snapshot, refs } = await page.snapshot();
 // snapshot: AI-readable text tree
-// refs: { "e1": { role: "link", name: "More info" }, "e2": { role: "button", name: "Submit" } }
+// refs: { "e1": { role: "textbox", name: "What needs to be done?" }, "e2": { role: "link", name: "Playwright" } }
 
-await page.click('e1'); // Click by ref
-await page.type('e3', 'hello'); // Type by ref
+await page.type('e1', 'Buy groceries', { submit: true }); // Type by ref
+await page.click('e2'); // Click by ref
 await browser.stop();
 ```
 
@@ -102,20 +102,20 @@ Requires a Chromium-based browser installed on the system (Chrome, Brave, Edge, 
 ## How It Works
 
 ```
-┌─────────────┐     snapshot()     ┌─────────────────────────────────┐
-│  Web Page   │ ──────────────►    │  AI-readable text tree          │
-│             │                    │                                 │
-│  [buttons]  │                    │  - heading "Example Domain"     │
-│  [links]    │                    │  - paragraph "This domain..."   │
-│  [inputs]   │                    │  - link "More information" [e1] │
-└─────────────┘                    └──────────────┬──────────────────┘
+┌─────────────┐     snapshot()     ┌──────────────────────────────────────────┐
+│  Web Page   │ ──────────────►    │  AI-readable text tree                   │
+│             │                    │                                          │
+│  [buttons]  │                    │  - heading "todos"                       │
+│  [links]    │                    │  - textbox "What needs to be done?" [e1] │
+│  [inputs]   │                    │  - link "Playwright" [e2]                │
+└─────────────┘                    └──────────────┬───────────────────────────┘
                                                   │
                                           AI reads snapshot,
-                                          decides: click e1
+                                          decides: type in e1
                                                   │
-┌─────────────┐     click('e1')    ┌──────────────▼──────────────────┐
+┌─────────────┐   type('e1',...)   ┌──────────────▼──────────────────┐
 │  Web Page   │ ◄──────────────    │  Ref "e1" resolves to a         │
-│  (navigated)│                    │  Playwright locator — one ref,  │
+│  (updated)  │                    │  Playwright locator — one ref,  │
 │             │                    │  one exact element              │
 └─────────────┘                    └─────────────────────────────────┘
 ```
@@ -133,7 +133,7 @@ Requires a Chromium-based browser installed on the system (Chrome, Brave, Edge, 
 ```typescript
 // Launch a new Chrome instance (auto-detects Chrome/Brave/Edge/Chromium)
 const browser = await BrowserClaw.launch({
-  url: 'https://example.com', // navigate initial tab (no extra tabs)
+  url: 'https://demo.playwright.dev/todomvc', // navigate initial tab (no extra tabs)
   headless: false, // default: false (visible window)
   executablePath: '...', // optional: specific browser path
   cdpPort: 9222, // default: 9222

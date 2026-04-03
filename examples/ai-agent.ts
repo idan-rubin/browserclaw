@@ -38,11 +38,11 @@ async function askAI(
 }
 
 async function main() {
-  const browser = await BrowserClaw.launch({ url: 'https://example.com' });
+  const browser = await BrowserClaw.launch({ url: 'https://demo.playwright.dev/todomvc' });
 
   try {
     const page = await browser.currentPage();
-    const task = 'Find and click the "More information" link';
+    const task = 'Add a new todo item called "Buy groceries"';
 
     let done = false;
     let step = 0;
