@@ -445,11 +445,15 @@ function safeWriteJson(filePath: string, data: Record<string, unknown>): void {
 function setDeep(obj: Record<string, unknown>, keys: string[], value: unknown): void {
   let node: Record<string, unknown> = obj;
   for (const key of keys.slice(0, -1)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') return;
     const next = node[key];
     if (typeof next !== 'object' || next === null || Array.isArray(next)) node[key] = {};
+    // nosemgrep: prototype-pollution-loop -- guarded above
     node = node[key] as Record<string, unknown>;
   }
-  node[keys[keys.length - 1]] = value;
+  const lastKey = keys[keys.length - 1];
+  if (lastKey === '__proto__' || lastKey === 'constructor' || lastKey === 'prototype') return;
+  node[lastKey] = value;
 }
 
 function parseHexRgbToSignedArgbInt(hex: string): number | null {
