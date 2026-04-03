@@ -1,4 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { mkdir, writeFile, symlink, rm, realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve, join } from 'node:path';
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+
 import {
   isInternalUrl,
   createPinnedLookup,
@@ -22,11 +28,8 @@ import {
   DEFAULT_DOWNLOAD_DIR,
   DEFAULT_UPLOAD_DIR,
 } from './security.js';
+import type { LookupFn } from './security.js';
 import type { SsrfPolicy } from './types.js';
-import { resolve, join, sep } from 'node:path';
-import { mkdir, writeFile, symlink, rm, realpath } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
 
 // ── Helpers ──
 
@@ -36,26 +39,64 @@ const STRICT_POLICY: SsrfPolicy = { dangerouslyAllowPrivateNetwork: false };
 /** Permissive policy: private network allowed */
 const PERMISSIVE_POLICY: SsrfPolicy = { dangerouslyAllowPrivateNetwork: true };
 
-/** Mock DNS lookup that resolves to the given addresses */
-function mockLookup(addresses: { address: string; family: number }[]): any {
-  return async (_hostname: string, _opts?: any) => addresses;
-}
-
 /** Mock DNS lookup that resolves a hostname to a single public IP */
-function mockPublicLookup(): any {
-  return async (_hostname: string, _opts?: any) => [{ address: '93.184.216.34', family: 4 }];
+function mockPublicLookup(): LookupFn {
+  return (() => Promise.resolve([{ address: '93.184.216.34', family: 4 }])) as unknown as LookupFn;
 }
 
 /** Mock DNS lookup that resolves a hostname to a loopback IP */
-function mockLoopbackLookup(): any {
-  return async (_hostname: string, _opts?: any) => [{ address: '127.0.0.1', family: 4 }];
+function mockLoopbackLookup(): LookupFn {
+  return (() => Promise.resolve([{ address: '127.0.0.1', family: 4 }])) as unknown as LookupFn;
 }
 
 /** Mock DNS lookup that throws (simulating failed resolution) */
-function mockFailingLookup(): any {
-  return async () => {
-    throw new Error('DNS resolution failed');
-  };
+function mockFailingLookup(): LookupFn {
+  return (() => Promise.reject(new Error('DNS resolution failed'))) as unknown as LookupFn;
+}
+
+/** DNS record shape returned by pinned lookup */
+interface DnsRecord {
+  address: string;
+  family: number;
+}
+
+// Typed callback overloads for calling pinned lookup in tests.
+// dns.lookup has complex overloads; these narrow them for test convenience.
+
+type SingleCb = (
+  hostname: string,
+  cb: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+) => void;
+
+type AllCb = (
+  hostname: string,
+  opts: { all: true; family?: number },
+  cb: (err: NodeJS.ErrnoException | null, records: DnsRecord[]) => void,
+) => void;
+
+/** Invoke pinned lookup (single-result, 2-arg form) and return a promise */
+function callPinnedSingle(
+  lookup: ReturnType<typeof createPinnedLookup>,
+  hostname: string,
+): Promise<{ err: NodeJS.ErrnoException | null; address: string; family: number }> {
+  return new Promise((res) => {
+    (lookup as unknown as SingleCb)(hostname, (err, address, family) => {
+      res({ err, address, family });
+    });
+  });
+}
+
+/** Invoke pinned lookup with { all: true } and return a promise */
+function callPinnedAll(
+  lookup: ReturnType<typeof createPinnedLookup>,
+  hostname: string,
+  opts?: { family?: number },
+): Promise<DnsRecord[]> {
+  return new Promise((res) => {
+    (lookup as unknown as AllCb)(hostname, { all: true, ...opts }, (_err, records) => {
+      res(records);
+    });
+  });
 }
 
 // ── Temp directory helpers for filesystem tests ──
@@ -483,7 +524,6 @@ describe('security.ts', () => {
     });
 
     it('should reject javascript: protocol', async () => {
-      // eslint-disable-next-line no-script-url
       await expect(assertBrowserNavigationAllowed({ url: 'javascript:alert(1)' })).rejects.toThrow(
         'unsupported protocol',
       );
@@ -596,7 +636,7 @@ describe('security.ts', () => {
     });
 
     it('should block when DNS returns empty results', async () => {
-      const emptyLookup: any = async () => [];
+      const emptyLookup = (() => Promise.resolve([])) as unknown as LookupFn;
       await expect(
         resolvePinnedHostnameWithPolicy('empty.com', {
           lookupFn: emptyLookup,
@@ -615,11 +655,12 @@ describe('security.ts', () => {
     });
 
     it('should prefer IPv4 addresses over IPv6 in deduplication', async () => {
-      const multiLookup: any = async () => [
-        { address: '2607:f8b0:4004:800::200e', family: 6 },
-        { address: '93.184.216.34', family: 4 },
-        { address: '2607:f8b0:4004:800::200f', family: 6 },
-      ];
+      const multiLookup = (() =>
+        Promise.resolve([
+          { address: '2607:f8b0:4004:800::200e', family: 6 },
+          { address: '93.184.216.34', family: 4 },
+          { address: '2607:f8b0:4004:800::200f', family: 6 },
+        ])) as unknown as LookupFn;
       const result = await resolvePinnedHostnameWithPolicy('multi.com', {
         lookupFn: multiLookup,
         policy: STRICT_POLICY,
@@ -629,10 +670,11 @@ describe('security.ts', () => {
     });
 
     it('should deduplicate addresses', async () => {
-      const dupLookup: any = async () => [
-        { address: '93.184.216.34', family: 4 },
-        { address: '93.184.216.34', family: 4 },
-      ];
+      const dupLookup = (() =>
+        Promise.resolve([
+          { address: '93.184.216.34', family: 4 },
+          { address: '93.184.216.34', family: 4 },
+        ])) as unknown as LookupFn;
       const result = await resolvePinnedHostnameWithPolicy('dup.com', {
         lookupFn: dupLookup,
         policy: STRICT_POLICY,
@@ -697,11 +739,7 @@ describe('security.ts', () => {
         hostname: 'test.com',
         addresses: ['1.2.3.4'],
       });
-      const result = await new Promise<{ err: any; address: string; family: number }>((resolve) => {
-        (lookup as any)('test.com', (err: any, address: string, family: number) => {
-          resolve({ err, address, family });
-        });
-      });
+      const result = await callPinnedSingle(lookup, 'test.com');
       expect(result.err).toBeNull();
       expect(result.address).toBe('1.2.3.4');
       expect(result.family).toBe(4);
@@ -712,11 +750,7 @@ describe('security.ts', () => {
         hostname: 'test.com',
         addresses: ['1.2.3.4', '2001:db8::1'],
       });
-      const results = await new Promise<any[]>((resolve) => {
-        (lookup as any)('test.com', { all: true }, (err: any, records: any[]) => {
-          resolve(records);
-        });
-      });
+      const results = await callPinnedAll(lookup, 'test.com');
       expect(results).toHaveLength(2);
       expect(results[0]).toEqual({ address: '1.2.3.4', family: 4 });
       expect(results[1]).toEqual({ address: '2001:db8::1', family: 6 });
@@ -727,11 +761,7 @@ describe('security.ts', () => {
         hostname: 'test.com',
         addresses: ['1.2.3.4', '2001:db8::1'],
       });
-      const results = await new Promise<any[]>((resolve) => {
-        (lookup as any)('test.com', { all: true, family: 4 }, (err: any, records: any[]) => {
-          resolve(records);
-        });
-      });
+      const results = await callPinnedAll(lookup, 'test.com', { family: 4 });
       expect(results).toHaveLength(1);
       expect(results[0].address).toBe('1.2.3.4');
     });
@@ -741,11 +771,7 @@ describe('security.ts', () => {
         hostname: 'test.com',
         addresses: ['1.2.3.4'], // only IPv4
       });
-      const results = await new Promise<any[]>((resolve) => {
-        (lookup as any)('test.com', { all: true, family: 6 }, (err: any, records: any[]) => {
-          resolve(records);
-        });
-      });
+      const results = await callPinnedAll(lookup, 'test.com', { family: 6 });
       expect(results).toHaveLength(1);
       expect(results[0].address).toBe('1.2.3.4');
     });
@@ -757,7 +783,7 @@ describe('security.ts', () => {
       });
       const addresses: string[] = [];
       for (let i = 0; i < 3; i++) {
-        (lookup as any)('test.com', (_err: any, addr: string) => {
+        (lookup as unknown as SingleCb)('test.com', (_err, addr) => {
           addresses.push(addr);
         });
       }
@@ -767,19 +793,15 @@ describe('security.ts', () => {
     });
 
     it('should use fallback for non-matching hostnames', async () => {
-      const fallback = ((_host: string, cb: any) => {
+      const fallback = ((_host: string, cb: (err: null, address: string, family: number) => void) => {
         cb(null, '9.9.9.9', 4);
-      }) as any;
+      }) as unknown as ReturnType<typeof createPinnedLookup>;
       const lookup = createPinnedLookup({
         hostname: 'pinned.com',
         addresses: ['1.2.3.4'],
         fallback,
       });
-      const result = await new Promise<{ err: any; address: string }>((resolve) => {
-        (lookup as any)('other.com', (err: any, address: string) => {
-          resolve({ err, address });
-        });
-      });
+      const result = await callPinnedSingle(lookup, 'other.com');
       expect(result.err).toBeNull();
       expect(result.address).toBe('9.9.9.9');
     });
@@ -789,11 +811,7 @@ describe('security.ts', () => {
         hostname: 'Test.Com',
         addresses: ['1.2.3.4'],
       });
-      const result = await new Promise<{ err: any; address: string }>((resolve) => {
-        (lookup as any)('test.com', (err: any, address: string) => {
-          resolve({ err, address });
-        });
-      });
+      const result = await callPinnedSingle(lookup, 'test.com');
       expect(result.err).toBeNull();
       expect(result.address).toBe('1.2.3.4');
     });
@@ -1036,7 +1054,7 @@ describe('security.ts', () => {
     });
 
     it('should reject null-ish path', async () => {
-      await expect(assertSafeOutputPath(null as any)).rejects.toThrow('Output path is required');
+      await expect(assertSafeOutputPath(null as unknown as string)).rejects.toThrow('Output path is required');
     });
 
     it('should reject path with directory traversal', async () => {
@@ -1395,9 +1413,7 @@ describe('security.ts', () => {
         writeViaSiblingTempPath({
           rootDir: tempRoot,
           targetPath,
-          writeTemp: async () => {
-            throw new Error('Write failed');
-          },
+          writeTemp: () => Promise.reject(new Error('Write failed')),
         }),
       ).rejects.toThrow('Write failed');
       // Verify temp file is cleaned up
