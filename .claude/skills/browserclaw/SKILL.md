@@ -169,16 +169,16 @@ const { snapshot: after } = await page.snapshot({ interactive: true, compact: tr
 ### Navigate a multi-page flow
 
 ```typescript
-// Page 1: fill and submit
-await page.goto('https://demo.playwright.dev/todomvc/#/active');
+// Page 1: add todos, then filter
+await page.goto('https://demo.playwright.dev/todomvc');
 let { snapshot } = await page.snapshot({ interactive: true, compact: true });
-// ... fill fields, click Next ...
-await page.click('e12');
+// ... add items, interact ...
+await page.click('e12'); // click "Active" filter link
 
-// Wait for page 2
+// Wait for view update
 await page.waitFor({ loadState: 'networkidle', timeoutMs: 10000 });
 ({ snapshot } = await page.snapshot({ interactive: true, compact: true }));
-// ... continue on page 2 ...
+// ... continue with filtered view ...
 ```
 
 ### Extract data from a listing
@@ -188,13 +188,12 @@ await page.goto('https://demo.playwright.dev/todomvc');
 const { snapshot } = await page.snapshot({ interactive: true, compact: true });
 
 // Read all items from the snapshot text
-// The snapshot shows names, prices, links — parse or pass to an LLM
+// The snapshot shows todo labels, checkboxes — parse or pass to an LLM
 // For structured extraction from raw DOM:
 const items = await page.evaluate(`
-  Array.from(document.querySelectorAll('.product-card')).map(el => ({
-    name: el.querySelector('.name')?.textContent?.trim(),
-    price: el.querySelector('.price')?.textContent?.trim(),
-    url: el.querySelector('a')?.href,
+  Array.from(document.querySelectorAll('.todo-list li')).map(el => ({
+    text: el.querySelector('label')?.textContent?.trim(),
+    completed: el.classList.contains('completed'),
   }))
 `);
 ```

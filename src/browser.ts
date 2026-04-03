@@ -119,11 +119,10 @@ import type {
  * // 1. Take a snapshot to get refs
  * const { snapshot, refs } = await page.snapshot();
  * // snapshot: AI-readable text tree
- * // refs: { "e1": { role: "link", name: "More info" }, ... }
+ * // refs: { "e1": { role: "textbox", name: "What needs to be done?" }, ... }
  *
  * // 2. Act on refs
- * await page.click('e1');
- * await page.type('e3', 'hello');
+ * await page.type('e1', 'Buy groceries', { submit: true });
  * ```
  */
 export class CrawlPage {

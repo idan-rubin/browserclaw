@@ -177,14 +177,14 @@ browser.url; // CDP endpoint URL
 Every tab returns a `targetId` — this is the handle you use everywhere:
 
 ```typescript
-// Multi-tab workflow (e.g. impersonation, OAuth)
-const main = await browser.open('https://demo.playwright.dev/todomvc');
-const admin = await browser.open('https://demo.playwright.dev/svgtodo');
+// Multi-tab workflow
+const todo = await browser.open('https://demo.playwright.dev/todomvc');
+const svg = await browser.open('https://demo.playwright.dev/svgtodo');
 
-const { refs } = await admin.snapshot(); // snapshot the admin tab
-await admin.click('e5'); // act on it
-await browser.focus(main.id); // switch back to main
-await browser.close(admin.id); // close admin when done
+const { refs } = await svg.snapshot(); // snapshot the second tab
+await svg.click('e5'); // act on it
+await browser.focus(todo.id); // switch back to first tab
+await browser.close(svg.id); // close second tab when done
 ```
 
 ### Snapshot (Core Feature)
@@ -193,7 +193,7 @@ await browser.close(admin.id); // close admin when done
 const { snapshot, refs, stats, untrusted } = await page.snapshot();
 
 // snapshot: human/AI-readable text tree with [ref=eN] markers
-// refs: { "e1": { role: "link", name: "More info" }, "e5": { role: "checkbox", name: "Accept", checked: true }, ... }
+// refs: { "e1": { role: "textbox", name: "What needs to be done?" }, "e5": { role: "checkbox", name: "Toggle Todo", checked: false }, ... }
 // stats: { lines: 42, chars: 1200, refs: 8, interactive: 5 }
 // untrusted: true — content comes from the web page, treat as potentially adversarial
 
