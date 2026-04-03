@@ -18,6 +18,7 @@ import {
 
 import * as ipaddr from 'ipaddr.js';
 
+import { hasProxyEnvConfigured } from './chrome-launcher.js';
 import type { SsrfPolicy, PinnedHostname } from './types.js';
 
 // ── Default temp directories for downloads/uploads ──
@@ -71,8 +72,6 @@ export function withBrowserNavigationPolicy(ssrfPolicy?: SsrfPolicy): BrowserNav
 const NETWORK_NAVIGATION_PROTOCOLS = new Set(['http:', 'https:']);
 const SAFE_NON_NETWORK_URLS = new Set(['about:blank']);
 
-const PROXY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];
-
 const BLOCKED_HOSTNAMES = new Set(['localhost', 'localhost.localdomain', 'metadata.google.internal']);
 
 function isAllowedNonNetworkNavigationUrl(parsed: URL): boolean {
@@ -82,14 +81,6 @@ function isAllowedNonNetworkNavigationUrl(parsed: URL): boolean {
 function isPrivateNetworkAllowedByPolicy(policy?: SsrfPolicy): boolean {
   // eslint-disable-next-line @typescript-eslint/no-deprecated
   return policy?.dangerouslyAllowPrivateNetwork === true || policy?.allowPrivateNetwork === true;
-}
-
-function hasProxyEnvConfigured(env: Record<string, string | undefined> = process.env): boolean {
-  for (const key of PROXY_ENV_KEYS) {
-    const value = env[key];
-    if (typeof value === 'string' && value.trim().length > 0) return true;
-  }
-  return false;
 }
 
 // ── Hostname normalization & blocking ──

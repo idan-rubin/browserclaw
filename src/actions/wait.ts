@@ -1,13 +1,6 @@
-import { getPageForTargetId, ensurePageState, normalizeTimeoutMs } from '../connection.js';
+import { getPageForTargetId, ensurePageState, normalizeTimeoutMs, resolveBoundedDelayMs } from '../connection.js';
 
 const MAX_WAIT_TIME_MS = 30000;
-
-function resolveBoundedDelayMs(value: number | undefined, label: string, maxMs: number): number {
-  const normalized = Math.floor(value ?? 0);
-  if (!Number.isFinite(normalized) || normalized < 0) throw new Error(`${label} must be >= 0`);
-  if (normalized > maxMs) throw new Error(`${label} exceeds maximum of ${String(maxMs)}ms`);
-  return normalized;
-}
 
 export async function waitForViaPlaywright(opts: {
   cdpUrl: string;

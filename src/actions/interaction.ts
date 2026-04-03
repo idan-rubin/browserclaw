@@ -105,8 +105,8 @@ export async function clickByTextViaPlaywright(opts: {
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
   const locator = page
     .getByText(opts.text, { exact: opts.exact })
-    .and(page.locator(':visible'))
     .or(page.getByTitle(opts.text, { exact: opts.exact }))
+    .and(page.locator(':visible'))
     .first();
   try {
     await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
@@ -447,7 +447,7 @@ export async function armDialogViaPlaywright(opts: {
   const state = ensurePageState(page);
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
-  state.armIdDialog = bumpDialogArmId();
+  state.armIdDialog = bumpDialogArmId(state);
   const armId = state.armIdDialog;
 
   page
@@ -476,7 +476,7 @@ export async function armFileUploadViaPlaywright(opts: {
   const state = ensurePageState(page);
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
-  state.armIdUpload = bumpUploadArmId();
+  state.armIdUpload = bumpUploadArmId(state);
   const armId = state.armIdUpload;
 
   page
