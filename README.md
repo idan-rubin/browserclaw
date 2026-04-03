@@ -159,7 +159,7 @@ const browser = await BrowserClaw.connect();
 ### Pages & Tabs
 
 ```typescript
-const page = await browser.open('https://example.com');
+const page = await browser.open('https://demo.playwright.dev/todomvc');
 const current = await browser.currentPage(); // get active tab
 const tabs = await browser.tabs(); // list all tabs
 const handle = browser.page(tabs[0].targetId); // wrap existing tab
@@ -178,8 +178,8 @@ Every tab returns a `targetId` — this is the handle you use everywhere:
 
 ```typescript
 // Multi-tab workflow (e.g. impersonation, OAuth)
-const main = await browser.open('https://app.example.com');
-const admin = await browser.open('https://admin.example.com');
+const main = await browser.open('https://demo.playwright.dev/todomvc');
+const admin = await browser.open('https://demo.playwright.dev/svgtodo');
 
 const { refs } = await admin.snapshot(); // snapshot the admin tab
 await admin.click('e5'); // act on it
@@ -250,7 +250,7 @@ await page.press('Meta+Shift+p');
 // Fill multiple form fields at once
 await page.fill([
   { ref: 'e2', value: 'Jane Doe' },
-  { ref: 'e4', value: 'jane@example.com' },
+  { ref: 'e4', value: 'jane@acme.test' },
   { ref: 'e6', type: 'checkbox', value: true },
 ]);
 ```
@@ -326,7 +326,7 @@ By default, unexpected dialogs are auto-dismissed to prevent `ProtocolError` cra
 ### Navigation & Waiting
 
 ```typescript
-await page.goto('https://example.com');
+await page.goto('https://demo.playwright.dev/todomvc');
 await page.reload(); // reload the current page
 await page.goBack(); // navigate back in history
 await page.goForward(); // navigate forward in history
@@ -421,7 +421,7 @@ const fresh = await page.networkRequests({ clear: true }); // read and clear buf
 ```typescript
 // Cookies
 const cookies = await page.cookies();
-await page.setCookie({ name: 'token', value: 'abc', url: 'https://example.com' });
+await page.setCookie({ name: 'token', value: 'abc', url: 'https://demo.playwright.dev' });
 await page.clearCookies();
 
 // localStorage / sessionStorage

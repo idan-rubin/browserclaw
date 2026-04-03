@@ -154,7 +154,7 @@ const { snapshot } = await page.snapshot({ interactive: true, compact: true });
 // Fill multiple fields at once
 await page.fill([
   { ref: 'e2', value: 'Jane Doe' },
-  { ref: 'e4', value: 'jane@example.com' },
+  { ref: 'e4', value: 'jane@acme.test' },
   { ref: 'e6', type: 'checkbox', value: true },
 ]);
 
@@ -170,7 +170,7 @@ const { snapshot: after } = await page.snapshot({ interactive: true, compact: tr
 
 ```typescript
 // Page 1: fill and submit
-await page.goto('https://checkout.example.com/step1');
+await page.goto('https://demo.playwright.dev/todomvc/#/active');
 let { snapshot } = await page.snapshot({ interactive: true, compact: true });
 // ... fill fields, click Next ...
 await page.click('e12');
@@ -184,7 +184,7 @@ await page.waitFor({ loadState: 'networkidle', timeoutMs: 10000 });
 ### Extract data from a listing
 
 ```typescript
-await page.goto('https://example.com/products');
+await page.goto('https://demo.playwright.dev/todomvc');
 const { snapshot } = await page.snapshot({ interactive: true, compact: true });
 
 // Read all items from the snapshot text
@@ -224,7 +224,7 @@ await page.waitFor({ timeMs: 2000 }); // fixed delay (last resort)
 const tabs = await browser.tabs(); // list all tabs: [{ targetId, title, url }]
 
 // Open a new tab explicitly (only when you actually want a second tab)
-const page2 = await browser.open('https://other.example.com');
+const page2 = await browser.open('https://demo.playwright.dev/svgtodo');
 // ... work on page2 ...
 
 await browser.focus(page.id); // switch back to first tab

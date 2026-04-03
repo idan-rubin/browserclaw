@@ -27,7 +27,7 @@ async function main() {
           : info.name === 'Telephone'
             ? '555-1234'
             : info.name === 'E-mail address'
-              ? 'jane@example.com'
+              ? 'jane@acme.test'
               : 'test',
     }));
 

@@ -114,7 +114,7 @@ import type {
  *
  * @example
  * ```ts
- * const page = await browser.open('https://example.com');
+ * const page = await browser.open('https://demo.playwright.dev/todomvc');
  *
  * // 1. Take a snapshot to get refs
  * const { snapshot, refs } = await page.snapshot();
@@ -497,7 +497,7 @@ export class CrawlPage {
    * ```ts
    * await page.fill([
    *   { ref: 'e2', type: 'text', value: 'Jane Doe' },
-   *   { ref: 'e4', type: 'text', value: 'jane@example.com' },
+   *   { ref: 'e4', type: 'text', value: 'jane@acme.test' },
    *   { ref: 'e6', type: 'checkbox', value: true },
    * ]);
    * ```
@@ -1092,7 +1092,7 @@ export class CrawlPage {
    * await page.setCookie({
    *   name: 'token',
    *   value: 'abc123',
-   *   url: 'https://example.com',
+   *   url: 'https://demo.playwright.dev/todomvc',
    * });
    * ```
    */
@@ -1371,7 +1371,7 @@ export class CrawlPage {
    *
    * @example
    * ```ts
-   * await page.goto('https://example.com');
+   * await page.goto('https://demo.playwright.dev/todomvc');
    * const challenge = await page.detectChallenge();
    * if (challenge?.kind === 'cloudflare-js') {
    *   const { resolved } = await page.waitForChallenge({ timeoutMs: 20000 });
@@ -1435,7 +1435,7 @@ export class CrawlPage {
    *
    * // Use Playwright selectors
    * const input = await page.locator('input[name="email"]');
-   * await input.fill('test@example.com');
+   * await input.fill('test@acme.test');
    * ```
    */
   async locator(selector: string): Promise<Locator> {
@@ -1454,12 +1454,12 @@ export class CrawlPage {
  * ```ts
  * import { BrowserClaw } from 'browserclaw';
  *
- * const browser = await BrowserClaw.launch({ url: 'https://example.com' });
+ * const browser = await BrowserClaw.launch({ url: 'https://demo.playwright.dev/todomvc' });
  * const page = await browser.currentPage();
  *
  * const { snapshot, refs } = await page.snapshot();
  * console.log(snapshot); // AI-readable page tree
- * console.log(refs);     // { "e1": { role: "link", name: "More info" }, ... }
+ * console.log(refs);     // { "e1": { role: "textbox", name: "What needs to be done?" }, ... }
  *
  * await page.click('e1');
  * await browser.stop();
@@ -1495,14 +1495,14 @@ export class BrowserClaw {
    * @example
    * ```ts
    * // Launch and navigate to a URL
-   * const browser = await BrowserClaw.launch({ url: 'https://example.com' });
+   * const browser = await BrowserClaw.launch({ url: 'https://demo.playwright.dev/todomvc' });
    *
    * // Headless mode
-   * const browser = await BrowserClaw.launch({ url: 'https://example.com', headless: true });
+   * const browser = await BrowserClaw.launch({ url: 'https://demo.playwright.dev/todomvc', headless: true });
    *
    * // Specific browser
    * const browser = await BrowserClaw.launch({
-   *   url: 'https://example.com',
+   *   url: 'https://demo.playwright.dev/todomvc',
    *   executablePath: '/usr/bin/google-chrome',
    * });
    * ```
@@ -1566,7 +1566,7 @@ export class BrowserClaw {
    *
    * @example
    * ```ts
-   * const page = await browser.open('https://example.com');
+   * const page = await browser.open('https://demo.playwright.dev/todomvc');
    * const { snapshot, refs } = await page.snapshot();
    * ```
    */

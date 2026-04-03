@@ -283,7 +283,7 @@ describe('security.ts', () => {
         expect(isInternalUrl('http://8.8.8.8')).toBe(false);
       });
 
-      it('should allow 93.184.216.34 (example.com)', () => {
+      it('should allow 93.184.216.34 (public IP)', () => {
         expect(isInternalUrl('http://93.184.216.34')).toBe(false);
       });
 
@@ -451,8 +451,8 @@ describe('security.ts', () => {
     });
 
     describe('valid public hostnames', () => {
-      it('should allow example.com', () => {
-        expect(isInternalUrl('http://example.com')).toBe(false);
+      it('should allow playwright.dev', () => {
+        expect(isInternalUrl('http://playwright.dev')).toBe(false);
       });
 
       it('should allow google.com', () => {
@@ -536,7 +536,7 @@ describe('security.ts', () => {
     });
 
     it('should reject ftp: protocol', async () => {
-      await expect(assertBrowserNavigationAllowed({ url: 'ftp://ftp.example.com' })).rejects.toThrow(
+      await expect(assertBrowserNavigationAllowed({ url: 'ftp://ftp.playwright.dev' })).rejects.toThrow(
         'unsupported protocol',
       );
     });
@@ -548,7 +548,7 @@ describe('security.ts', () => {
     it('should allow public URL with mock DNS', async () => {
       await expect(
         assertBrowserNavigationAllowed({
-          url: 'https://example.com',
+          url: 'https://playwright.dev',
           lookupFn: mockPublicLookup(),
           ssrfPolicy: STRICT_POLICY,
         }),
@@ -597,11 +597,11 @@ describe('security.ts', () => {
 
     it('should block when proxy env vars are set with strict policy (fail closed)', async () => {
       const original = process.env.HTTP_PROXY;
-      process.env.HTTP_PROXY = 'http://proxy.example.com:8080';
+      process.env.HTTP_PROXY = 'http://proxy.playwright.dev:8080';
       try {
         await expect(
           assertBrowserNavigationAllowed({
-            url: 'https://example.com',
+            url: 'https://playwright.dev',
             lookupFn: mockPublicLookup(),
             ssrfPolicy: STRICT_POLICY,
           }),
@@ -614,11 +614,11 @@ describe('security.ts', () => {
 
     it('should allow navigation when proxy env vars are set with permissive policy', async () => {
       const original = process.env.HTTP_PROXY;
-      process.env.HTTP_PROXY = 'http://proxy.example.com:8080';
+      process.env.HTTP_PROXY = 'http://proxy.playwright.dev:8080';
       try {
         await expect(
           assertBrowserNavigationAllowed({
-            url: 'https://example.com',
+            url: 'https://playwright.dev',
             lookupFn: mockPublicLookup(),
             ssrfPolicy: PERMISSIVE_POLICY,
           }),
@@ -636,11 +636,11 @@ describe('security.ts', () => {
 
   describe('resolvePinnedHostnameWithPolicy', () => {
     it('should resolve a public hostname and return pinned lookup', async () => {
-      const result = await resolvePinnedHostnameWithPolicy('example.com', {
+      const result = await resolvePinnedHostnameWithPolicy('playwright.dev', {
         lookupFn: mockPublicLookup(),
         policy: STRICT_POLICY,
       });
-      expect(result.hostname).toBe('example.com');
+      expect(result.hostname).toBe('playwright.dev');
       expect(result.addresses).toContain('93.184.216.34');
       expect(typeof result.lookup).toBe('function');
     });
@@ -751,11 +751,11 @@ describe('security.ts', () => {
     });
 
     it('should normalize hostname (case, trailing dot) before checking', async () => {
-      const result = await resolvePinnedHostnameWithPolicy('EXAMPLE.COM.', {
+      const result = await resolvePinnedHostnameWithPolicy('PLAYWRIGHT.DEV.', {
         lookupFn: mockPublicLookup(),
         policy: STRICT_POLICY,
       });
-      expect(result.hostname).toBe('example.com');
+      expect(result.hostname).toBe('playwright.dev');
     });
   });
 
@@ -899,7 +899,7 @@ describe('security.ts', () => {
     it('should allow public IP result url with strict policy', async () => {
       await expect(
         assertBrowserNavigationResultAllowed({
-          url: 'https://example.com',
+          url: 'https://playwright.dev',
           lookupFn: mockPublicLookup(),
           ssrfPolicy: STRICT_POLICY,
         }),
