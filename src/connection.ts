@@ -11,24 +11,24 @@ import {
   isLoopbackHost,
   hasProxyEnvConfigured,
 } from './chrome-launcher.js';
-import { ensurePageState, observeBrowser, setDialogHandlerOnPage } from './page-state.js';
-import { clearRoleRefsForCdpUrl, restoreRoleRefsForTarget } from './ref-resolver.js';
+import { ensurePageState, observeBrowser, setDialogHandlerOnPage } from './page-utils.js';
+import { clearRoleRefsForCdpUrl, normalizeCdpUrl, restoreRoleRefsForTarget } from './ref-resolver.js';
 import type { DialogHandler } from './types.js';
 
-// Re-export everything from sub-modules so existing imports keep working
+// Re-export everything from sub-modules so existing `import … from './connection.js'`
+// paths keep working. When adding a public function to page-utils or ref-resolver,
+// add a corresponding re-export here — otherwise downstream imports break silently.
 export {
   ensurePageState,
   ensureContextState,
   observeContext,
-  observeBrowser,
-  getPageState,
   findNetworkRequestById,
   bumpUploadArmId,
   bumpDialogArmId,
   bumpDownloadArmId,
   toAIFriendlyError,
   normalizeTimeoutMs,
-} from './page-state.js';
+} from './page-utils.js';
 
 export {
   rememberRoleRefsForTarget,
@@ -243,10 +243,6 @@ interface CachedConnection {
 
 const cachedByCdpUrl = new Map<string, CachedConnection>();
 const connectingByCdpUrl = new Map<string, Promise<CachedConnection>>();
-
-function normalizeCdpUrl(raw: string): string {
-  return raw.replace(/\/$/, '');
-}
 
 // ── Blocked Target Tracking ──
 

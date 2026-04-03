@@ -1,6 +1,6 @@
 import type { Page } from 'playwright-core';
 
-import { ensurePageState, getPageState } from './page-state.js';
+import { ensurePageState, getPageState } from './page-utils.js';
 import type { RoleRefs } from './types.js';
 
 // ── Ref cache: keyed by "cdpUrl::targetId" ──
@@ -15,7 +15,7 @@ const roleRefsByTarget = new Map<
 >();
 const MAX_ROLE_REFS_CACHE = 50;
 
-function normalizeCdpUrl(raw: string): string {
+export function normalizeCdpUrl(raw: string): string {
   return raw.replace(/\/$/, '');
 }
 
