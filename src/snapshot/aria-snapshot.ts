@@ -160,6 +160,8 @@ function axValue(v: { value?: string | number | boolean } | undefined): string {
 }
 
 function formatAriaNodes(nodes: CdpAXNode[], limit: number): AriaNode[] {
+  if (nodes.length === 0) return [];
+
   const byId = new Map<string, CdpAXNode>();
   for (const n of nodes) if (n.nodeId) byId.set(n.nodeId, n);
 
@@ -167,7 +169,7 @@ function formatAriaNodes(nodes: CdpAXNode[], limit: number): AriaNode[] {
   for (const n of nodes) for (const c of n.childIds ?? []) referenced.add(c);
 
   const root = nodes.find((n) => n.nodeId !== '' && !referenced.has(n.nodeId)) ?? nodes[0];
-  if (!root || root.nodeId === '') return [];
+  if (root.nodeId === '') return [];
 
   const out: AriaNode[] = [];
   const stack: { id: string; depth: number }[] = [{ id: root.nodeId, depth: 0 }];
