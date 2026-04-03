@@ -11,8 +11,37 @@ import {
   isLoopbackHost,
   hasProxyEnvConfigured,
 } from './chrome-launcher.js';
-import { STEALTH_SCRIPT } from './stealth.js';
-import type { PageState, ContextState, RoleRefs, NetworkRequest, DialogHandler } from './types.js';
+import { ensurePageState, observeBrowser, setDialogHandlerOnPage } from './page-state.js';
+import { clearRoleRefsForCdpUrl, restoreRoleRefsForTarget } from './ref-resolver.js';
+import type { DialogHandler } from './types.js';
+
+// Re-export everything from sub-modules so existing imports keep working
+export {
+  ensurePageState,
+  ensureContextState,
+  observeContext,
+  observeBrowser,
+  getPageState,
+  findNetworkRequestById,
+  bumpUploadArmId,
+  bumpDialogArmId,
+  bumpDownloadArmId,
+  toAIFriendlyError,
+  normalizeTimeoutMs,
+} from './page-state.js';
+
+export {
+  rememberRoleRefsForTarget,
+  storeRoleRefsForTarget,
+  restoreRoleRefsForTarget,
+  clearRoleRefsForCdpUrl,
+  parseRoleRef,
+  requireRef,
+  requireRefOrSelector,
+  resolveInteractionTimeoutMs,
+  resolveBoundedDelayMs,
+  refLocator,
+} from './ref-resolver.js';
 
 // ── Errors ──
 
@@ -215,28 +244,8 @@ interface CachedConnection {
 const cachedByCdpUrl = new Map<string, CachedConnection>();
 const connectingByCdpUrl = new Map<string, Promise<CachedConnection>>();
 
-const pageStates = new WeakMap<Page, PageState>();
-const contextStates = new WeakMap<BrowserContext, ContextState>();
-const observedContexts = new WeakSet<BrowserContext>();
-const observedPages = new WeakSet<Page>();
-
-// ── Arm ID Counters ──
-
-let nextUploadArmId = 0;
-let nextDialogArmId = 0;
-let nextDownloadArmId = 0;
-
-export function bumpUploadArmId(): number {
-  nextUploadArmId += 1;
-  return nextUploadArmId;
-}
-export function bumpDialogArmId(): number {
-  nextDialogArmId += 1;
-  return nextDialogArmId;
-}
-export function bumpDownloadArmId(): number {
-  nextDownloadArmId += 1;
-  return nextDownloadArmId;
+function normalizeCdpUrl(raw: string): string {
+  return raw.replace(/\/$/, '');
 }
 
 // ── Blocked Target Tracking ──
@@ -321,182 +330,6 @@ export function clearBlockedPageRef(cdpUrl: string, page: Page): void {
   blockedPageRefsByCdpUrl.get(normalizeCdpUrl(cdpUrl))?.delete(page);
 }
 
-// ── Context State Management ──
-
-export function ensureContextState(context: BrowserContext): ContextState {
-  const existing = contextStates.get(context);
-  if (existing) return existing;
-  const state: ContextState = { traceActive: false };
-  contextStates.set(context, state);
-  return state;
-}
-
-// Ref cache: keyed by "cdpUrl::targetId"
-const roleRefsByTarget = new Map<
-  string,
-  {
-    refs: RoleRefs;
-    frameSelector?: string;
-    mode?: 'role' | 'aria';
-  }
->();
-const MAX_ROLE_REFS_CACHE = 50;
-
-const MAX_CONSOLE_MESSAGES = 500;
-const MAX_PAGE_ERRORS = 200;
-const MAX_NETWORK_REQUESTS = 500;
-
-function normalizeCdpUrl(raw: string): string {
-  return raw.replace(/\/$/, '');
-}
-
-function roleRefsKey(cdpUrl: string, targetId: string): string {
-  return `${normalizeCdpUrl(cdpUrl)}::${targetId}`;
-}
-
-// ── Page State Management ──
-
-/** Find a network request by ID in the page state. */
-export function findNetworkRequestById(state: PageState, id: string): NetworkRequest | undefined {
-  for (let i = state.requests.length - 1; i >= 0; i--) {
-    const candidate = state.requests[i];
-    if (candidate.id === id) return candidate;
-  }
-  return undefined;
-}
-
-export function ensurePageState(page: Page): PageState {
-  const existing = pageStates.get(page);
-  if (existing) return existing;
-
-  const state: PageState = {
-    console: [],
-    errors: [],
-    requests: [],
-    requestIds: new WeakMap(),
-    nextRequestId: 0,
-    armIdUpload: 0,
-    armIdDialog: 0,
-    armIdDownload: 0,
-  };
-  pageStates.set(page, state);
-
-  if (!observedPages.has(page)) {
-    observedPages.add(page);
-
-    page.on('console', (msg) => {
-      state.console.push({
-        type: msg.type(),
-        text: msg.text(),
-        timestamp: new Date().toISOString(),
-        location: msg.location(),
-      });
-      if (state.console.length > MAX_CONSOLE_MESSAGES) state.console.shift();
-    });
-
-    page.on('pageerror', (err) => {
-      state.errors.push({
-        message: err.message !== '' ? err.message : String(err),
-        name: err.name !== '' ? err.name : undefined,
-        stack: err.stack !== undefined && err.stack !== '' ? err.stack : undefined,
-        timestamp: new Date().toISOString(),
-      });
-      if (state.errors.length > MAX_PAGE_ERRORS) state.errors.shift();
-    });
-
-    page.on('request', (req) => {
-      state.nextRequestId += 1;
-      const id = `r${String(state.nextRequestId)}`;
-      state.requestIds.set(req, id);
-      state.requests.push({
-        id,
-        timestamp: new Date().toISOString(),
-        method: req.method(),
-        url: req.url(),
-        resourceType: req.resourceType(),
-      });
-      if (state.requests.length > MAX_NETWORK_REQUESTS) state.requests.shift();
-    });
-
-    page.on('response', (resp) => {
-      const req = resp.request();
-      const id = state.requestIds.get(req);
-      if (id === undefined) return;
-      const rec = findNetworkRequestById(state, id);
-      if (rec) {
-        rec.status = resp.status();
-        rec.ok = resp.ok();
-      }
-    });
-
-    page.on('requestfailed', (req) => {
-      const id = state.requestIds.get(req);
-      if (id === undefined) return;
-      const rec = findNetworkRequestById(state, id);
-      if (rec) {
-        rec.failureText = req.failure()?.errorText;
-        rec.ok = false;
-      }
-    });
-
-    page.on('dialog', (dialog) => {
-      // If a one-shot armDialog is active, let it handle the dialog.
-      if (state.armIdDialog > 0) return;
-
-      // If a persistent onDialog handler is registered, invoke it.
-      if (state.dialogHandler) {
-        let handled = false;
-        const event = {
-          type: dialog.type(),
-          message: dialog.message(),
-          defaultValue: dialog.defaultValue(),
-          accept: (promptText?: string) => {
-            handled = true;
-            return dialog.accept(promptText);
-          },
-          dismiss: () => {
-            handled = true;
-            return dialog.dismiss();
-          },
-        };
-        Promise.resolve(state.dialogHandler(event))
-          .then(() => {
-            if (!handled) {
-              dialog.dismiss().catch((err: unknown) => {
-                console.warn(
-                  `[browserclaw] Failed to auto-dismiss dialog: ${err instanceof Error ? err.message : String(err)}`,
-                );
-              });
-            }
-          })
-          .catch((err: unknown) => {
-            console.warn(`[browserclaw] onDialog handler error: ${err instanceof Error ? err.message : String(err)}`);
-            if (!handled) {
-              dialog.dismiss().catch((dismissErr: unknown) => {
-                console.warn(
-                  `[browserclaw] Failed to dismiss dialog after handler error: ${dismissErr instanceof Error ? dismissErr.message : String(dismissErr)}`,
-                );
-              });
-            }
-          });
-        return;
-      }
-
-      // Default: auto-dismiss unexpected dialogs.
-      dialog.dismiss().catch((err: unknown) => {
-        console.warn(`[browserclaw] Failed to dismiss dialog: ${err instanceof Error ? err.message : String(err)}`);
-      });
-    });
-
-    page.on('close', () => {
-      pageStates.delete(page);
-      observedPages.delete(page);
-    });
-  }
-
-  return state;
-}
-
 // ── Dialog Handler ──
 
 /**
@@ -510,103 +343,7 @@ export async function setDialogHandler(opts: {
   handler?: DialogHandler;
 }): Promise<void> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  const state = ensurePageState(page);
-  state.dialogHandler = opts.handler;
-}
-
-// ── Stealth ──
-
-function applyStealthToPage(page: Page): void {
-  page.evaluate(STEALTH_SCRIPT).catch((e: unknown) => {
-    if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
-      console.warn('[browserclaw] stealth evaluate failed:', e instanceof Error ? e.message : String(e));
-  });
-}
-
-export function observeContext(context: BrowserContext): void {
-  if (observedContexts.has(context)) return;
-  observedContexts.add(context);
-  ensureContextState(context);
-
-  context.addInitScript(STEALTH_SCRIPT).catch((e: unknown) => {
-    if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
-      console.warn('[browserclaw] stealth initScript failed:', e instanceof Error ? e.message : String(e));
-  });
-
-  for (const page of context.pages()) {
-    ensurePageState(page);
-    applyStealthToPage(page);
-  }
-  context.on('page', (page) => {
-    ensurePageState(page);
-    applyStealthToPage(page);
-  });
-}
-
-function observeBrowser(browser: Browser): void {
-  for (const context of browser.contexts()) observeContext(context);
-}
-
-// ── Role Refs Storage ──
-
-/**
- * Remember role refs in the target cache (without storing on page state).
- * Used to persist refs across page reconnections.
- */
-export function rememberRoleRefsForTarget(opts: {
-  cdpUrl: string;
-  targetId: string;
-  refs: RoleRefs;
-  frameSelector?: string;
-  mode?: 'role' | 'aria';
-}): void {
-  const targetId = opts.targetId.trim();
-  if (targetId === '') return;
-  roleRefsByTarget.set(roleRefsKey(opts.cdpUrl, targetId), {
-    refs: opts.refs,
-    ...(opts.frameSelector !== undefined && opts.frameSelector !== '' ? { frameSelector: opts.frameSelector } : {}),
-    ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
-  });
-  while (roleRefsByTarget.size > MAX_ROLE_REFS_CACHE) {
-    const first = roleRefsByTarget.keys().next();
-    if (first.done === true) break;
-    roleRefsByTarget.delete(first.value);
-  }
-}
-
-export function storeRoleRefsForTarget(opts: {
-  page: Page;
-  cdpUrl: string;
-  targetId?: string;
-  refs: RoleRefs;
-  frameSelector?: string;
-  mode: 'role' | 'aria';
-}): void {
-  const state = ensurePageState(opts.page);
-  state.roleRefs = opts.refs;
-  state.roleRefsFrameSelector = opts.frameSelector;
-  state.roleRefsMode = opts.mode;
-
-  if (opts.targetId === undefined || opts.targetId.trim() === '') return;
-  rememberRoleRefsForTarget({
-    cdpUrl: opts.cdpUrl,
-    targetId: opts.targetId,
-    refs: opts.refs,
-    frameSelector: opts.frameSelector,
-    mode: opts.mode,
-  });
-}
-
-export function restoreRoleRefsForTarget(opts: { cdpUrl: string; targetId?: string; page: Page }): void {
-  const targetId = opts.targetId?.trim() ?? '';
-  if (targetId === '') return;
-  const entry = roleRefsByTarget.get(roleRefsKey(opts.cdpUrl, targetId));
-  if (!entry) return;
-  const state = ensurePageState(opts.page);
-  if (state.roleRefs) return;
-  state.roleRefs = entry.refs;
-  state.roleRefsFrameSelector = entry.frameSelector;
-  state.roleRefsMode = entry.mode;
+  setDialogHandlerOnPage(page, opts.handler);
 }
 
 // ── Connect to Browser ──
@@ -634,9 +371,7 @@ export async function connectBrowser(cdpUrl: string, authToken?: string): Promis
         const onDisconnected = () => {
           if (cachedByCdpUrl.get(normalized)?.browser === browser) {
             cachedByCdpUrl.delete(normalized);
-            for (const key of roleRefsByTarget.keys()) {
-              if (key.startsWith(normalized + '::')) roleRefsByTarget.delete(key);
-            }
+            clearRoleRefsForCdpUrl(normalized);
           }
         };
         const connected: CachedConnection = { browser, cdpUrl: normalized, onDisconnected };
@@ -985,58 +720,6 @@ export async function resolvePageByTargetIdOrThrow(opts: { cdpUrl: string; targe
   return page;
 }
 
-// ── Ref Helpers ──
-
-/**
- * Parse a role ref string (e.g. "e1", "@e1", "ref=e1") to a normalized ref ID.
- * Returns null if the string is not a valid role ref.
- */
-export function parseRoleRef(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  const normalized = trimmed.startsWith('@')
-    ? trimmed.slice(1)
-    : trimmed.startsWith('ref=')
-      ? trimmed.slice(4)
-      : trimmed;
-  return /^e\d+$/.test(normalized) ? normalized : null;
-}
-
-/**
- * Require a ref string, normalizing and validating it.
- * Throws if the ref is empty.
- */
-export function requireRef(value: string | undefined): string {
-  const raw = typeof value === 'string' ? value.trim() : '';
-  const ref = (raw ? parseRoleRef(raw) : null) ?? (raw.startsWith('@') ? raw.slice(1) : raw);
-  if (!ref) throw new Error('ref is required');
-  return ref;
-}
-
-/**
- * Require either a ref or selector, returning whichever is provided.
- * Throws if neither is provided.
- */
-export function requireRefOrSelector(ref?: string, selector?: string): { ref?: string; selector?: string } {
-  const trimmedRef = typeof ref === 'string' ? ref.trim() : '';
-  const trimmedSelector = typeof selector === 'string' ? selector.trim() : '';
-  if (!trimmedRef && !trimmedSelector) throw new Error('ref or selector is required');
-  return { ref: trimmedRef || undefined, selector: trimmedSelector || undefined };
-}
-
-/** Clamp interaction timeout to [500, 60000]ms range, defaulting to 8000ms. */
-export function resolveInteractionTimeoutMs(timeoutMs?: number): number {
-  return Math.max(500, Math.min(60000, Math.floor(timeoutMs ?? 8000)));
-}
-
-/** Bounded delay validator for animation/interaction delays. */
-export function resolveBoundedDelayMs(value: number | undefined, label: string, maxMs: number): number {
-  const normalized = Math.floor(value ?? 0);
-  if (!Number.isFinite(normalized) || normalized < 0) throw new Error(`${label} must be >= 0`);
-  if (normalized > maxMs) throw new Error(`${label} exceeds maximum of ${String(maxMs)}ms`);
-  return normalized;
-}
-
 /**
  * Get a page for a target, ensuring page state is initialized and role refs are restored.
  */
@@ -1045,87 +728,4 @@ export async function getRestoredPageForTarget(opts: { cdpUrl: string; targetId?
   ensurePageState(page);
   restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
   return page;
-}
-
-// ── Ref Locator ──
-
-export function refLocator(page: Page, ref: string) {
-  const normalized = ref.startsWith('@') ? ref.slice(1) : ref.startsWith('ref=') ? ref.slice(4) : ref;
-  if (normalized.trim() === '') throw new Error('ref is required');
-
-  if (/^e\d+$/.test(normalized)) {
-    const state = pageStates.get(page);
-
-    // Aria mode: use aria-ref locator
-    if (state?.roleRefsMode === 'aria') {
-      return (
-        state.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''
-          ? page.frameLocator(state.roleRefsFrameSelector)
-          : page
-      ).locator(`aria-ref=${normalized}`);
-    }
-
-    // Role mode: use getByRole
-    const info = state?.roleRefs?.[normalized];
-    if (!info) throw new Error(`Unknown ref "${normalized}". Run a new snapshot and use a ref from that snapshot.`);
-
-    const locAny =
-      state.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''
-        ? page.frameLocator(state.roleRefsFrameSelector)
-        : page;
-    const role = info.role as Parameters<Page['getByRole']>[0];
-    const locator =
-      info.name !== undefined && info.name !== ''
-        ? locAny.getByRole(role, { name: info.name, exact: true })
-        : locAny.getByRole(role);
-    return info.nth !== undefined ? locator.nth(info.nth) : locator;
-  }
-
-  return page.locator(`aria-ref=${normalized}`);
-}
-
-// ── Error Helpers ──
-
-export function toAIFriendlyError(error: unknown, selector: string): Error {
-  const message = error instanceof Error ? error.message : String(error);
-  if (message.includes('strict mode violation')) {
-    const countMatch = /resolved to (\d+) elements/.exec(message);
-    const count = countMatch ? countMatch[1] : 'multiple';
-    return new Error(
-      `Selector "${selector}" matched ${count} elements. Run a new snapshot to get updated refs, or use a different ref.`,
-    );
-  }
-  if (
-    (message.includes('Timeout') || message.includes('waiting for')) &&
-    (message.includes('to be visible') || message.includes('not visible'))
-  ) {
-    return new Error(
-      `Element "${selector}" not found or not visible. Run a new snapshot to see current page elements.`,
-    );
-  }
-  if (
-    message.includes('intercepts pointer events') ||
-    message.includes('not visible') ||
-    message.includes('not receive pointer events')
-  ) {
-    return new Error(
-      `Element "${selector}" is not interactable (hidden or covered). Try scrolling it into view, closing overlays, or re-snapshotting.`,
-    );
-  }
-  const timeoutMatch = /Timeout (\d+)ms exceeded/.exec(message);
-  if (timeoutMatch) {
-    return new Error(
-      `Element "${selector}" timed out after ${timeoutMatch[1]}ms — element may be hidden or not interactable. Run a new snapshot to see current page elements.`,
-    );
-  }
-  // Strip Playwright locator internals so AI agents don't see implementation details
-  const cleaned = message
-    .replace(/locator\([^)]*\)\./g, '')
-    .replace(/waiting for locator\([^)]*\)/g, '')
-    .trim();
-  return new Error(cleaned || message);
-}
-
-export function normalizeTimeoutMs(timeoutMs: number | undefined, fallback: number, maxMs = 120000): number {
-  return Math.max(500, Math.min(maxMs, timeoutMs ?? fallback));
 }
