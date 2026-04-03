@@ -36,6 +36,7 @@ export {
   setDialogHandler,
   parseRoleRef,
   BrowserTabNotFoundError,
+  BlockedBrowserTargetError,
 } from './connection.js';
 export { pressAndHoldViaCdp } from './actions/interaction.js';
 export type { FrameEvalResult } from './actions/evaluate.js';

@@ -66,7 +66,9 @@ async function fetchJsonForCdp(url: string, timeoutMs: number): Promise<unknown>
     const res = await fetch(url, { signal: ctrl.signal });
     if (!res.ok) return null;
     return await res.json();
-  } catch {
+  } catch (err) {
+    if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
+      console.warn(`[browserclaw] fetchJsonForCdp ${url} failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   } finally {
     clearTimeout(t);
@@ -211,7 +213,9 @@ export function getDirectAgentForCdp(url: string): http.Agent | https.Agent | un
     if (isLoopbackHost(parsed.hostname)) {
       return parsed.protocol === 'https:' || parsed.protocol === 'wss:' ? directHttpsAgent : directHttpAgent;
     }
-  } catch {}
+  } catch {
+    // url is not a valid URL string — return undefined (no direct agent)
+  }
   return undefined;
 }
 
@@ -399,7 +403,11 @@ export async function disconnectBrowser(): Promise<void> {
     for (const p of connectingByCdpUrl.values()) {
       try {
         await p;
-      } catch {}
+      } catch (err) {
+        console.warn(
+          `[browserclaw] disconnectBrowser: pending connect failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
   for (const cur of cachedByCdpUrl.values()) {
@@ -595,12 +603,19 @@ export function getAllPages(browser: Browser) {
   return browser.contexts().flatMap((c) => c.pages());
 }
 
+/** Cache of CDP target IDs — stable for a page's lifetime. */
+const pageTargetIdCache = new WeakMap<Page, string>();
+
 export async function pageTargetId(page: Page): Promise<string | null> {
+  const cached = pageTargetIdCache.get(page);
+  if (cached !== undefined) return cached;
   const session = await page.context().newCDPSession(page);
   try {
     const info = await session.send('Target.getTargetInfo');
     const targetInfo = (info as { targetInfo?: { targetId?: string } }).targetInfo;
-    return (targetInfo?.targetId ?? '').trim() || null;
+    const id = (targetInfo?.targetId ?? '').trim() || null;
+    if (id !== null) pageTargetIdCache.set(page, id);
+    return id;
   } finally {
     await session.detach().catch(() => {
       /* noop */
@@ -635,17 +650,20 @@ async function findPageByTargetIdViaTargetList(pages: Page[], targetId: string, 
 export async function findPageByTargetId(browser: Browser, targetId: string, cdpUrl?: string) {
   const pages = getAllPages(browser);
 
-  let resolvedViaCdp = false;
-  for (const page of pages) {
-    let tid: string | null = null;
-    try {
-      tid = await pageTargetId(page);
-      resolvedViaCdp = true;
-    } catch {
-      tid = null;
-    }
-    if (tid !== null && tid !== '' && tid === targetId) return page;
-  }
+  const results = await Promise.all(
+    pages.map(async (page) => {
+      try {
+        const tid = await pageTargetId(page);
+        return { page, tid };
+      } catch {
+        return { page, tid: null as string | null };
+      }
+    }),
+  );
+
+  const resolvedViaCdp = results.some(({ tid }) => tid !== null);
+  const matched = results.find(({ tid }) => tid !== null && tid !== '' && tid === targetId);
+  if (matched) return matched.page;
 
   if (cdpUrl !== undefined && cdpUrl !== '') {
     try {
@@ -708,9 +726,8 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
     );
   }
   if (isBlockedPageRef(opts.cdpUrl, found)) throw new BlockedBrowserTargetError();
-  const foundTargetId = await pageTargetId(found).catch(() => null);
-  if (foundTargetId !== null && foundTargetId !== '' && isBlockedTarget(opts.cdpUrl, foundTargetId))
-    throw new BlockedBrowserTargetError();
+  // findPageByTargetId matched found against opts.targetId — reuse it directly
+  if (isBlockedTarget(opts.cdpUrl, opts.targetId)) throw new BlockedBrowserTargetError();
   return found;
 }
 
