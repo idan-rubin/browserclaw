@@ -59,7 +59,7 @@ const PROXY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'
 /** Run a callback with all proxy env vars temporarily cleared */
 async function withoutProxyEnv(fn: () => Promise<void>): Promise<void> {
   const saved = Object.fromEntries(PROXY_ENV_KEYS.map((k) => [k, process.env[k]]));
-  for (const k of PROXY_ENV_KEYS) delete process.env[k];
+  for (const k of PROXY_ENV_KEYS) Reflect.deleteProperty(process.env, k);
   try {
     await fn();
   } finally {
