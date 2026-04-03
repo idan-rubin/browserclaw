@@ -602,6 +602,12 @@ export async function assertSafeUploadPaths(paths: string[]): Promise<void> {
 /**
  * Resolve and validate upload file paths, returning them if all are safe.
  * Returns `{ ok: true, paths }` or `{ ok: false, error }`.
+ *
+ * **Note:** This function does NOT provide root confinement — it only checks that
+ * each path exists and is a regular file. An attacker-controlled path can still
+ * reference any readable file on the system (e.g. `/etc/passwd`).
+ * For uploads that must stay within a specific directory, use
+ * `resolveStrictExistingPathsWithinRoot` instead.
  */
 export async function resolveStrictExistingUploadPaths(params: {
   requestedPaths: string[];

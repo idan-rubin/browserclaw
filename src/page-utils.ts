@@ -136,6 +136,7 @@ export function ensurePageState(page: Page): PageState {
 
       // If a persistent onDialog handler is registered, invoke it.
       if (state.dialogHandler) {
+        const handler = state.dialogHandler;
         let handled = false;
         const event = {
           type: dialog.type(),
@@ -150,7 +151,8 @@ export function ensurePageState(page: Page): PageState {
             return dialog.dismiss();
           },
         };
-        Promise.resolve(state.dialogHandler(event))
+        Promise.resolve()
+          .then(() => handler(event))
           .then(() => {
             if (!handled) {
               dialog.dismiss().catch((err: unknown) => {

@@ -18,6 +18,7 @@ export {
   writeViaSiblingTempPath,
   assertSafeUploadPaths,
   resolveStrictExistingUploadPaths,
+  resolveStrictExistingPathsWithinRoot,
 } from './security.js';
 export type { BrowserNavigationPolicyOptions, BrowserNavigationRequestLike, LookupFn } from './security.js';
 export {
@@ -36,6 +37,7 @@ export {
   setDialogHandler,
   parseRoleRef,
   BrowserTabNotFoundError,
+  BlockedBrowserTargetError,
 } from './connection.js';
 export { pressAndHoldViaCdp } from './actions/interaction.js';
 export type { FrameEvalResult } from './actions/evaluate.js';
