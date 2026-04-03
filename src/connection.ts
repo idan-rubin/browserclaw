@@ -159,9 +159,7 @@ let envMutexPromise: Promise<void> = Promise.resolve();
  */
 export async function withNoProxyForCdpUrl<T>(url: string, fn: () => Promise<T>): Promise<T> {
   if (!isLoopbackCdpUrl(url) || !hasProxyEnvConfigured()) return fn();
-  if (noProxyAlreadyCoversLocalhost()) return fn();
 
-  // Serialize env mutations so concurrent connects don't interleave save/restore
   const prev = envMutexPromise;
   // eslint-disable-next-line @typescript-eslint/no-empty-function
   let release: () => void = () => {};
@@ -169,6 +167,14 @@ export async function withNoProxyForCdpUrl<T>(url: string, fn: () => Promise<T>)
     release = r;
   });
   await prev;
+
+  if (noProxyAlreadyCoversLocalhost()) {
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
 
   const savedNoProxy = process.env.NO_PROXY;
   const savedNoProxyLower = process.env.no_proxy;
