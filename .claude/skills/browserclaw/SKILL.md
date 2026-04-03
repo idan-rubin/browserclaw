@@ -12,7 +12,7 @@ You are operating a real browser. You can see pages through `snapshot()` and act
 ```typescript
 import { BrowserClaw } from 'browserclaw';
 
-const browser = await BrowserClaw.launch({ url: 'https://example.com' });
+const browser = await BrowserClaw.launch({ url: 'https://demo.playwright.dev/todomvc' });
 const page = await browser.currentPage();
 // or connect to existing: await BrowserClaw.connect('http://localhost:9222')
 ```
@@ -81,7 +81,7 @@ const { snapshot } = await page.snapshot({ interactive: true, compact: true });
 ### Navigate
 
 ```typescript
-await page.goto('https://example.com');
+await page.goto('https://demo.playwright.dev/todomvc');
 // After navigation, always re-snapshot before acting
 ```
 

@@ -2,7 +2,7 @@ import { BrowserClaw } from '../src/index.js';
 
 async function main() {
   // Launch Chrome and navigate
-  const browser = await BrowserClaw.launch({ url: 'https://example.com' });
+  const browser = await BrowserClaw.launch({ url: 'https://demo.playwright.dev/todomvc' });
 
   try {
     const page = await browser.currentPage();
@@ -14,20 +14,17 @@ async function main() {
     console.log('\n=== Refs ===');
     console.log(refs);
 
-    // Click the "More information..." link (will be one of the refs)
-    const linkRef = Object.entries(refs).find(
-      ([, info]) => info.role === 'link' && info.name?.includes('More information'),
+    // Find the todo input field and add a todo
+    const inputRef = Object.entries(refs).find(
+      ([, info]) => info.role === 'textbox' && info.name?.includes('What needs to be done?'),
     );
-    if (linkRef) {
-      console.log(`\nClicking ref ${linkRef[0]}: ${linkRef[1].name}`);
-      await page.click(linkRef[0]);
+    if (inputRef) {
+      console.log(`\nTyping in ref ${inputRef[0]}: ${inputRef[1].name}`);
+      await page.type(inputRef[0], 'Buy groceries', { submit: true });
 
-      // Wait for navigation
-      await page.waitFor({ loadState: 'domcontentloaded' });
-
-      // Take another snapshot
+      // Take another snapshot to see the new todo
       const after = await page.snapshot();
-      console.log('\n=== After Click ===');
+      console.log('\n=== After Adding Todo ===');
       console.log(after.snapshot.slice(0, 500));
     }
   } finally {
