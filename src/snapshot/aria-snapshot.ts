@@ -167,7 +167,7 @@ function formatAriaNodes(nodes: CdpAXNode[], limit: number): AriaNode[] {
   for (const n of nodes) for (const c of n.childIds ?? []) referenced.add(c);
 
   const root = nodes.find((n) => n.nodeId !== '' && !referenced.has(n.nodeId)) ?? nodes[0];
-  if (root.nodeId === '') return [];
+  if (!root || root.nodeId === '') return [];
 
   const out: AriaNode[] = [];
   const stack: { id: string; depth: number }[] = [{ id: root.nodeId, depth: 0 }];
