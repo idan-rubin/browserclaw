@@ -160,8 +160,6 @@ let envMutexPromise: Promise<void> = Promise.resolve();
 export async function withNoProxyForCdpUrl<T>(url: string, fn: () => Promise<T>): Promise<T> {
   if (!isLoopbackCdpUrl(url) || !hasProxyEnvConfigured()) return fn();
 
-  // Acquire mutex before checking noProxyAlreadyCoversLocalhost — another
-  // caller may have temporarily set NO_PROXY and will restore it when done.
   const prev = envMutexPromise;
   // eslint-disable-next-line @typescript-eslint/no-empty-function
   let release: () => void = () => {};
