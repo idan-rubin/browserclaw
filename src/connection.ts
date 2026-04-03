@@ -138,59 +138,56 @@ function isLoopbackCdpUrl(url: string): boolean {
   }
 }
 
-class NoProxyLeaseManager {
-  private leaseCount = 0;
-  private snapshot: { noProxy?: string; noProxyLower?: string; applied: string } | null = null;
-
-  acquire(url: string): (() => void) | null {
-    if (!isLoopbackCdpUrl(url) || !hasProxyEnvConfigured()) return null;
-    if (this.leaseCount === 0 && !noProxyAlreadyCoversLocalhost()) {
-      const noProxy = process.env.NO_PROXY;
-      const noProxyLower = process.env.no_proxy;
-      const current = noProxy ?? noProxyLower ?? '';
-      const applied = current ? `${current},${LOOPBACK_ENTRIES}` : LOOPBACK_ENTRIES;
-      process.env.NO_PROXY = applied;
-      process.env.no_proxy = applied;
-      this.snapshot = { noProxy, noProxyLower, applied };
-    }
-    this.leaseCount += 1;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.release();
-    };
-  }
-
-  release(): void {
-    if (this.leaseCount <= 0) return;
-    this.leaseCount -= 1;
-    if (this.leaseCount > 0 || !this.snapshot) return;
-    const { noProxy, noProxyLower, applied } = this.snapshot;
-    const currentNoProxy = process.env.NO_PROXY;
-    const currentNoProxyLower = process.env.no_proxy;
-    if (currentNoProxy === applied && (currentNoProxyLower === applied || currentNoProxyLower === undefined)) {
-      if (noProxy !== undefined) process.env.NO_PROXY = noProxy;
-      else delete process.env.NO_PROXY;
-      if (noProxyLower !== undefined) process.env.no_proxy = noProxyLower;
-      else delete process.env.no_proxy;
-    }
-    this.snapshot = null;
-  }
-}
-
-const noProxyLeaseManager = new NoProxyLeaseManager();
+/**
+ * Mutex promise chain that serializes concurrent env mutations.
+ *
+ * Playwright reads proxy config from `process.env` at connect time — there is
+ * no API to pass proxy bypass settings per-connection. When the CDP target is
+ * loopback we must temporarily add localhost entries to `NO_PROXY` / `no_proxy`
+ * so Playwright's underlying HTTP stack skips the proxy.
+ *
+ * Because multiple connections may be established concurrently, we serialize
+ * the save → mutate → fn() → restore cycle through a promise chain so that
+ * one caller's restore doesn't clobber another caller's mutation.
+ */
+let envMutexPromise: Promise<void> = Promise.resolve();
 
 /**
  * Scoped NO_PROXY bypass for loopback CDP URLs.
- * This wrapper only mutates env vars for loopback destinations.
+ * Serializes env mutations so concurrent connects don't interleave save/restore.
+ * Only restores if the value hasn't been changed by someone else.
  */
 export async function withNoProxyForCdpUrl<T>(url: string, fn: () => Promise<T>): Promise<T> {
-  const release = noProxyLeaseManager.acquire(url);
+  if (!isLoopbackCdpUrl(url) || !hasProxyEnvConfigured()) return fn();
+  if (noProxyAlreadyCoversLocalhost()) return fn();
+
+  // Serialize env mutations so concurrent connects don't interleave save/restore
+  const prev = envMutexPromise;
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  let release: () => void = () => {};
+  envMutexPromise = new Promise<void>((r) => {
+    release = r;
+  });
+  await prev;
+
+  const savedNoProxy = process.env.NO_PROXY;
+  const savedNoProxyLower = process.env.no_proxy;
+  const current = savedNoProxy ?? savedNoProxyLower ?? '';
+  const applied = current ? `${current},${LOOPBACK_ENTRIES}` : LOOPBACK_ENTRIES;
+  process.env.NO_PROXY = applied;
+  process.env.no_proxy = applied;
   try {
     return await fn();
   } finally {
-    release?.();
+    if (process.env.NO_PROXY === applied) {
+      if (savedNoProxy !== undefined) process.env.NO_PROXY = savedNoProxy;
+      else delete process.env.NO_PROXY;
+    }
+    if (process.env.no_proxy === applied) {
+      if (savedNoProxyLower !== undefined) process.env.no_proxy = savedNoProxyLower;
+      else delete process.env.no_proxy;
+    }
+    release();
   }
 }
 
@@ -540,11 +537,13 @@ async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string): Pr
 }
 
 /**
- * Force-disconnect a Playwright browser connection for a given CDP target.
- * Clears the connection cache, sends Runtime.terminateExecution via raw CDP
- * websocket to kill stuck evals (bypassing Playwright), and closes the browser.
+ * Force-disconnect the ENTIRE Playwright browser connection, not just one target.
+ * Clears the connection cache, optionally sends Runtime.terminateExecution to
+ * a specific target via raw CDP websocket to kill stuck evals (bypassing
+ * Playwright), then closes the browser — which disconnects ALL tabs.
+ * The targetId parameter is only used to send Runtime.terminateExecution before closing.
  */
-export async function forceDisconnectPlaywrightForTarget(opts: {
+export async function forceDisconnectPlaywrightConnection(opts: {
   cdpUrl: string;
   targetId?: string;
   reason?: string;
@@ -571,6 +570,9 @@ export async function forceDisconnectPlaywrightForTarget(opts: {
     /* noop */
   });
 }
+
+/** @deprecated Use `forceDisconnectPlaywrightConnection` instead. */
+export const forceDisconnectPlaywrightForTarget = forceDisconnectPlaywrightConnection;
 
 // ── Page Lookup ──
 

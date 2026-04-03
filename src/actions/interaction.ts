@@ -447,7 +447,7 @@ export async function armDialogViaPlaywright(opts: {
   const state = ensurePageState(page);
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
-  state.armIdDialog = bumpDialogArmId();
+  state.armIdDialog = bumpDialogArmId(state);
   const armId = state.armIdDialog;
 
   page
@@ -476,7 +476,7 @@ export async function armFileUploadViaPlaywright(opts: {
   const state = ensurePageState(page);
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
-  state.armIdUpload = bumpUploadArmId();
+  state.armIdUpload = bumpUploadArmId(state);
   const armId = state.armIdUpload;
 
   page

@@ -558,6 +558,9 @@ export interface PageState {
   armIdUpload: number;
   armIdDialog: number;
   armIdDownload: number;
+  nextArmIdUpload: number;
+  nextArmIdDialog: number;
+  nextArmIdDownload: number;
   dialogHandler?: DialogHandler;
 }
 

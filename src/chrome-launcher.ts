@@ -572,12 +572,10 @@ export function normalizeCdpHttpBaseForJsonEndpoints(cdpUrl: string): string {
     url.pathname = url.pathname.replace(/\/cdp$/, '');
     return url.toString().replace(/\/$/, '');
   } catch {
-    return cdpUrl
-      .replace(/^ws:/, 'http:')
-      .replace(/^wss:/, 'https:')
-      .replace(/\/devtools\/browser\/.*$/, '')
-      .replace(/\/cdp$/, '')
-      .replace(/\/$/, '');
+    let normalized = cdpUrl.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+    const dtIdx = normalized.indexOf('/devtools/browser/');
+    if (dtIdx >= 0) normalized = normalized.slice(0, dtIdx);
+    return normalized.replace(/\/cdp$/, '').replace(/\/$/, '');
   }
 }
 

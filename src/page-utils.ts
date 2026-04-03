@@ -14,21 +14,17 @@ const observedPages = new WeakSet<Page>();
 
 // ── Arm ID Counters ──
 
-let nextUploadArmId = 0;
-let nextDialogArmId = 0;
-let nextDownloadArmId = 0;
-
-export function bumpUploadArmId(): number {
-  nextUploadArmId += 1;
-  return nextUploadArmId;
+export function bumpUploadArmId(state: PageState): number {
+  state.nextArmIdUpload += 1;
+  return state.nextArmIdUpload;
 }
-export function bumpDialogArmId(): number {
-  nextDialogArmId += 1;
-  return nextDialogArmId;
+export function bumpDialogArmId(state: PageState): number {
+  state.nextArmIdDialog += 1;
+  return state.nextArmIdDialog;
 }
-export function bumpDownloadArmId(): number {
-  nextDownloadArmId += 1;
-  return nextDownloadArmId;
+export function bumpDownloadArmId(state: PageState): number {
+  state.nextArmIdDownload += 1;
+  return state.nextArmIdDownload;
 }
 
 // ── Context State Management ──
@@ -70,6 +66,9 @@ export function ensurePageState(page: Page): PageState {
     armIdUpload: 0,
     armIdDialog: 0,
     armIdDownload: 0,
+    nextArmIdUpload: 0,
+    nextArmIdDialog: 0,
+    nextArmIdDownload: 0,
   };
   pageStates.set(page, state);
 

@@ -22,6 +22,8 @@ export {
 export type { BrowserNavigationPolicyOptions, BrowserNavigationRequestLike, LookupFn } from './security.js';
 export {
   ensureContextState,
+  forceDisconnectPlaywrightConnection,
+  // eslint-disable-next-line @typescript-eslint/no-deprecated
   forceDisconnectPlaywrightForTarget,
   withPlaywrightPageCdpSession,
   withPageScopedCdpClient,
