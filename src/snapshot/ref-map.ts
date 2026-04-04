@@ -227,7 +227,7 @@ export function buildRoleSnapshotFromAriaSnapshot(
     const isInteractive = INTERACTIVE_ROLES.has(role);
     const isContent = CONTENT_ROLES.has(role);
     const isStructural = STRUCTURAL_ROLES.has(role);
-    if (options.compact === true && isStructural && name === '') continue;
+    if (options.compact === true && isStructural && !name) continue;
     if (!(isInteractive || (isContent && name !== ''))) {
       result.push(line);
       continue;
@@ -240,7 +240,7 @@ export function buildRoleSnapshotFromAriaSnapshot(
     refs[ref] = { role, name, nth, ...state };
 
     let enhanced = `${prefix}${roleRaw}`;
-    if (name !== '') enhanced += ` "${name}"`;
+    if (name) enhanced += ` "${name}"`;
     enhanced += ` [ref=${ref}]`;
     if (nth > 0) enhanced += ` [nth=${String(nth)}]`;
     if (suffix !== '') enhanced += suffix;
@@ -331,7 +331,7 @@ export function buildRoleSnapshotFromAiSnapshot(
     }
     const role = roleRaw.toLowerCase();
     const isStructural = STRUCTURAL_ROLES.has(role);
-    if (options.compact === true && isStructural && name === '') continue;
+    if (options.compact === true && isStructural && !name) continue;
     const ref = parseAiSnapshotRef(suffix);
     const state = parseStateFromSuffix(suffix);
     if (ref !== null) {
@@ -339,9 +339,9 @@ export function buildRoleSnapshotFromAiSnapshot(
       out.push(line);
     } else if (INTERACTIVE_ROLES.has(role)) {
       const generatedRef = nextGeneratedRef();
-      refs[generatedRef] = { role, ...(name !== '' ? { name } : {}), ...state };
+      refs[generatedRef] = { role, ...(name ? { name } : {}), ...state };
       let enhanced = `${prefix}${roleRaw}`;
-      if (name !== '') enhanced += ` "${name}"`;
+      if (name) enhanced += ` "${name}"`;
       enhanced += ` [ref=${generatedRef}]`;
       if (suffix.trim() !== '') enhanced += suffix;
       out.push(enhanced);

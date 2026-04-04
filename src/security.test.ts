@@ -1574,4 +1574,96 @@ describe('security.ts', () => {
       expect(isInternalUrl('http://169.253.255.255')).toBe(false);
     });
   });
+
+  // ────────────────────────────────────────────────
+  // assertSafeOutputPath — traversal detection
+  //
+  // Security model: normalize first, then check for remaining '..' segments.
+  // Relative traversal that survives normalize is caught lexically.
+  // Absolute-path security (e.g. /tmp/../etc/passwd) is enforced by the
+  // allowedRoots containment check, not by the lexical '..' test — because
+  // normalize('/tmp/../etc/passwd') === '/etc/passwd' (no '..' remains).
+  // ────────────────────────────────────────────────
+
+  describe('assertSafeOutputPath — traversal detection', () => {
+    it('rejects relative path whose traversal survives normalize', async () => {
+      // normalize('foo/../../../etc/passwd') === '../../etc/passwd' — '..' remains
+      await expect(assertSafeOutputPath('foo/../../../etc/passwd')).rejects.toThrow('directory traversal');
+    });
+
+    it('accepts foo/bar/../baz (normalize collapses it cleanly)', async () => {
+      // normalize('foo/bar/../baz') === 'foo/baz' — no '..' left, not a traversal
+      await expect(assertSafeOutputPath('foo/bar/../baz')).resolves.toBeUndefined();
+    });
+
+    it('accepts /tmp/../etc/passwd without allowedRoots (normalize strips .., security via allowedRoots)', async () => {
+      // normalize('/tmp/../etc/passwd') === '/etc/passwd' — no '..' left.
+      // Without allowedRoots there is no containment guarantee; callers must pass allowedRoots.
+      await expect(assertSafeOutputPath('/tmp/../etc/passwd')).resolves.toBeUndefined();
+    });
+
+    it('still accepts a clean absolute path with no traversal', async () => {
+      await expect(assertSafeOutputPath('/tmp/output.zip')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('assertSafeOutputPath — allowedRoots blocks absolute traversal', () => {
+    let tempRoot: string;
+    let sibling: string;
+
+    beforeEach(async () => {
+      tempRoot = await createTempRoot();
+      sibling = await createTempRoot();
+    });
+
+    afterEach(async () => {
+      await rm(tempRoot, { recursive: true, force: true });
+      await rm(sibling, { recursive: true, force: true });
+    });
+
+    it('rejects a path that resolves outside allowedRoots after normalize strips ..', async () => {
+      // Construct a path that uses .. to escape tempRoot into sibling.
+      // normalize() removes the .., leaving a path inside sibling — which is
+      // outside tempRoot. The realpath containment check catches this.
+      const { basename: pathBasename } = await import('node:path');
+      const traversal = join(tempRoot, '..', pathBasename(sibling), 'file.txt');
+      await expect(assertSafeOutputPath(traversal, [tempRoot])).rejects.toThrow('outside allowed directories');
+    });
+  });
+
+  // ────────────────────────────────────────────────
+  // writeViaSiblingTempPath — regression: UNC path bypass
+  // Bug: local isAbsolute() only checked '/' prefix and 'C:' pattern,
+  // missing Windows UNC paths like \\server\share\file.
+  // Fix: replaced with pathIsAbsolute() from node:path.
+  // ────────────────────────────────────────────────
+
+  describe('writeViaSiblingTempPath — UNC path rejection (regression)', () => {
+    let tempRoot: string;
+
+    beforeEach(async () => {
+      tempRoot = await createTempRoot();
+    });
+
+    afterEach(async () => {
+      await rm(tempRoot, { recursive: true, force: true });
+    });
+
+    it('rejects a Windows UNC path as targetPath', async () => {
+      // \\server\share\file — pathIsAbsolute() returns true on all platforms for
+      // UNC paths; the old local isAbsolute() returned false (only checked /
+      // and drive letters), allowing the path to bypass the root containment check.
+      const uncPath = '\\\\server\\share\\file.zip';
+      await expect(
+        writeViaSiblingTempPath({
+          rootDir: tempRoot,
+          targetPath: uncPath,
+          writeTemp: async (p) => {
+            const { writeFile } = await import('node:fs/promises');
+            await writeFile(p, 'data');
+          },
+        }),
+      ).rejects.toThrow('outside the allowed root');
+    });
+  });
 });

@@ -47,7 +47,7 @@ export async function snapshotRole(opts: {
     if (!maybe._snapshotForAI) {
       throw new Error('refs=aria requires Playwright _snapshotForAI support.');
     }
-    const result = await maybe._snapshotForAI({ timeout: 5000, track: 'response' });
+    const result = await maybe._snapshotForAI({ timeout: normalizeTimeoutMs(opts.timeoutMs, 5000), track: 'response' });
     const built = buildRoleSnapshotFromAiSnapshot(String(result.full), opts.options);
 
     storeRoleRefsForTarget({

@@ -236,7 +236,9 @@ export function getHeadersWithAuth(endpoint: string, baseHeaders: Record<string,
       ).toString('base64');
       headers.Authorization = `Basic ${credentials}`;
     }
-  } catch {}
+  } catch {
+    // endpoint is not a valid URL (e.g. a raw WebSocket path) — skip auth header injection
+  }
   return headers;
 }
 
@@ -411,6 +413,7 @@ export async function disconnectBrowser(): Promise<void> {
     }
   }
   for (const cur of cachedByCdpUrl.values()) {
+    clearRoleRefsForCdpUrl(cur.cdpUrl);
     if (cur.onDisconnected && typeof cur.browser.off === 'function')
       cur.browser.off('disconnected', cur.onDisconnected);
     await cur.browser.close().catch(() => {
@@ -726,9 +729,6 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
     );
   }
   if (isBlockedPageRef(opts.cdpUrl, found)) throw new BlockedBrowserTargetError();
-  // Both resolution paths (CDP match and URL-based fallback) locate the page by opts.targetId —
-  // no need to call pageTargetId(found) again.
-  if (isBlockedTarget(opts.cdpUrl, opts.targetId)) throw new BlockedBrowserTargetError();
   return found;
 }
 

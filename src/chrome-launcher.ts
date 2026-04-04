@@ -852,6 +852,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   }
 
   proc.stderr.off('data', onStderr);
+  proc.stderr.resume(); // drain to prevent backpressure after removing the listener
   stderrChunks.length = 0;
 
   return {

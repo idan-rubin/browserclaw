@@ -43,12 +43,15 @@ export async function traceStopViaPlaywright(opts: {
     throw new Error('No active trace. Start a trace before stopping it.');
   }
 
-  await writeViaSiblingTempPath({
-    rootDir: dirname(opts.path),
-    targetPath: opts.path,
-    writeTemp: async (tempPath) => {
-      await context.tracing.stop({ path: tempPath });
-    },
-  });
-  ctxState.traceActive = false;
+  try {
+    await writeViaSiblingTempPath({
+      rootDir: dirname(opts.path),
+      targetPath: opts.path,
+      writeTemp: async (tempPath) => {
+        await context.tracing.stop({ path: tempPath });
+      },
+    });
+  } finally {
+    ctxState.traceActive = false;
+  }
 }

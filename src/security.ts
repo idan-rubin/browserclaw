@@ -831,7 +831,7 @@ export async function writeViaSiblingTempPath(params: {
     !relativeTargetPath ||
     relativeTargetPath === '..' ||
     relativeTargetPath.startsWith(`..${sep}`) ||
-    isAbsolute(relativeTargetPath)
+    pathIsAbsolute(relativeTargetPath)
   ) {
     throw new Error('Target path is outside the allowed root');
   }
@@ -848,10 +848,6 @@ export async function writeViaSiblingTempPath(params: {
         /* noop */
       });
   }
-}
-
-function isAbsolute(p: string): boolean {
-  return p.startsWith('/') || /^[a-zA-Z]:/.test(p);
 }
 
 /**

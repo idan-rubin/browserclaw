@@ -20,6 +20,8 @@ export async function waitForViaPlaywright(opts: {
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 20000);
 
   if (typeof opts.timeMs === 'number' && Number.isFinite(opts.timeMs)) {
+    // timeMs is a fixed delay capped at MAX_WAIT_TIME_MS, independent of timeoutMs
+    // (timeoutMs governs condition-based waits below, not this fixed sleep)
     await page.waitForTimeout(resolveBoundedDelayMs(opts.timeMs, 'wait timeMs', MAX_WAIT_TIME_MS));
   }
   if (opts.text !== undefined && opts.text !== '') {

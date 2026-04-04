@@ -38,7 +38,6 @@ async function setCheckedViaEvaluate(locator: Locator, checked: boolean): Promis
     else input.checked = desired;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    input.click();
   }, checked);
 }
 
@@ -337,7 +336,10 @@ export async function fillFormViaPlaywright(opts: {
       const checked = rawValue === true || rawValue === 1 || rawValue === '1' || rawValue === 'true';
       try {
         await locator.setChecked(checked, { timeout, force: true });
-      } catch {
+      } catch (setCheckedErr) {
+        console.warn(
+          `[browserclaw] setChecked fallback for ref "${ref}": ${setCheckedErr instanceof Error ? setCheckedErr.message : String(setCheckedErr)}`,
+        );
         try {
           await setCheckedViaEvaluate(locator, checked);
         } catch (err) {
@@ -450,6 +452,8 @@ export async function armDialogViaPlaywright(opts: {
   state.armIdDialog = bumpDialogArmId(state);
   const armId = state.armIdDialog;
 
+  // Fire-and-forget: returns immediately once the arm is registered.
+  // The waitForEvent chain runs in the background and handles the dialog when it fires.
   page
     .waitForEvent('dialog', { timeout })
     .then(async (dialog) => {
@@ -499,6 +503,7 @@ export async function armFileUploadViaPlaywright(opts: {
         scopeLabel: `uploads directory (${DEFAULT_UPLOAD_DIR})`,
       });
       if (!uploadPathsResult.ok) {
+        console.warn(`[browserclaw] armFileUpload: path validation failed: ${uploadPathsResult.error}`);
         try {
           await page.keyboard.press('Escape');
         } catch {

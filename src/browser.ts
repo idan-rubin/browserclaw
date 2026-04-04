@@ -553,17 +553,18 @@ export class CrawlPage {
   }
 
   /**
-   * Arm a one-shot dialog handler (alert, confirm, prompt).
+   * Arm a one-shot dialog handler (alert, confirm, prompt). Fire-and-forget:
+   * returns immediately once the arm is registered. The dialog is handled in
+   * the background when it fires.
    *
-   * Returns a promise — store it (don't await), trigger the dialog, then await it.
+   * Call this BEFORE triggering the action that opens the dialog.
    *
    * @param opts - Dialog options (accept/dismiss, prompt text, timeout)
    *
    * @example
    * ```ts
-   * const dialogDone = page.armDialog({ accept: true }); // don't await here
-   * await page.click('e5'); // triggers confirm()
-   * await dialogDone;       // wait for dialog to be handled
+   * await page.armDialog({ accept: true }); // registers the handler, returns immediately
+   * await page.click('e5');                 // triggers confirm() — handled in background
    * ```
    */
   async armDialog(opts: DialogOptions): Promise<void> {
