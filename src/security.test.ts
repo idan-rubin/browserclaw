@@ -1574,4 +1574,67 @@ describe('security.ts', () => {
       expect(isInternalUrl('http://169.253.255.255')).toBe(false);
     });
   });
+
+  // ────────────────────────────────────────────────
+  // assertSafeOutputPath — regression: normalize strips ..
+  // Bug: path.normalize('/tmp/../etc/passwd') → '/etc/passwd', removing the
+  // traversal sequence before the check ran. Fix: check raw path for '..'
+  // BEFORE normalizing.
+  // ────────────────────────────────────────────────
+
+  describe('assertSafeOutputPath — traversal via normalize stripping (regression)', () => {
+    it('rejects /tmp/../etc/passwd (normalize would strip the ..)', async () => {
+      // path.normalize('/tmp/../etc/passwd') === '/etc/passwd' — no '..' left.
+      // The pre-normalize check must catch this.
+      await expect(assertSafeOutputPath('/tmp/../etc/passwd')).rejects.toThrow('directory traversal');
+    });
+
+    it('rejects /tmp/../../etc/passwd (absolute path with traversal)', async () => {
+      await expect(assertSafeOutputPath('/tmp/../../etc/passwd')).rejects.toThrow('directory traversal');
+    });
+
+    it('rejects nested traversal that normalize would collapse', async () => {
+      await expect(assertSafeOutputPath('/safe/subdir/../../etc/shadow')).rejects.toThrow('directory traversal');
+    });
+
+    it('still accepts a clean absolute path with no traversal', async () => {
+      await expect(assertSafeOutputPath('/tmp/output.zip')).resolves.toBeUndefined();
+    });
+  });
+
+  // ────────────────────────────────────────────────
+  // writeViaSiblingTempPath — regression: UNC path bypass
+  // Bug: local isAbsolute() only checked '/' prefix and 'C:' pattern,
+  // missing Windows UNC paths like \\server\share\file.
+  // Fix: replaced with pathIsAbsolute() from node:path.
+  // ────────────────────────────────────────────────
+
+  describe('writeViaSiblingTempPath — UNC path rejection (regression)', () => {
+    let tempRoot: string;
+
+    beforeEach(async () => {
+      tempRoot = await createTempRoot();
+    });
+
+    afterEach(async () => {
+      await rm(tempRoot, { recursive: true, force: true });
+    });
+
+    it('rejects a Windows UNC path as targetPath', async () => {
+      // \\server\share\file — pathIsAbsolute() returns true on all platforms for
+      // UNC paths; the old local isAbsolute() returned false (only checked /
+      // and drive letters), allowing the path to bypass the root containment check.
+      const uncPath = '\\\\server\\share\\file.zip';
+      await expect(
+        writeViaSiblingTempPath({
+          rootDir: tempRoot,
+          targetPath: uncPath,
+          writeTemp: async (p) => {
+            const { writeFile } = await import('node:fs/promises');
+            await writeFile(p, 'data');
+          },
+        }),
+      ).rejects.toThrow('outside the allowed root');
+    });
+  });
 });
