@@ -11,7 +11,7 @@ describe('buildRoleSnapshotFromAriaSnapshot', () => {
     it('does not emit "undefined" text for a nameless interactive element', () => {
       // A button with no quoted label — regex group 3 is undefined, not ''
       const input = '- button';
-      const { snapshot, refs } = buildRoleSnapshotFromAriaSnapshot(input);
+      const { snapshot } = buildRoleSnapshotFromAriaSnapshot(input);
       expect(snapshot).not.toContain('"undefined"');
       expect(snapshot).toContain('[ref=');
     });
@@ -26,7 +26,7 @@ describe('buildRoleSnapshotFromAriaSnapshot', () => {
       const input = '- button "Submit"';
       const { snapshot, refs } = buildRoleSnapshotFromAriaSnapshot(input);
       expect(snapshot).toContain('"Submit"');
-      expect(Object.values(refs)[0]?.name).toBe('Submit');
+      expect(Object.values(refs)[0].name).toBe('Submit');
     });
 
     it('stores undefined (not the string "undefined") in refs for nameless elements', () => {
@@ -35,8 +35,8 @@ describe('buildRoleSnapshotFromAriaSnapshot', () => {
       const ref = Object.values(refs)[0];
       expect(ref).toBeDefined();
       // name should be undefined (absent), not the string "undefined"
-      expect(ref?.name).toBeUndefined();
-      expect(ref?.name).not.toBe('undefined');
+      expect(ref.name).toBeUndefined();
+      expect(ref.name).not.toBe('undefined');
     });
   });
 
@@ -61,25 +61,25 @@ describe('buildRoleSnapshotFromAriaSnapshot', () => {
       const input = ['- button "A"', '- button "B"', '- link "C"'].join('\n');
       const { refs } = buildRoleSnapshotFromAriaSnapshot(input);
       expect(Object.keys(refs)).toHaveLength(3);
-      expect(refs['e1']?.role).toBe('button');
-      expect(refs['e2']?.role).toBe('button');
-      expect(refs['e3']?.role).toBe('link');
+      expect(refs.e1.role).toBe('button');
+      expect(refs.e2.role).toBe('button');
+      expect(refs.e3.role).toBe('link');
     });
 
     it('assigns nth only to duplicate role+name combinations', () => {
       const input = ['- button "Save"', '- button "Save"', '- button "Cancel"'].join('\n');
       const { refs } = buildRoleSnapshotFromAriaSnapshot(input);
       // The two "Save" buttons should have nth; the unique "Cancel" should not
-      expect(refs['e1']?.nth).toBe(0);
-      expect(refs['e2']?.nth).toBe(1);
-      expect(refs['e3']?.nth).toBeUndefined();
+      expect(refs.e1.nth).toBe(0);
+      expect(refs.e2.nth).toBe(1);
+      expect(refs.e3.nth).toBeUndefined();
     });
 
     it('interactive-only mode returns only interactive elements', () => {
       const input = ['- heading "Title"', '- button "Go"', '- paragraph "Text"'].join('\n');
       const { snapshot, refs } = buildRoleSnapshotFromAriaSnapshot(input, { interactive: true });
       expect(Object.keys(refs)).toHaveLength(1);
-      expect(refs['e1']?.role).toBe('button');
+      expect(refs.e1.role).toBe('button');
       expect(snapshot).not.toContain('heading');
       expect(snapshot).not.toContain('paragraph');
     });
@@ -118,23 +118,23 @@ describe('buildRoleSnapshotFromAiSnapshot', () => {
       const { refs } = buildRoleSnapshotFromAiSnapshot(input);
       const ref = Object.values(refs)[0];
       expect(ref).toBeDefined();
-      expect(ref?.name).toBeUndefined();
-      expect(ref?.name).not.toBe('undefined');
+      expect(ref.name).toBeUndefined();
+      expect(ref.name).not.toBe('undefined');
     });
 
     it('correctly includes name when present in generated-ref path', () => {
       const input = '- button "Submit"';
       const { snapshot, refs } = buildRoleSnapshotFromAiSnapshot(input);
       expect(snapshot).toContain('"Submit"');
-      expect(Object.values(refs)[0]?.name).toBe('Submit');
+      expect(Object.values(refs)[0].name).toBe('Submit');
     });
 
     it('preserves existing aria refs and does not emit "undefined" for nameless elements with ref', () => {
       const input = '- button [ref=e5]';
       const { snapshot, refs } = buildRoleSnapshotFromAiSnapshot(input);
       expect(snapshot).not.toContain('"undefined"');
-      expect(refs['e5']).toBeDefined();
-      expect(refs['e5']?.name).toBeUndefined();
+      expect(refs.e5).toBeDefined();
+      expect(refs.e5.name).toBeUndefined();
     });
   });
 
@@ -151,18 +151,18 @@ describe('buildRoleSnapshotFromAiSnapshot', () => {
     it('preserves existing ref IDs from the AI snapshot', () => {
       const input = '- button "Go" [ref=e42]';
       const { refs } = buildRoleSnapshotFromAiSnapshot(input);
-      expect(refs['e42']).toBeDefined();
-      expect(refs['e42']?.role).toBe('button');
-      expect(refs['e42']?.name).toBe('Go');
+      expect(refs.e42).toBeDefined();
+      expect(refs.e42.role).toBe('button');
+      expect(refs.e42.name).toBe('Go');
     });
 
     it('generates refs for interactive elements that lack one', () => {
       const input = ['- button "A" [ref=e10]', '- button "B"'].join('\n');
       const { refs } = buildRoleSnapshotFromAiSnapshot(input);
-      expect(refs['e10']).toBeDefined();
+      expect(refs.e10).toBeDefined();
       // Generated ref should be e11 (max existing + 1)
-      expect(refs['e11']).toBeDefined();
-      expect(refs['e11']?.name).toBe('B');
+      expect(refs.e11).toBeDefined();
+      expect(refs.e11.name).toBe('B');
     });
   });
 });

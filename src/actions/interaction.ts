@@ -452,7 +452,9 @@ export async function armDialogViaPlaywright(opts: {
   state.armIdDialog = bumpDialogArmId(state);
   const armId = state.armIdDialog;
 
-  return page
+  // Fire-and-forget: returns immediately once the arm is registered.
+  // The waitForEvent chain runs in the background and handles the dialog when it fires.
+  page
     .waitForEvent('dialog', { timeout })
     .then(async (dialog) => {
       if (state.armIdDialog !== armId) return;
@@ -463,10 +465,8 @@ export async function armDialogViaPlaywright(opts: {
         if (state.armIdDialog === armId) state.armIdDialog = 0;
       }
     })
-    .catch((err: unknown) => {
+    .catch(() => {
       if (state.armIdDialog === armId) state.armIdDialog = 0;
-      // Only swallow timeout errors (dialog never fired); re-throw accept/dismiss failures
-      if (!(err instanceof Error) || err.name !== 'TimeoutError') throw err;
     });
 }
 

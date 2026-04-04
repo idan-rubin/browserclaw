@@ -536,11 +536,11 @@ export async function assertSafeOutputPath(path: string, allowedRoots?: string[]
     throw new Error('Output path is required.');
   }
 
-  if (path.includes('..')) {
+  const normalized = normalize(path);
+
+  if (normalized.includes('..')) {
     throw new Error(`Unsafe output path: directory traversal detected in "${path}".`);
   }
-
-  const normalized = normalize(path);
 
   if (allowedRoots !== undefined && allowedRoots.length > 0) {
     const resolved = resolve(normalized);

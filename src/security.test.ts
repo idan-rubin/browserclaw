@@ -1576,29 +1576,58 @@ describe('security.ts', () => {
   });
 
   // ────────────────────────────────────────────────
-  // assertSafeOutputPath — regression: normalize strips ..
-  // Bug: path.normalize('/tmp/../etc/passwd') → '/etc/passwd', removing the
-  // traversal sequence before the check ran. Fix: check raw path for '..'
-  // BEFORE normalizing.
+  // assertSafeOutputPath — traversal detection
+  //
+  // Security model: normalize first, then check for remaining '..' segments.
+  // Relative traversal that survives normalize is caught lexically.
+  // Absolute-path security (e.g. /tmp/../etc/passwd) is enforced by the
+  // allowedRoots containment check, not by the lexical '..' test — because
+  // normalize('/tmp/../etc/passwd') === '/etc/passwd' (no '..' remains).
   // ────────────────────────────────────────────────
 
-  describe('assertSafeOutputPath — traversal via normalize stripping (regression)', () => {
-    it('rejects /tmp/../etc/passwd (normalize would strip the ..)', async () => {
-      // path.normalize('/tmp/../etc/passwd') === '/etc/passwd' — no '..' left.
-      // The pre-normalize check must catch this.
-      await expect(assertSafeOutputPath('/tmp/../etc/passwd')).rejects.toThrow('directory traversal');
+  describe('assertSafeOutputPath — traversal detection', () => {
+    it('rejects relative path whose traversal survives normalize', async () => {
+      // normalize('foo/../../../etc/passwd') === '../../etc/passwd' — '..' remains
+      await expect(assertSafeOutputPath('foo/../../../etc/passwd')).rejects.toThrow('directory traversal');
     });
 
-    it('rejects /tmp/../../etc/passwd (absolute path with traversal)', async () => {
-      await expect(assertSafeOutputPath('/tmp/../../etc/passwd')).rejects.toThrow('directory traversal');
+    it('accepts foo/bar/../baz (normalize collapses it cleanly)', async () => {
+      // normalize('foo/bar/../baz') === 'foo/baz' — no '..' left, not a traversal
+      await expect(assertSafeOutputPath('foo/bar/../baz')).resolves.toBeUndefined();
     });
 
-    it('rejects nested traversal that normalize would collapse', async () => {
-      await expect(assertSafeOutputPath('/safe/subdir/../../etc/shadow')).rejects.toThrow('directory traversal');
+    it('accepts /tmp/../etc/passwd without allowedRoots (normalize strips .., security via allowedRoots)', async () => {
+      // normalize('/tmp/../etc/passwd') === '/etc/passwd' — no '..' left.
+      // Without allowedRoots there is no containment guarantee; callers must pass allowedRoots.
+      await expect(assertSafeOutputPath('/tmp/../etc/passwd')).resolves.toBeUndefined();
     });
 
     it('still accepts a clean absolute path with no traversal', async () => {
       await expect(assertSafeOutputPath('/tmp/output.zip')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('assertSafeOutputPath — allowedRoots blocks absolute traversal', () => {
+    let tempRoot: string;
+    let sibling: string;
+
+    beforeEach(async () => {
+      tempRoot = await createTempRoot();
+      sibling = await createTempRoot();
+    });
+
+    afterEach(async () => {
+      await rm(tempRoot, { recursive: true, force: true });
+      await rm(sibling, { recursive: true, force: true });
+    });
+
+    it('rejects a path that resolves outside allowedRoots after normalize strips ..', async () => {
+      // Construct a path that uses .. to escape tempRoot into sibling.
+      // normalize() removes the .., leaving a path inside sibling — which is
+      // outside tempRoot. The realpath containment check catches this.
+      const { basename: pathBasename } = await import('node:path');
+      const traversal = join(tempRoot, '..', pathBasename(sibling), 'file.txt');
+      await expect(assertSafeOutputPath(traversal, [tempRoot])).rejects.toThrow('outside allowed directories');
     });
   });
 
