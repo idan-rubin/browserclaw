@@ -240,7 +240,7 @@ export function buildRoleSnapshotFromAriaSnapshot(
     refs[ref] = { role, name, nth, ...state };
 
     let enhanced = `${prefix}${roleRaw}`;
-    if (name !== '') enhanced += ` "${name}"`;
+    if (name) enhanced += ` "${name}"`;
     enhanced += ` [ref=${ref}]`;
     if (nth > 0) enhanced += ` [nth=${String(nth)}]`;
     if (suffix !== '') enhanced += suffix;
@@ -339,9 +339,9 @@ export function buildRoleSnapshotFromAiSnapshot(
       out.push(line);
     } else if (INTERACTIVE_ROLES.has(role)) {
       const generatedRef = nextGeneratedRef();
-      refs[generatedRef] = { role, ...(name !== '' ? { name } : {}), ...state };
+      refs[generatedRef] = { role, ...(name ? { name } : {}), ...state };
       let enhanced = `${prefix}${roleRaw}`;
-      if (name !== '') enhanced += ` "${name}"`;
+      if (name) enhanced += ` "${name}"`;
       enhanced += ` [ref=${generatedRef}]`;
       if (suffix.trim() !== '') enhanced += suffix;
       out.push(enhanced);

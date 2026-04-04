@@ -38,7 +38,6 @@ async function setCheckedViaEvaluate(locator: Locator, checked: boolean): Promis
     else input.checked = desired;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    input.click();
   }, checked);
 }
 
@@ -337,7 +336,10 @@ export async function fillFormViaPlaywright(opts: {
       const checked = rawValue === true || rawValue === 1 || rawValue === '1' || rawValue === 'true';
       try {
         await locator.setChecked(checked, { timeout, force: true });
-      } catch {
+      } catch (setCheckedErr) {
+        console.warn(
+          `[browserclaw] setChecked fallback for ref "${ref}": ${setCheckedErr instanceof Error ? setCheckedErr.message : String(setCheckedErr)}`,
+        );
         try {
           await setCheckedViaEvaluate(locator, checked);
         } catch (err) {
@@ -461,8 +463,10 @@ export async function armDialogViaPlaywright(opts: {
         if (state.armIdDialog === armId) state.armIdDialog = 0;
       }
     })
-    .catch(() => {
+    .catch((err: unknown) => {
       if (state.armIdDialog === armId) state.armIdDialog = 0;
+      // Only swallow timeout errors (dialog never fired); re-throw accept/dismiss failures
+      if (!(err instanceof Error) || err.name !== 'TimeoutError') throw err;
     });
 }
 
@@ -499,6 +503,7 @@ export async function armFileUploadViaPlaywright(opts: {
         scopeLabel: `uploads directory (${DEFAULT_UPLOAD_DIR})`,
       });
       if (!uploadPathsResult.ok) {
+        console.warn(`[browserclaw] armFileUpload: path validation failed: ${uploadPathsResult.error}`);
         try {
           await page.keyboard.press('Escape');
         } catch {
