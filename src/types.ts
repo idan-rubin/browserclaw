@@ -638,6 +638,17 @@ export interface AuthCheckResult {
 
 // ── Run Telemetry ──
 
+/** Standard exit reasons for structured telemetry. */
+export type ExitReason =
+  | 'success'
+  | 'auth_failed'
+  | 'nav_failed'
+  | 'timeout'
+  | 'crash'
+  | 'disconnected'
+  | 'manual'
+  | 'error';
+
 /** Structured telemetry envelope for a browser session lifecycle. */
 export interface RunTelemetry {
   /** Milliseconds to launch Chrome (undefined if connected to existing instance) */
@@ -649,7 +660,7 @@ export interface RunTelemetry {
   /** Whether auth verification passed (undefined if not checked) */
   authOk?: boolean;
   /** Structured exit reason when the session ends */
-  exitReason?: string;
+  exitReason?: ExitReason | (string & {});
   /** Whether cleanup (process kill, connection close) succeeded */
   cleanupOk?: boolean;
   /** Key timestamps in ISO 8601 format */
