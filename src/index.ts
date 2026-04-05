@@ -86,6 +86,7 @@ export type {
   ChallengeInfo,
   ChallengeWaitResult,
   AuthCheckRule,
+  AuthCheckRuleKind,
   AuthCheckResult,
   AuthCheckDetail,
   RunTelemetry,

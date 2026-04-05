@@ -1452,23 +1452,32 @@ export class CrawlPage {
         }
       }
 
-      if (rule.text !== undefined) {
+      // Fetch body text once if either text or textGone rule is present
+      if (rule.text !== undefined || rule.textGone !== undefined) {
+        let bodyText: string | null = null;
         try {
-          const bodyText = await page.evaluate('() => { const b = document.body; return b ? b.innerText : ""; }');
-          const passed = typeof bodyText === 'string' && bodyText.includes(rule.text);
-          checks.push({ rule: 'text', passed, detail: passed ? `"${rule.text}" found` : `"${rule.text}" not found in page text` });
+          const raw = await page.evaluate('() => { const b = document.body; return b ? b.innerText : ""; }');
+          bodyText = typeof raw === 'string' ? raw : null;
         } catch {
-          checks.push({ rule: 'text', passed: false, detail: `"${rule.text}" error during evaluation` });
+          // bodyText stays null — individual checks below will report the error
         }
-      }
 
-      if (rule.textGone !== undefined) {
-        try {
-          const bodyText = await page.evaluate('() => { const b = document.body; return b ? b.innerText : ""; }');
-          const passed = typeof bodyText === 'string' && !bodyText.includes(rule.textGone);
-          checks.push({ rule: 'textGone', passed, detail: passed ? `"${rule.textGone}" absent (good)` : `"${rule.textGone}" still present` });
-        } catch {
-          checks.push({ rule: 'textGone', passed: false, detail: `"${rule.textGone}" error during evaluation` });
+        if (rule.text !== undefined) {
+          if (bodyText === null) {
+            checks.push({ rule: 'text', passed: false, detail: `"${rule.text}" error during evaluation` });
+          } else {
+            const passed = bodyText.includes(rule.text);
+            checks.push({ rule: 'text', passed, detail: passed ? `"${rule.text}" found` : `"${rule.text}" not found in page text` });
+          }
+        }
+
+        if (rule.textGone !== undefined) {
+          if (bodyText === null) {
+            checks.push({ rule: 'textGone', passed: false, detail: `"${rule.textGone}" error during evaluation` });
+          } else {
+            const passed = !bodyText.includes(rule.textGone);
+            checks.push({ rule: 'textGone', passed, detail: passed ? `"${rule.textGone}" absent (good)` : `"${rule.textGone}" still present` });
+          }
         }
       }
 

@@ -605,7 +605,7 @@ export interface AuthCheckRule {
   url?: string;
   /** A cookie with this name must exist (non-empty value) */
   cookie?: string;
-  /** A CSS selector that must match a visible element on the page */
+  /** A CSS selector that must match at least one element on the page (includes hidden elements) */
   selector?: string;
   /** Text that must be present on the page */
   text?: string;
@@ -615,10 +615,13 @@ export interface AuthCheckRule {
   fn?: string;
 }
 
+/** The kind of auth check rule that was evaluated. */
+export type AuthCheckRuleKind = 'url' | 'cookie' | 'selector' | 'text' | 'textGone' | 'fn';
+
 /** Result of a single auth check rule evaluation. */
 export interface AuthCheckDetail {
   /** Which rule type was checked */
-  rule: string;
+  rule: AuthCheckRuleKind;
   /** Whether this individual check passed */
   passed: boolean;
   /** Human-readable detail (e.g. the actual URL, cookie value presence, etc.) */
