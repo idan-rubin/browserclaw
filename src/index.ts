@@ -85,4 +85,8 @@ export type {
   ChallengeKind,
   ChallengeInfo,
   ChallengeWaitResult,
+  AuthCheckRule,
+  AuthCheckResult,
+  AuthCheckDetail,
+  RunTelemetry,
 } from './types.js';

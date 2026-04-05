@@ -105,6 +105,10 @@ import type {
   HttpCredentials,
   ChallengeInfo,
   ChallengeWaitResult,
+  AuthCheckRule,
+  AuthCheckResult,
+  AuthCheckDetail,
+  RunTelemetry,
 } from './types.js';
 
 /**
@@ -1388,6 +1392,103 @@ export class CrawlPage {
     });
   }
 
+  // ── Auth Health ──────────────────────────────────────────────
+
+  /**
+   * Check whether the current page session appears authenticated.
+   *
+   * Evaluates one or more rules against the page state. All rules must pass
+   * for `authenticated` to be `true`. Returns per-rule details for debugging.
+   *
+   * @param rules - Array of auth check rules (url, cookie, selector, text, textGone, fn)
+   * @returns Authentication status and per-rule check details
+   *
+   * @example
+   * ```ts
+   * // Check by URL and absence of login text
+   * const result = await page.isAuthenticated([
+   *   { url: '/dashboard' },
+   *   { textGone: 'Sign in' },
+   * ]);
+   * if (!result.authenticated) {
+   *   console.log('Auth failed:', result.checks.filter(c => !c.passed));
+   * }
+   *
+   * // Check by cookie presence
+   * const result = await page.isAuthenticated([{ cookie: 'session_id' }]);
+   *
+   * // Check with custom JS function
+   * const result = await page.isAuthenticated([
+   *   { fn: '() => !!document.querySelector("[data-user-id]")' },
+   * ]);
+   * ```
+   */
+  async isAuthenticated(rules: AuthCheckRule[]): Promise<AuthCheckResult> {
+    if (!rules.length) return { authenticated: true, checks: [] };
+
+    const page = await getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    const checks: AuthCheckDetail[] = [];
+
+    for (const rule of rules) {
+      if (rule.url !== undefined) {
+        const currentUrl = page.url();
+        const passed = currentUrl.includes(rule.url);
+        checks.push({ rule: 'url', passed, detail: passed ? currentUrl : `expected "${rule.url}" in "${currentUrl}"` });
+      }
+
+      if (rule.cookie !== undefined) {
+        const cookies = await page.context().cookies();
+        const found = cookies.some((c) => c.name === rule.cookie && c.value !== '');
+        checks.push({ rule: 'cookie', passed: found, detail: found ? `cookie "${rule.cookie}" present` : `cookie "${rule.cookie}" missing or empty` });
+      }
+
+      if (rule.selector !== undefined) {
+        try {
+          const count = await page.locator(rule.selector).count();
+          const passed = count > 0;
+          checks.push({ rule: 'selector', passed, detail: passed ? `"${rule.selector}" found (${String(count)})` : `"${rule.selector}" not found` });
+        } catch {
+          checks.push({ rule: 'selector', passed: false, detail: `"${rule.selector}" error during evaluation` });
+        }
+      }
+
+      if (rule.text !== undefined) {
+        try {
+          const bodyText = await page.evaluate('() => { const b = document.body; return b ? b.innerText : ""; }');
+          const passed = typeof bodyText === 'string' && bodyText.includes(rule.text);
+          checks.push({ rule: 'text', passed, detail: passed ? `"${rule.text}" found` : `"${rule.text}" not found in page text` });
+        } catch {
+          checks.push({ rule: 'text', passed: false, detail: `"${rule.text}" error during evaluation` });
+        }
+      }
+
+      if (rule.textGone !== undefined) {
+        try {
+          const bodyText = await page.evaluate('() => { const b = document.body; return b ? b.innerText : ""; }');
+          const passed = typeof bodyText === 'string' && !bodyText.includes(rule.textGone);
+          checks.push({ rule: 'textGone', passed, detail: passed ? `"${rule.textGone}" absent (good)` : `"${rule.textGone}" still present` });
+        } catch {
+          checks.push({ rule: 'textGone', passed: false, detail: `"${rule.textGone}" error during evaluation` });
+        }
+      }
+
+      if (rule.fn !== undefined) {
+        try {
+          const result: unknown = await page.evaluate(rule.fn);
+          const passed = result !== null && result !== undefined && result !== false && result !== 0 && result !== '';
+          checks.push({ rule: 'fn', passed, detail: passed ? 'function returned truthy' : `function returned ${JSON.stringify(result)}` });
+        } catch (err) {
+          checks.push({ rule: 'fn', passed: false, detail: `function threw: ${err instanceof Error ? err.message : String(err)}` });
+        }
+      }
+    }
+
+    return {
+      authenticated: checks.length > 0 && checks.every((c) => c.passed),
+      checks,
+    };
+  }
+
   // ── Playwright Escape Hatches ─────────────────────────────────
 
   /**
@@ -1470,15 +1571,18 @@ export class BrowserClaw {
   private readonly ssrfPolicy: SsrfPolicy | undefined;
   private readonly recordVideo: { dir: string; size?: { width: number; height: number } } | undefined;
   private chrome: RunningChrome | null;
+  private readonly _telemetry: RunTelemetry;
 
   private constructor(
     cdpUrl: string,
     chrome: RunningChrome | null,
+    telemetry: RunTelemetry,
     ssrfPolicy?: SsrfPolicy,
     recordVideo?: { dir: string; size?: { width: number; height: number } },
   ) {
     this.cdpUrl = cdpUrl;
     this.chrome = chrome;
+    this._telemetry = telemetry;
     this.ssrfPolicy = ssrfPolicy;
     this.recordVideo = recordVideo;
   }
@@ -1508,16 +1612,28 @@ export class BrowserClaw {
    * ```
    */
   static async launch(opts: LaunchOptions = {}): Promise<BrowserClaw> {
+    const startedAt = new Date().toISOString();
     const chrome = await launchChrome(opts);
     const cdpUrl = `http://127.0.0.1:${String(chrome.cdpPort)}`;
     /* eslint-disable @typescript-eslint/no-deprecated -- backward-compat bridge for allowInternal */
     const ssrfPolicy =
       opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
     /* eslint-enable @typescript-eslint/no-deprecated */
-    const browser = new BrowserClaw(cdpUrl, chrome, ssrfPolicy, opts.recordVideo);
+    const telemetry: RunTelemetry = {
+      launchMs: chrome.launchMs,
+      timestamps: { startedAt, launchedAt: new Date().toISOString() },
+    };
+    const connectT0 = Date.now();
+    const browser = new BrowserClaw(cdpUrl, chrome, telemetry, ssrfPolicy, opts.recordVideo);
     if (opts.url !== undefined && opts.url !== '') {
+      // connectBrowser is called lazily inside currentPage → connectBrowser
       const page = await browser.currentPage();
+      telemetry.connectMs = Date.now() - connectT0;
+      telemetry.timestamps.connectedAt = new Date().toISOString();
+      const navT0 = Date.now();
       await page.goto(opts.url);
+      telemetry.navMs = Date.now() - navT0;
+      telemetry.timestamps.navigatedAt = new Date().toISOString();
     }
     return browser;
   }
@@ -1537,6 +1653,8 @@ export class BrowserClaw {
    * ```
    */
   static async connect(cdpUrl?: string, opts?: ConnectOptions): Promise<BrowserClaw> {
+    const startedAt = new Date().toISOString();
+    const connectT0 = Date.now();
     let resolvedUrl = cdpUrl;
     if (resolvedUrl === undefined || resolvedUrl === '') {
       const discovered = await discoverChromeCdpUrl();
@@ -1555,7 +1673,11 @@ export class BrowserClaw {
     const ssrfPolicy =
       opts?.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts?.ssrfPolicy;
     /* eslint-enable @typescript-eslint/no-deprecated */
-    return new BrowserClaw(resolvedUrl, null, ssrfPolicy, opts?.recordVideo);
+    const telemetry: RunTelemetry = {
+      connectMs: Date.now() - connectT0,
+      timestamps: { startedAt, connectedAt: new Date().toISOString() },
+    };
+    return new BrowserClaw(resolvedUrl, null, telemetry, ssrfPolicy, opts?.recordVideo);
   }
 
   /**
@@ -1670,13 +1792,61 @@ export class BrowserClaw {
    * If the browser was launched by `BrowserClaw.launch()`, the Chrome process
    * will be terminated. If connected via `BrowserClaw.connect()`, only the
    * Playwright connection is closed.
+   *
+   * @param exitReason - Optional structured reason for stopping (e.g. `'success'`, `'auth_failed'`, `'timeout'`)
    */
-  async stop(): Promise<void> {
-    clearRecordingContext(this.cdpUrl);
-    await disconnectBrowser();
-    if (this.chrome) {
-      await stopChrome(this.chrome);
-      this.chrome = null;
+  async stop(exitReason?: string): Promise<void> {
+    this._telemetry.timestamps.stoppedAt = new Date().toISOString();
+    if (exitReason !== undefined) this._telemetry.exitReason = exitReason;
+    try {
+      clearRecordingContext(this.cdpUrl);
+      await disconnectBrowser();
+      if (this.chrome) {
+        await stopChrome(this.chrome);
+        this.chrome = null;
+      }
+      this._telemetry.cleanupOk = true;
+    } catch (err) {
+      this._telemetry.cleanupOk = false;
+      throw err;
     }
+  }
+
+  /**
+   * Get structured telemetry for this browser session.
+   *
+   * Returns timing data, timestamps, and exit information collected
+   * throughout the session lifecycle. Useful for diagnosing startup
+   * latency, auth failures, and cleanup issues in cron/unattended runs.
+   *
+   * @returns Telemetry envelope with launch/connect/nav timings and exit info
+   *
+   * @example
+   * ```ts
+   * const browser = await BrowserClaw.launch({ url: 'https://example.com' });
+   * const page = await browser.currentPage();
+   *
+   * // ... do work ...
+   *
+   * const auth = await page.isAuthenticated([{ cookie: 'session' }]);
+   * browser.recordAuthResult(auth.authenticated);
+   *
+   * await browser.stop(auth.authenticated ? 'success' : 'auth_failed');
+   * console.log(browser.telemetry());
+   * // { launchMs: 1823, connectMs: 45, navMs: 620, authOk: true,
+   * //   exitReason: 'success', cleanupOk: true, timestamps: { ... } }
+   * ```
+   */
+  telemetry(): Readonly<RunTelemetry> {
+    return this._telemetry;
+  }
+
+  /**
+   * Record the result of an authentication check in the telemetry envelope.
+   *
+   * @param ok - Whether authentication was successful
+   */
+  recordAuthResult(ok: boolean): void {
+    this._telemetry.authOk = ok;
   }
 }

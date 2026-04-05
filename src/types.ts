@@ -56,6 +56,8 @@ export interface RunningChrome {
   cdpPort: number;
   /** Unix timestamp (ms) when the browser was started */
   startedAt: number;
+  /** Milliseconds from spawn to CDP-ready */
+  launchMs: number;
   /** The child process handle */
   proc: ChildProcess;
 }
@@ -590,6 +592,76 @@ export interface ChallengeWaitResult {
   resolved: boolean;
   /** The challenge still present (null if resolved) */
   challenge: ChallengeInfo | null;
+}
+
+// ── Auth Health ──
+
+/**
+ * A single rule for checking whether the browser session is authenticated.
+ * Multiple rules can be combined — all must pass for `authenticated: true`.
+ */
+export interface AuthCheckRule {
+  /** URL must match this substring or regex pattern (checked against page URL) */
+  url?: string;
+  /** A cookie with this name must exist (non-empty value) */
+  cookie?: string;
+  /** A CSS selector that must match a visible element on the page */
+  selector?: string;
+  /** Text that must be present on the page */
+  text?: string;
+  /** Text that must NOT be present on the page (e.g. "Sign in", "Log in") */
+  textGone?: string;
+  /** JavaScript function (as string) that must return a truthy value in the browser context */
+  fn?: string;
+}
+
+/** Result of a single auth check rule evaluation. */
+export interface AuthCheckDetail {
+  /** Which rule type was checked */
+  rule: string;
+  /** Whether this individual check passed */
+  passed: boolean;
+  /** Human-readable detail (e.g. the actual URL, cookie value presence, etc.) */
+  detail?: string;
+}
+
+/** Result of an `isAuthenticated()` call. */
+export interface AuthCheckResult {
+  /** `true` only if ALL rules passed */
+  authenticated: boolean;
+  /** Per-rule results for debugging */
+  checks: AuthCheckDetail[];
+}
+
+// ── Run Telemetry ──
+
+/** Structured telemetry envelope for a browser session lifecycle. */
+export interface RunTelemetry {
+  /** Milliseconds to launch Chrome (undefined if connected to existing instance) */
+  launchMs?: number;
+  /** Milliseconds to establish CDP connection */
+  connectMs?: number;
+  /** Milliseconds for initial navigation (if a URL was provided at launch) */
+  navMs?: number;
+  /** Whether auth verification passed (undefined if not checked) */
+  authOk?: boolean;
+  /** Structured exit reason when the session ends */
+  exitReason?: string;
+  /** Whether cleanup (process kill, connection close) succeeded */
+  cleanupOk?: boolean;
+  /** Key timestamps in ISO 8601 format */
+  timestamps: {
+    /** When the launch/connect sequence started */
+    startedAt: string;
+    /** When Chrome process became reachable */
+    launchedAt?: string;
+    /** When Playwright CDP connection was established */
+    connectedAt?: string;
+    /** When initial navigation completed */
+    navigatedAt?: string;
+    /** When stop() was called */
+    stoppedAt?: string;
+  };
 }
 
 // ── DNS Pinning ──
