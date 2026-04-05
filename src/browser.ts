@@ -1455,7 +1455,10 @@ export class CrawlPage {
             passed,
             detail: passed ? `"${rule.selector}" found (${String(count)})` : `"${rule.selector}" not found`,
           });
-        } catch {
+        } catch (err) {
+          console.warn(
+            `[browserclaw] isAuthenticated selector check failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
           checks.push({ rule: 'selector', passed: false, detail: `"${rule.selector}" error during evaluation` });
         }
       }
@@ -1470,8 +1473,10 @@ export class CrawlPage {
             fn: '() => { const b = document.body; return b ? b.innerText : ""; }',
           });
           bodyText = typeof raw === 'string' ? raw : null;
-        } catch {
-          // bodyText stays null — individual checks below will report the error
+        } catch (err) {
+          console.warn(
+            `[browserclaw] isAuthenticated body text fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
 
         if (rule.text !== undefined) {
