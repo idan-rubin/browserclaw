@@ -1464,7 +1464,11 @@ export class CrawlPage {
       if (rule.text !== undefined || rule.textGone !== undefined) {
         let bodyText: string | null = null;
         try {
-          const raw = await page.evaluate('() => { const b = document.body; return b ? b.innerText : ""; }');
+          const raw = await evaluateViaPlaywright({
+            cdpUrl: this.cdpUrl,
+            targetId: this.targetId,
+            fn: '() => { const b = document.body; return b ? b.innerText : ""; }',
+          });
           bodyText = typeof raw === 'string' ? raw : null;
         } catch {
           // bodyText stays null — individual checks below will report the error
@@ -1499,7 +1503,11 @@ export class CrawlPage {
 
       if (rule.fn !== undefined) {
         try {
-          const result: unknown = await page.evaluate(rule.fn);
+          const result: unknown = await evaluateViaPlaywright({
+            cdpUrl: this.cdpUrl,
+            targetId: this.targetId,
+            fn: rule.fn,
+          });
           const passed = result !== null && result !== undefined && result !== false && result !== 0 && result !== '';
           checks.push({
             rule: 'fn',

@@ -601,7 +601,7 @@ export interface ChallengeWaitResult {
  * Multiple rules can be combined — all must pass for `authenticated: true`.
  */
 export interface AuthCheckRule {
-  /** URL must match this substring or regex pattern (checked against page URL) */
+  /** URL must contain this substring (checked against page URL) */
   url?: string;
   /** A cookie with this name must exist (non-empty value) */
   cookie?: string;
