@@ -1842,7 +1842,7 @@ export class BrowserClaw {
    * will be terminated. If connected via `BrowserClaw.connect()`, only the
    * Playwright connection is closed.
    *
-   * @param exitReason - Optional structured reason for stopping (e.g. `'success'`, `'auth_failed'`, `'timeout'`)
+   * @param exitReason - Optional structured reason for stopping. One of: `'success'`, `'auth_failed'`, `'timeout'`, `'error'`, `'manual'`, `'nav_failed'`, `'crash'`, `'disconnected'`
    */
   async stop(exitReason?: ExitReason | (string & {})): Promise<void> {
     this._telemetry.timestamps.stoppedAt = new Date().toISOString();
