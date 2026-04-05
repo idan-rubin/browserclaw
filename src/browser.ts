@@ -1439,14 +1439,22 @@ export class CrawlPage {
       if (rule.cookie !== undefined) {
         const cookies = await page.context().cookies();
         const found = cookies.some((c) => c.name === rule.cookie && c.value !== '');
-        checks.push({ rule: 'cookie', passed: found, detail: found ? `cookie "${rule.cookie}" present` : `cookie "${rule.cookie}" missing or empty` });
+        checks.push({
+          rule: 'cookie',
+          passed: found,
+          detail: found ? `cookie "${rule.cookie}" present` : `cookie "${rule.cookie}" missing or empty`,
+        });
       }
 
       if (rule.selector !== undefined) {
         try {
           const count = await page.locator(rule.selector).count();
           const passed = count > 0;
-          checks.push({ rule: 'selector', passed, detail: passed ? `"${rule.selector}" found (${String(count)})` : `"${rule.selector}" not found` });
+          checks.push({
+            rule: 'selector',
+            passed,
+            detail: passed ? `"${rule.selector}" found (${String(count)})` : `"${rule.selector}" not found`,
+          });
         } catch {
           checks.push({ rule: 'selector', passed: false, detail: `"${rule.selector}" error during evaluation` });
         }
@@ -1467,7 +1475,11 @@ export class CrawlPage {
             checks.push({ rule: 'text', passed: false, detail: `"${rule.text}" error during evaluation` });
           } else {
             const passed = bodyText.includes(rule.text);
-            checks.push({ rule: 'text', passed, detail: passed ? `"${rule.text}" found` : `"${rule.text}" not found in page text` });
+            checks.push({
+              rule: 'text',
+              passed,
+              detail: passed ? `"${rule.text}" found` : `"${rule.text}" not found in page text`,
+            });
           }
         }
 
@@ -1476,7 +1488,11 @@ export class CrawlPage {
             checks.push({ rule: 'textGone', passed: false, detail: `"${rule.textGone}" error during evaluation` });
           } else {
             const passed = !bodyText.includes(rule.textGone);
-            checks.push({ rule: 'textGone', passed, detail: passed ? `"${rule.textGone}" absent (good)` : `"${rule.textGone}" still present` });
+            checks.push({
+              rule: 'textGone',
+              passed,
+              detail: passed ? `"${rule.textGone}" absent (good)` : `"${rule.textGone}" still present`,
+            });
           }
         }
       }
@@ -1485,9 +1501,17 @@ export class CrawlPage {
         try {
           const result: unknown = await page.evaluate(rule.fn);
           const passed = result !== null && result !== undefined && result !== false && result !== 0 && result !== '';
-          checks.push({ rule: 'fn', passed, detail: passed ? 'function returned truthy' : `function returned ${JSON.stringify(result)}` });
+          checks.push({
+            rule: 'fn',
+            passed,
+            detail: passed ? 'function returned truthy' : `function returned ${JSON.stringify(result)}`,
+          });
         } catch (err) {
-          checks.push({ rule: 'fn', passed: false, detail: `function threw: ${err instanceof Error ? err.message : String(err)}` });
+          checks.push({
+            rule: 'fn',
+            passed: false,
+            detail: `function threw: ${err instanceof Error ? err.message : String(err)}`,
+          });
         }
       }
     }
