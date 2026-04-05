@@ -861,6 +861,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
     userDataDir,
     cdpPort,
     startedAt,
+    launchMs: Date.now() - startedAt,
     proc,
   };
 }
