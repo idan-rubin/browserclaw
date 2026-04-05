@@ -89,5 +89,6 @@ export type {
   AuthCheckRuleKind,
   AuthCheckResult,
   AuthCheckDetail,
+  ExitReason,
   RunTelemetry,
 } from './types.js';

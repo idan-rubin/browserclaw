@@ -108,6 +108,7 @@ import type {
   AuthCheckRule,
   AuthCheckResult,
   AuthCheckDetail,
+  ExitReason,
   RunTelemetry,
 } from './types.js';
 
@@ -1843,7 +1844,7 @@ export class BrowserClaw {
    *
    * @param exitReason - Optional structured reason for stopping (e.g. `'success'`, `'auth_failed'`, `'timeout'`)
    */
-  async stop(exitReason?: string): Promise<void> {
+  async stop(exitReason?: ExitReason | (string & {})): Promise<void> {
     this._telemetry.timestamps.stoppedAt = new Date().toISOString();
     if (exitReason !== undefined) this._telemetry.exitReason = exitReason;
     try {
