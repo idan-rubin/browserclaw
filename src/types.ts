@@ -649,7 +649,7 @@ export interface RunTelemetry {
   /** Whether auth verification passed (undefined if not checked) */
   authOk?: boolean;
   /** Structured exit reason when the session ends */
-  exitReason?: string;
+  exitReason?: 'success' | 'auth_failed' | 'timeout' | 'error' | 'manual' | (string & {});
   /** Whether cleanup (process kill, connection close) succeeded */
   cleanupOk?: boolean;
   /** Key timestamps in ISO 8601 format */

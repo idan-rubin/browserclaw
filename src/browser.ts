@@ -1669,13 +1669,10 @@ export class BrowserClaw {
       launchMs: chrome.launchMs,
       timestamps: { startedAt, launchedAt: new Date().toISOString() },
     };
-    const connectT0 = Date.now();
     const browser = new BrowserClaw(cdpUrl, chrome, telemetry, ssrfPolicy, opts.recordVideo);
     if (opts.url !== undefined && opts.url !== '') {
-      // connectBrowser is called lazily inside currentPage → connectBrowser
+      // connectBrowser is called lazily inside currentPage → connectBrowser; connectMs is recorded there
       const page = await browser.currentPage();
-      telemetry.connectMs = Date.now() - connectT0;
-      telemetry.timestamps.connectedAt = new Date().toISOString();
       const navT0 = Date.now();
       await page.goto(opts.url);
       telemetry.navMs = Date.now() - navT0;
@@ -1754,7 +1751,12 @@ export class BrowserClaw {
    * @returns CrawlPage for the first/active page
    */
   async currentPage(): Promise<CrawlPage> {
+    const connectT0 = Date.now();
     const { browser } = await connectBrowser(this.cdpUrl);
+    if (this._telemetry.connectMs === undefined) {
+      this._telemetry.connectMs = Date.now() - connectT0;
+      this._telemetry.timestamps.connectedAt = new Date().toISOString();
+    }
     const pages = getAllPages(browser);
     if (!pages.length) throw new Error('No pages available. Use browser.open(url) to create a tab.');
     const tid = await pageTargetId(pages[0]).catch(() => null);
