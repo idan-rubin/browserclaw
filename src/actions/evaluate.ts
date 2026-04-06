@@ -154,8 +154,9 @@ export async function evaluateViaPlaywright(opts: {
   restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
 
   const outerTimeout = normalizeTimeoutMs(opts.timeoutMs, 20000);
-  let evaluateTimeout = Math.max(1000, Math.min(120000, outerTimeout - 500));
-  evaluateTimeout = Math.min(evaluateTimeout, outerTimeout);
+  // Browser-side timeout must be strictly less than outer timeout so Playwright
+  // can surface its own timeout error instead of hanging indefinitely
+  const evaluateTimeout = Math.max(1000, Math.min(120000, outerTimeout - 1000));
 
   const signal = opts.signal;
   let abortListener: (() => void) | undefined;
@@ -228,5 +229,8 @@ export async function evaluateViaPlaywright(opts: {
     );
   } finally {
     if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+    // Release closure references to prevent memory leaks in long-lived signals
+    abortReject = undefined;
+    abortListener = undefined;
   }
 }

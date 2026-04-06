@@ -1441,6 +1441,24 @@ export class CrawlPage {
     const page = await getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this._targetId });
     const checks: AuthCheckDetail[] = [];
 
+    // Pre-fetch body text once if any rule needs it, to avoid redundant evaluations
+    const needsBodyText = rules.some((r) => r.text !== undefined || r.textGone !== undefined);
+    let bodyText: string | null = null;
+    if (needsBodyText) {
+      try {
+        const raw = await evaluateViaPlaywright({
+          cdpUrl: this.cdpUrl,
+          targetId: this._targetId,
+          fn: '() => { const b = document.body; return b ? b.innerText : ""; }',
+        });
+        bodyText = typeof raw === 'string' ? raw : null;
+      } catch (err) {
+        console.warn(
+          `[browserclaw] isAuthenticated body text fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     for (const rule of rules) {
       if (rule.url !== undefined) {
         const currentUrl = page.url();
@@ -1475,22 +1493,7 @@ export class CrawlPage {
         }
       }
 
-      // Fetch body text once if either text or textGone rule is present
       if (rule.text !== undefined || rule.textGone !== undefined) {
-        let bodyText: string | null = null;
-        try {
-          const raw = await evaluateViaPlaywright({
-            cdpUrl: this.cdpUrl,
-            targetId: this._targetId,
-            fn: '() => { const b = document.body; return b ? b.innerText : ""; }',
-          });
-          bodyText = typeof raw === 'string' ? raw : null;
-        } catch (err) {
-          console.warn(
-            `[browserclaw] isAuthenticated body text fetch failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-
         if (rule.text !== undefined) {
           if (bodyText === null) {
             checks.push({ rule: 'text', passed: false, detail: `"${rule.text}" error during evaluation` });

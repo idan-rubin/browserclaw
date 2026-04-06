@@ -112,8 +112,8 @@ export async function screenshotWithLabelsViaPlaywright(opts: {
           el.remove();
         });
       })
-      .catch(() => {
-        /* intentional no-op */
+      .catch((err: unknown) => {
+        console.warn(`[browserclaw] label overlay cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
       });
   }
 }

@@ -82,7 +82,8 @@ export function ensurePageState(page: Page): PageState {
         timestamp: new Date().toISOString(),
         location: msg.location(),
       });
-      if (state.console.length > MAX_CONSOLE_MESSAGES) state.console.shift();
+      // Evict oldest entries in bulk to avoid O(n) shift() on every overflow
+      if (state.console.length > MAX_CONSOLE_MESSAGES + 50) state.console.splice(0, 50);
     });
 
     page.on('pageerror', (err) => {
@@ -92,7 +93,7 @@ export function ensurePageState(page: Page): PageState {
         stack: err.stack !== undefined && err.stack !== '' ? err.stack : undefined,
         timestamp: new Date().toISOString(),
       });
-      if (state.errors.length > MAX_PAGE_ERRORS) state.errors.shift();
+      if (state.errors.length > MAX_PAGE_ERRORS + 20) state.errors.splice(0, 20);
     });
 
     page.on('request', (req) => {
@@ -106,7 +107,7 @@ export function ensurePageState(page: Page): PageState {
         url: req.url(),
         resourceType: req.resourceType(),
       });
-      if (state.requests.length > MAX_NETWORK_REQUESTS) state.requests.shift();
+      if (state.requests.length > MAX_NETWORK_REQUESTS + 50) state.requests.splice(0, 50);
     });
 
     page.on('response', (resp) => {

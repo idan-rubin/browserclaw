@@ -155,14 +155,19 @@ function isLoopbackCdpUrl(url: string): boolean {
  * one caller's restore doesn't clobber another caller's mutation.
  */
 let envMutexPromise: Promise<void> = Promise.resolve();
+let envMutexDepth = 0;
 
 /**
  * Scoped NO_PROXY bypass for loopback CDP URLs.
  * Serializes env mutations so concurrent connects don't interleave save/restore.
  * Only restores if the value hasn't been changed by someone else.
+ * Reentrant: nested calls skip the env mutation if already inside the mutex.
  */
 export async function withNoProxyForCdpUrl<T>(url: string, fn: () => Promise<T>): Promise<T> {
   if (!isLoopbackCdpUrl(url) || !hasProxyEnvConfigured()) return fn();
+
+  // Reentrancy guard: if already inside this mutex, just run fn() directly
+  if (envMutexDepth > 0) return fn();
 
   const prev = envMutexPromise;
   // eslint-disable-next-line @typescript-eslint/no-empty-function
@@ -186,9 +191,11 @@ export async function withNoProxyForCdpUrl<T>(url: string, fn: () => Promise<T>)
   const applied = current ? `${current},${LOOPBACK_ENTRIES}` : LOOPBACK_ENTRIES;
   process.env.NO_PROXY = applied;
   process.env.no_proxy = applied;
+  envMutexDepth += 1;
   try {
     return await fn();
   } finally {
+    envMutexDepth -= 1;
     if (process.env.NO_PROXY === applied) {
       if (savedNoProxy !== undefined) process.env.NO_PROXY = savedNoProxy;
       else delete process.env.NO_PROXY;
@@ -425,7 +432,11 @@ export async function connectBrowser(cdpUrl: string, authToken?: string): Promis
           return connected;
         } catch (err) {
           lastErr = err;
-          if ((err instanceof Error ? err.message : String(err)).includes('rate limit')) break;
+          if ((err instanceof Error ? err.message : String(err)).includes('rate limit')) {
+            // Rate-limit: wait longer before retrying instead of breaking immediately
+            await new Promise((r) => setTimeout(r, 1000 + attempt * 1000));
+            continue;
+          }
           await new Promise((r) => setTimeout(r, 250 + attempt * 250));
         }
       }
@@ -720,8 +731,9 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
     } catch {}
   }
 
-  // Last resort: if CDP sessions failed for all pages and there's only one, return it
-  if (!resolvedViaCdp && pages.length === 1) return pages[0] ?? null;
+  // Last resort: if CDP sessions failed for all pages and there's only one, return it.
+  // Only use this fallback when no specific targetId was requested via cdpUrl lookup.
+  if (!resolvedViaCdp && pages.length === 1 && cdpUrl !== undefined) return pages[0] ?? null;
   return null;
 }
 

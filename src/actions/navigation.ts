@@ -190,6 +190,8 @@ export async function navigateViaPlaywright(opts: {
     response = await navigate();
   } catch (err) {
     if (!isRetryableNavigateError(err)) throw err;
+    // Clean recording context before force-disconnect to prevent stale references
+    recordingContexts.delete(opts.cdpUrl);
     await forceDisconnectPlaywrightConnection({
       cdpUrl: opts.cdpUrl,
       targetId: opts.targetId,
@@ -269,9 +271,7 @@ export async function createPageViaPlaywright(opts: {
       });
     } catch (err) {
       if (isPolicyDenyNavigationError(err) || err instanceof BlockedBrowserTargetError) throw err;
-      console.warn(
-        `[browserclaw] createPage navigation failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      console.warn(`[browserclaw] createPage navigation failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     await assertPageNavigationCompletedSafely({
       cdpUrl: opts.cdpUrl,

@@ -436,8 +436,11 @@ async function ensurePortAvailable(port: number, retries = 2): Promise<void> {
         const tester = net
           .createServer()
           .once('error', (err: NodeJS.ErrnoException) => {
-            if (err.code === 'EADDRINUSE') reject(new Error(`Port ${String(port)} is already in use`));
-            else reject(err);
+            // Close the server to release its handle on non-EADDRINUSE errors
+            tester.close(() => {
+              if (err.code === 'EADDRINUSE') reject(new Error(`Port ${String(port)} is already in use`));
+              else reject(err);
+            });
           })
           .once('listening', () => {
             tester.close(() => {
@@ -864,9 +867,12 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   proc.stderr.on('data', onStderr);
 
   const readyDeadline = Date.now() + 15000;
+  let pollDelay = 200;
   while (Date.now() < readyDeadline) {
     if (await isChromeCdpReady(cdpUrl, 500)) break;
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, pollDelay));
+    // Back off polling to reduce CPU churn on slow launches
+    pollDelay = Math.min(pollDelay + 100, 1000);
   }
 
   if (!(await isChromeCdpReady(cdpUrl, 500))) {
@@ -878,6 +884,11 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
         : '';
     try {
       proc.kill('SIGKILL');
+    } catch {}
+    // Clean up userDataDir lock files on launch failure so subsequent retries don't stall
+    try {
+      const lockFile = path.join(userDataDir, 'SingletonLock');
+      if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
     } catch {}
     throw new Error(`Failed to start Chrome CDP on port ${String(cdpPort)}.${sandboxHint}${stderrHint}`);
   }

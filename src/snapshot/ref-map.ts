@@ -171,6 +171,10 @@ export interface SnapshotBuildOptions {
 /**
  * Build a role snapshot from Playwright's ariaSnapshot() output.
  * Assigns ref IDs (e1, e2, ...) to interactive/content elements.
+ *
+ * Shadow DOM elements may produce duplicate role+name pairs because Playwright
+ * flattens shadow trees into the aria snapshot. The `nth` index and duplicate
+ * tracking ensure each element gets a unique locator even when names collide.
  */
 export function buildRoleSnapshotFromAriaSnapshot(
   ariaSnapshot: string,

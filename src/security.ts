@@ -275,7 +275,8 @@ function isBlockedHostnameOrIp(hostname: string, policy?: SsrfPolicy): boolean {
 function isPrivateIpAddress(address: string, policy?: SsrfPolicy): boolean {
   let normalized = address.trim().toLowerCase();
   if (normalized.startsWith('[') && normalized.endsWith(']')) normalized = normalized.slice(1, -1);
-  if (!normalized) return false;
+  // "[]" strips to empty string — treat as unspecified (blocked)
+  if (!normalized) return true;
 
   const blockOptions = resolveIpv4SpecialUseBlockOptions(policy);
 
@@ -299,7 +300,9 @@ function isPrivateIpAddress(address: string, policy?: SsrfPolicy): boolean {
 
 /**
  * Check whether a URL targets a loopback or private/internal network address.
- * Synchronous hostname-based check. Used to prevent SSRF attacks.
+ * Synchronous hostname-based check — does NOT perform DNS resolution, so
+ * hostnames that resolve to private IPs will not be caught. Use
+ * `assertBrowserNavigationAllowed` for the full async DNS-pinned check.
  */
 export function isInternalUrl(url: string, policy?: SsrfPolicy): boolean {
   let parsed: URL;
@@ -928,9 +931,7 @@ export async function assertBrowserNavigationResultAllowed(
 
   // Block data: and blob: URLs in post-navigation results — these can be used to exfiltrate data
   if (parsed.protocol === 'data:' || parsed.protocol === 'blob:') {
-    throw new InvalidBrowserNavigationUrlError(
-      `Navigation result blocked: "${parsed.protocol}" URLs are not allowed.`,
-    );
+    throw new InvalidBrowserNavigationUrlError(`Navigation result blocked: "${parsed.protocol}" URLs are not allowed.`);
   }
 
   if (NETWORK_NAVIGATION_PROTOCOLS.has(parsed.protocol) || isAllowedNonNetworkNavigationUrl(parsed)) {

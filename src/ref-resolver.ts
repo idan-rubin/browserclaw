@@ -16,6 +16,8 @@ const roleRefsByTarget = new Map<
     storedAt: number;
   }
 >();
+// FIFO eviction (not LRU) — sufficient because refs are short-lived and frequently
+// overwritten per-target. An LRU would add complexity without meaningful benefit here.
 const MAX_ROLE_REFS_CACHE = 50;
 
 export function normalizeCdpUrl(raw: string): string {

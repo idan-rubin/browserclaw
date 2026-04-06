@@ -107,8 +107,8 @@ export async function setGeolocationViaPlaywright(opts: {
 
   if (opts.clear === true) {
     await context.setGeolocation(null);
-    await context.clearPermissions().catch(() => {
-      /* intentional no-op */
+    await context.clearPermissions().catch((err: unknown) => {
+      console.warn(`[browserclaw] clearPermissions failed: ${err instanceof Error ? err.message : String(err)}`);
     });
     return;
   }

@@ -23,8 +23,8 @@ export async function waitForViaPlaywright(opts: {
   const remaining = () => Math.max(500, deadline - Date.now());
 
   if (typeof opts.timeMs === 'number' && Number.isFinite(opts.timeMs)) {
-    // timeMs is a fixed delay capped at MAX_WAIT_TIME_MS, independent of timeoutMs
-    // (timeoutMs governs condition-based waits below, not this fixed sleep)
+    // timeMs is a fixed delay capped at MAX_WAIT_TIME_MS; it consumes time from the
+    // overall deadline so subsequent condition waits get an accurate remaining() budget
     await page.waitForTimeout(resolveBoundedDelayMs(opts.timeMs, 'wait timeMs', MAX_WAIT_TIME_MS));
   }
   if (opts.text !== undefined && opts.text !== '') {

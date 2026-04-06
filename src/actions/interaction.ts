@@ -64,6 +64,9 @@ export async function mouseClickViaPlaywright(opts: {
   });
 }
 
+// Note: pressAndHold is not cancellable once the mousePressed event is dispatched.
+// The holdMs sleep runs to completion — there is no AbortSignal support because
+// interrupting mid-hold would leave the mouse button in a pressed state.
 export async function pressAndHoldViaCdp(opts: {
   cdpUrl: string;
   targetId?: string;
@@ -191,9 +194,10 @@ export async function clickViaPlaywright(opts: {
     if (checkableRole && opts.doubleClick !== true && ariaCheckedBefore !== undefined) {
       const POLL_INTERVAL_MS = 50;
       const POLL_TIMEOUT_MS = 500;
+      const ATTR_TIMEOUT_MS = Math.min(timeout, POLL_TIMEOUT_MS);
       let changed = false;
       for (let elapsed = 0; elapsed < POLL_TIMEOUT_MS; elapsed += POLL_INTERVAL_MS) {
-        const current = await locator.getAttribute('aria-checked', { timeout }).catch(() => undefined);
+        const current = await locator.getAttribute('aria-checked', { timeout: ATTR_TIMEOUT_MS }).catch(() => undefined);
         if (current === undefined || current !== ariaCheckedBefore) {
           changed = true;
           break;
