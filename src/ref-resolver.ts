@@ -80,7 +80,6 @@ export function storeRoleRefsForTarget(opts: {
   });
 }
 
-
 /**
  * Clear role refs for all targets associated with a CDP URL.
  * Called when a browser disconnects.

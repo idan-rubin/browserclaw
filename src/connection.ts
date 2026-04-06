@@ -33,7 +33,6 @@ export {
 export {
   rememberRoleRefsForTarget,
   storeRoleRefsForTarget,
-  restoreRoleRefsForTarget,
   clearRoleRefsForCdpUrl,
   parseRoleRef,
   requireRef,
@@ -484,7 +483,7 @@ export async function disconnectBrowser(): Promise<void> {
 export async function closePlaywrightBrowserConnection(opts?: { cdpUrl?: string }): Promise<void> {
   if (opts?.cdpUrl !== undefined && opts.cdpUrl !== '') {
     return withConnectionLock(async () => {
-      const cdpUrl = opts.cdpUrl
+      const cdpUrl = opts.cdpUrl;
       if (cdpUrl === undefined || cdpUrl === '') return;
       const normalized = normalizeCdpUrl(cdpUrl);
       clearBlockedTargetsForCdpUrl(normalized);

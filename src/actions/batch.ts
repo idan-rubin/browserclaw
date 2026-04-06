@@ -14,7 +14,6 @@ import { pressKeyViaPlaywright } from './keyboard.js';
 import { resizeViewportViaPlaywright, closePageViaPlaywright } from './navigation.js';
 import { waitForViaPlaywright } from './wait.js';
 
-
 const MAX_BATCH_DEPTH = 5;
 const MAX_BATCH_TIMEOUT_MS = 300_000;
 const MAX_BATCH_ACTIONS = 100;
