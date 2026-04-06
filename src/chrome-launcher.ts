@@ -834,11 +834,11 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
 
   const readyDeadline = Date.now() + 15000;
   while (Date.now() < readyDeadline) {
-    if (await isChromeReachable(cdpUrl, 500)) break;
+    if (await isChromeCdpReady(cdpUrl, 500)) break;
     await new Promise((r) => setTimeout(r, 200));
   }
 
-  if (!(await isChromeReachable(cdpUrl, 500))) {
+  if (!(await isChromeCdpReady(cdpUrl, 500))) {
     const stderrOutput = Buffer.concat(stderrChunks).toString('utf8').trim();
     const stderrHint = stderrOutput ? `\nChrome stderr:\n${stderrOutput.slice(0, 2000)}` : '';
     const sandboxHint =
