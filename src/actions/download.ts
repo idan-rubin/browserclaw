@@ -5,7 +5,6 @@ import type { Page, Download } from 'playwright-core';
 import {
   getPageForTargetId,
   ensurePageState,
-  restoreRoleRefsForTarget,
   refLocator,
   toAIFriendlyError,
   normalizeTimeoutMs,
@@ -28,8 +27,10 @@ function createPageDownloadWaiter(page: Page, timeoutMs: number) {
     }
   };
 
+  let rejectPromise: ((reason: Error) => void) | undefined;
   return {
     promise: new Promise<Download>((resolve, reject) => {
+      rejectPromise = reject;
       handler = (download: Download) => {
         if (done) return;
         done = true;
@@ -48,6 +49,8 @@ function createPageDownloadWaiter(page: Page, timeoutMs: number) {
       if (done) return;
       done = true;
       cleanup();
+      // Reject the pending promise so callers awaiting it don't hang
+      rejectPromise?.(new Error('Download waiter cancelled'));
     },
   };
 }
@@ -96,14 +99,13 @@ export async function downloadViaPlaywright(opts: {
 
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   const state = ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
   const outPath = opts.path.trim();
   if (!outPath) throw new Error('path is required');
 
-  state.armIdDownload = bumpDownloadArmId(state);
-  const armId = state.armIdDownload;
+  const armId = bumpDownloadArmId(state);
+  state.armIdDownload = armId;
   const waiter = createPageDownloadWaiter(page, timeout);
 
   try {

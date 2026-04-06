@@ -80,6 +80,9 @@ export const STEALTH_SCRIPT = `(function() {
   });
 
   // ── 4. window.chrome ──
+  // Stub the chrome.runtime API surface that detection scripts probe for.
+  // Only applied when the real chrome.runtime.connect is absent (headless/CDP mode).
+  // The stubs are intentionally non-functional — they exist solely to pass presence checks.
   p(function() {
     if (window.chrome && window.chrome.runtime && window.chrome.runtime.connect) return;
 
@@ -130,6 +133,9 @@ export const STEALTH_SCRIPT = `(function() {
   });
 
   // ── 6. WebGL vendor / renderer ──
+  // Hardcoded to Intel Iris — the most common discrete GPU on macOS. These strings
+  // are fingerprinting targets; a more sophisticated approach would randomize per-session,
+  // but static values are sufficient to avoid the default "Google SwiftShader" headless signal.
   p(function() {
     var h = {
       apply: function(target, self, args) {

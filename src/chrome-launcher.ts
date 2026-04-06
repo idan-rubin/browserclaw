@@ -1,10 +1,32 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
 import type { ChromeExecutable, ChromeKind, LaunchOptions, RunningChrome } from './types.js';
+
+// ── Process Tree Kill ──
+
+/**
+ * Kill a process and its children. Uses process group kill on Unix when the
+ * process was spawned with `detached: true`, falls back to direct kill.
+ */
+function killProcessTree(proc: ChildProcess, signal: NodeJS.Signals): void {
+  if (process.platform !== 'win32' && proc.pid !== undefined) {
+    try {
+      process.kill(-proc.pid, signal);
+      return;
+    } catch {
+      // Process group kill failed — fall back to direct kill
+    }
+  }
+  try {
+    proc.kill(signal);
+  } catch {
+    /* process may already be dead */
+  }
+}
 
 // ── Executable Detection ──
 
@@ -407,21 +429,35 @@ export function resolveBrowserExecutable(opts?: { executablePath?: string }): Ch
 
 // ── Port Check ──
 
-async function ensurePortAvailable(port: number): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const tester = net
-      .createServer()
-      .once('error', (err: NodeJS.ErrnoException) => {
-        if (err.code === 'EADDRINUSE') reject(new Error(`Port ${String(port)} is already in use`));
-        else reject(err);
-      })
-      .once('listening', () => {
-        tester.close(() => {
-          resolve();
-        });
-      })
-      .listen(port);
-  });
+async function ensurePortAvailable(port: number, retries = 2): Promise<void> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tester = net
+          .createServer()
+          .once('error', (err: NodeJS.ErrnoException) => {
+            // Close the server to release its handle on non-EADDRINUSE errors
+            tester.close(() => {
+              if (err.code === 'EADDRINUSE') reject(new Error(`Port ${String(port)} is already in use`));
+              else reject(err);
+            });
+          })
+          .once('listening', () => {
+            tester.close(() => {
+              resolve();
+            });
+          })
+          .listen(port);
+      });
+      return;
+    } catch (err) {
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 100));
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 // ── Profile Decoration ──
@@ -750,7 +786,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   const userDataDir = opts.userDataDir ?? resolveUserDataDir(profileName);
   fs.mkdirSync(userDataDir, { recursive: true });
 
-  const spawnChrome = () => {
+  const spawnChrome = (spawnOpts?: { detached?: boolean }) => {
     const args = [
       `--remote-debugging-port=${String(cdpPort)}`,
       '--remote-debugging-address=127.0.0.1',
@@ -784,6 +820,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
     return spawn(exe.path, args, {
       stdio: 'pipe',
       env: { ...process.env, HOME: os.homedir() },
+      ...spawnOpts,
     });
   };
 
@@ -793,24 +830,21 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
 
   // Bootstrap run if profile doesn't exist yet
   if (!fileExists(localStatePath) || !fileExists(preferencesPath)) {
-    const bootstrap = spawnChrome();
+    const useDetached = process.platform !== 'win32';
+    const bootstrap = spawnChrome(useDetached ? { detached: true } : undefined);
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
       if (fileExists(localStatePath) && fileExists(preferencesPath)) break;
       await new Promise((r) => setTimeout(r, 100));
     }
-    try {
-      bootstrap.kill('SIGTERM');
-    } catch {}
+    killProcessTree(bootstrap, 'SIGTERM');
     const exitDeadline = Date.now() + 5000;
     while (Date.now() < exitDeadline) {
       if (bootstrap.exitCode != null) break;
       await new Promise((r) => setTimeout(r, 50));
     }
     if (bootstrap.exitCode == null) {
-      try {
-        bootstrap.kill('SIGKILL');
-      } catch {}
+      killProcessTree(bootstrap, 'SIGKILL');
     }
   }
 
@@ -833,9 +867,12 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   proc.stderr.on('data', onStderr);
 
   const readyDeadline = Date.now() + 15000;
+  let pollDelay = 200;
   while (Date.now() < readyDeadline) {
     if (await isChromeCdpReady(cdpUrl, 500)) break;
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, pollDelay));
+    // Back off polling to reduce CPU churn on slow launches
+    pollDelay = Math.min(pollDelay + 100, 1000);
   }
 
   if (!(await isChromeCdpReady(cdpUrl, 500))) {
@@ -847,6 +884,11 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
         : '';
     try {
       proc.kill('SIGKILL');
+    } catch {}
+    // Clean up userDataDir lock files on launch failure so subsequent retries don't stall
+    try {
+      const lockFile = path.join(userDataDir, 'SingletonLock');
+      if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
     } catch {}
     throw new Error(`Failed to start Chrome CDP on port ${String(cdpPort)}.${sandboxHint}${stderrHint}`);
   }
@@ -869,20 +911,12 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
 export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Promise<void> {
   const proc = running.proc;
   if (proc.exitCode !== null) return;
-  try {
-    proc.kill('SIGTERM');
-  } catch {
-    /* process may already be dead */
-  }
+  killProcessTree(proc, 'SIGTERM');
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     // exitCode changes asynchronously after SIGTERM; re-read from proc
     if ((proc as { exitCode: number | null }).exitCode !== null) return;
     await new Promise((r) => setTimeout(r, 100));
   }
-  try {
-    proc.kill('SIGKILL');
-  } catch {
-    /* process may already be dead */
-  }
+  killProcessTree(proc, 'SIGKILL');
 }

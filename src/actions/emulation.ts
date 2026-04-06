@@ -35,13 +35,7 @@ export async function setDeviceViaPlaywright(opts: { cdpUrl: string; targetId?: 
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
 
-  if (device.viewport !== null) {
-    await page.setViewportSize({
-      width: device.viewport.width,
-      height: device.viewport.height,
-    });
-  }
-
+  // Apply all emulation settings via CDP in a single session for atomicity
   await withPageScopedCdpClient({
     cdpUrl: opts.cdpUrl,
     page,
@@ -69,6 +63,14 @@ export async function setDeviceViaPlaywright(opts: { cdpUrl: string; targetId?: 
       }
     },
   });
+
+  // Also set viewport at the Playwright level for proper layout
+  if (device.viewport !== null) {
+    await page.setViewportSize({
+      width: device.viewport.width,
+      height: device.viewport.height,
+    });
+  }
 }
 
 export async function setExtraHTTPHeadersViaPlaywright(opts: {
@@ -78,7 +80,16 @@ export async function setExtraHTTPHeadersViaPlaywright(opts: {
 }): Promise<void> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
-  await page.context().setExtraHTTPHeaders(opts.headers);
+  // Use CDP Network.setExtraHTTPHeaders for page-scoped headers instead of
+  // context-level setExtraHTTPHeaders which affects all tabs
+  await withPageScopedCdpClient({
+    cdpUrl: opts.cdpUrl,
+    page,
+    targetId: opts.targetId,
+    fn: async (send) => {
+      await send('Network.setExtraHTTPHeaders', { headers: opts.headers });
+    },
+  });
 }
 
 export async function setGeolocationViaPlaywright(opts: {
@@ -96,8 +107,8 @@ export async function setGeolocationViaPlaywright(opts: {
 
   if (opts.clear === true) {
     await context.setGeolocation(null);
-    await context.clearPermissions().catch(() => {
-      /* intentional no-op */
+    await context.clearPermissions().catch((err: unknown) => {
+      console.warn(`[browserclaw] clearPermissions failed: ${err instanceof Error ? err.message : String(err)}`);
     });
     return;
   }

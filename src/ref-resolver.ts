@@ -5,14 +5,19 @@ import type { RoleRefs } from './types.js';
 
 // ── Ref cache: keyed by "cdpUrl::targetId" ──
 
+const REFS_STALENESS_THRESHOLD_MS = 30_000;
+
 const roleRefsByTarget = new Map<
   string,
   {
     refs: RoleRefs;
     frameSelector?: string;
     mode?: 'role' | 'aria';
+    storedAt: number;
   }
 >();
+// FIFO eviction (not LRU) — sufficient because refs are short-lived and frequently
+// overwritten per-target. An LRU would add complexity without meaningful benefit here.
 const MAX_ROLE_REFS_CACHE = 50;
 
 export function normalizeCdpUrl(raw: string): string {
@@ -42,6 +47,7 @@ export function rememberRoleRefsForTarget(opts: {
     refs: opts.refs,
     ...(opts.frameSelector !== undefined && opts.frameSelector !== '' ? { frameSelector: opts.frameSelector } : {}),
     ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
+    storedAt: Date.now(),
   });
   while (roleRefsByTarget.size > MAX_ROLE_REFS_CACHE) {
     const first = roleRefsByTarget.keys().next();
@@ -62,6 +68,7 @@ export function storeRoleRefsForTarget(opts: {
   state.roleRefs = opts.refs;
   state.roleRefsFrameSelector = opts.frameSelector;
   state.roleRefsMode = opts.mode;
+  state.roleRefsStoredAt = Date.now();
 
   if (opts.targetId === undefined || opts.targetId.trim() === '') return;
   rememberRoleRefsForTarget({
@@ -71,18 +78,6 @@ export function storeRoleRefsForTarget(opts: {
     frameSelector: opts.frameSelector,
     mode: opts.mode,
   });
-}
-
-export function restoreRoleRefsForTarget(opts: { cdpUrl: string; targetId?: string; page: Page }): void {
-  const targetId = opts.targetId?.trim() ?? '';
-  if (targetId === '') return;
-  const entry = roleRefsByTarget.get(roleRefsKey(opts.cdpUrl, targetId));
-  if (!entry) return;
-  const state = ensurePageState(opts.page);
-  if (state.roleRefs) return;
-  state.roleRefs = entry.refs;
-  state.roleRefsFrameSelector = entry.frameSelector;
-  state.roleRefsMode = entry.mode;
 }
 
 /**
@@ -156,6 +151,16 @@ export function refLocator(page: Page, ref: string) {
 
   if (/^e\d+$/.test(normalized)) {
     const state = getPageState(page);
+
+    // Warn if refs are stale
+    if (state?.roleRefsStoredAt !== undefined) {
+      const ageMs = Date.now() - state.roleRefsStoredAt;
+      if (ageMs > REFS_STALENESS_THRESHOLD_MS) {
+        console.warn(
+          `[browserclaw] refs are ${String(Math.round(ageMs / 1000))}s old — consider re-snapshotting for fresh refs`,
+        );
+      }
+    }
 
     // Aria mode: use aria-ref locator
     if (state?.roleRefsMode === 'aria') {
