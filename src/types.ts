@@ -557,6 +557,7 @@ export interface PageState {
   roleRefs?: RoleRefs;
   roleRefsFrameSelector?: string;
   roleRefsMode?: 'role' | 'aria';
+  roleRefsStoredAt?: number;
   armIdUpload: number;
   armIdDialog: number;
   armIdDownload: number;

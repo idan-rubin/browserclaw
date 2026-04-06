@@ -318,6 +318,7 @@ export async function fillFormViaPlaywright(opts: {
   const page = await getRestoredPageForTarget(opts);
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
 
+  let filledCount = 0;
   for (const field of opts.fields) {
     const ref = field.ref.trim();
     const type = (typeof field.type === 'string' ? field.type.trim() : '') || 'text';
@@ -343,17 +344,25 @@ export async function fillFormViaPlaywright(opts: {
         try {
           await setCheckedViaEvaluate(locator, checked);
         } catch (err) {
-          throw toAIFriendlyError(err, ref);
+          const friendly = toAIFriendlyError(err, ref);
+          throw new Error(
+            `Failed at field "${ref}" (${String(filledCount)}/${String(opts.fields.length)} filled): ${friendly.message}`,
+          );
         }
       }
+      filledCount += 1;
       continue;
     }
 
     try {
       await locator.fill(value, { timeout });
     } catch (err) {
-      throw toAIFriendlyError(err, ref);
+      const friendly = toAIFriendlyError(err, ref);
+      throw new Error(
+        `Failed at field "${ref}" (${String(filledCount)}/${String(opts.fields.length)} filled): ${friendly.message}`,
+      );
     }
+    filledCount += 1;
   }
 }
 
@@ -454,6 +463,10 @@ export async function armDialogViaPlaywright(opts: {
 
   // Fire-and-forget: returns immediately once the arm is registered.
   // The waitForEvent chain runs in the background and handles the dialog when it fires.
+  const resetArm = () => {
+    if (state.armIdDialog === armId) state.armIdDialog = 0;
+  };
+  page.once('close', resetArm);
   page
     .waitForEvent('dialog', { timeout })
     .then(async (dialog) => {
@@ -462,11 +475,13 @@ export async function armDialogViaPlaywright(opts: {
         if (opts.accept) await dialog.accept(opts.promptText);
         else await dialog.dismiss();
       } finally {
-        if (state.armIdDialog === armId) state.armIdDialog = 0;
+        resetArm();
+        page.off('close', resetArm);
       }
     })
     .catch(() => {
-      if (state.armIdDialog === armId) state.armIdDialog = 0;
+      resetArm();
+      page.off('close', resetArm);
     });
 }
 
@@ -483,6 +498,10 @@ export async function armFileUploadViaPlaywright(opts: {
   state.armIdUpload = bumpUploadArmId(state);
   const armId = state.armIdUpload;
 
+  const resetArm = () => {
+    if (state.armIdUpload === armId) state.armIdUpload = 0;
+  };
+  page.once('close', resetArm);
   page
     .waitForEvent('filechooser', { timeout })
     .then(async (fileChooser) => {
@@ -522,11 +541,19 @@ export async function armFileUploadViaPlaywright(opts: {
             el.dispatchEvent(new Event('change', { bubbles: true }));
           });
         }
-      } catch {
-        /* intentional no-op */
+      } catch (e: unknown) {
+        console.warn(
+          `[browserclaw] armFileUpload: dispatch events failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     })
-    .catch(() => {
-      /* intentional no-op */
+    .catch((e: unknown) => {
+      console.warn(
+        `[browserclaw] armFileUpload: filechooser wait failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    })
+    .finally(() => {
+      resetArm();
+      page.off('close', resetArm);
     });
 }

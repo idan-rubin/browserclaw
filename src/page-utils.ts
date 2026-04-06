@@ -204,35 +204,45 @@ export function setDialogHandlerOnPage(page: Page, handler?: DialogHandler): voi
 
 // ── Stealth ──
 
-function applyStealthToPage(page: Page): void {
-  page.evaluate(STEALTH_SCRIPT).catch((e: unknown) => {
+async function applyStealthToPage(page: Page): Promise<void> {
+  try {
+    await page.evaluate(STEALTH_SCRIPT);
+  } catch (e: unknown) {
     if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
       console.warn('[browserclaw] stealth evaluate failed:', e instanceof Error ? e.message : String(e));
-  });
+  }
 }
 
-export function observeContext(context: BrowserContext): void {
+export async function observeContext(context: BrowserContext): Promise<void> {
   if (observedContexts.has(context)) return;
   observedContexts.add(context);
   ensureContextState(context);
 
-  context.addInitScript(STEALTH_SCRIPT).catch((e: unknown) => {
+  try {
+    await context.addInitScript(STEALTH_SCRIPT);
+  } catch (e: unknown) {
     if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
       console.warn('[browserclaw] stealth initScript failed:', e instanceof Error ? e.message : String(e));
-  });
+  }
 
   for (const page of context.pages()) {
     ensurePageState(page);
-    applyStealthToPage(page);
+    await applyStealthToPage(page);
   }
-  context.on('page', (page) => {
+  const onPage = (page: Page) => {
     ensurePageState(page);
-    applyStealthToPage(page);
+    applyStealthToPage(page).catch(() => {
+      /* noop — best-effort stealth for new pages */
+    });
+  };
+  context.on('page', onPage);
+  context.once('close', () => {
+    context.off('page', onPage);
   });
 }
 
-export function observeBrowser(browser: Browser): void {
-  for (const context of browser.contexts()) observeContext(context);
+export async function observeBrowser(browser: Browser): Promise<void> {
+  for (const context of browser.contexts()) await observeContext(context);
 }
 
 // ── Error Helpers ──

@@ -416,6 +416,30 @@ export function createPinnedLookup(params: {
   }) as typeof dnsLookupCb;
 }
 
+// ── DNS Resolution Cache (short-lived) ──
+
+const DNS_CACHE_TTL_MS = 30_000;
+const MAX_DNS_CACHE_SIZE = 100;
+const dnsCache = new Map<string, { result: PinnedHostname; expiresAt: number }>();
+
+function getCachedDnsResult(hostname: string): PinnedHostname | undefined {
+  const entry = dnsCache.get(hostname);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) {
+    dnsCache.delete(hostname);
+    return undefined;
+  }
+  return entry.result;
+}
+
+function cacheDnsResult(hostname: string, result: PinnedHostname): void {
+  dnsCache.set(hostname, { result, expiresAt: Date.now() + DNS_CACHE_TTL_MS });
+  if (dnsCache.size > MAX_DNS_CACHE_SIZE) {
+    const first = dnsCache.keys().next();
+    if (first.done !== true) dnsCache.delete(first.value);
+  }
+}
+
 /**
  * Resolve DNS for a hostname and validate resolved addresses against SSRF policy.
  * Returns a PinnedHostname with pre-resolved addresses and a pinned lookup function.
@@ -448,6 +472,10 @@ export async function resolvePinnedHostnameWithPolicy(
       );
     }
   }
+
+  // Return cached result if available (avoids redundant DNS lookups in redirect chains)
+  const cached = getCachedDnsResult(normalized);
+  if (cached) return cached;
 
   const lookupFn = params.lookupFn ?? dnsLookup;
   let results: { address: string; family: number }[];
@@ -482,11 +510,13 @@ export async function resolvePinnedHostnameWithPolicy(
     );
   }
 
-  return {
+  const pinned: PinnedHostname = {
     hostname: normalized,
     addresses,
     lookup: createPinnedLookup({ hostname: normalized, addresses }),
   };
+  cacheDnsResult(normalized, pinned);
+  return pinned;
 }
 
 /**
@@ -722,6 +752,17 @@ export async function resolveExistingPathsWithinRoot(params: {
       resolved.push(real);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        // Verify parent directory exists and resolves within root to prevent
+        // lexical path from hiding a symlink-based escape via a missing intermediate
+        try {
+          const parentReal = await realpath(dirname(lexical.path));
+          const parentRel = relative(root, parentReal);
+          if (parentRel === '..' || parentRel.startsWith(`..${sep}`) || pathIsAbsolute(parentRel)) {
+            return { ok: false, error: `Path escapes ${params.scopeLabel} via parent symlink: "${raw}".` };
+          }
+        } catch {
+          // Parent doesn't exist either — safe since path can't be reached
+        }
         resolved.push(lexical.path);
       } else {
         return { ok: false, error: `Cannot resolve "${raw}" (${params.scopeLabel}): ${(e as Error).message}` };
@@ -820,7 +861,13 @@ export async function writeViaSiblingTempPath(params: {
   targetPath: string;
   writeTemp: (tempPath: string) => Promise<void>;
 }): Promise<void> {
-  const rootDir = await realpath(resolve(params.rootDir)).catch(() => resolve(params.rootDir));
+  let rootDir: string;
+  try {
+    rootDir = await realpath(resolve(params.rootDir));
+  } catch {
+    console.warn(`[browserclaw] writeViaSiblingTempPath: rootDir realpath failed, using lexical resolve`);
+    rootDir = resolve(params.rootDir);
+  }
   const requestedTargetPath = resolve(params.targetPath);
   const targetPath = await realpath(dirname(requestedTargetPath))
     .then((realDir) => join(realDir, basename(requestedTargetPath)))
@@ -834,6 +881,16 @@ export async function writeViaSiblingTempPath(params: {
     pathIsAbsolute(relativeTargetPath)
   ) {
     throw new Error('Target path is outside the allowed root');
+  }
+
+  // Re-check for symlink right before write to narrow the TOCTOU window
+  try {
+    const stat = await lstat(targetPath);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Unsafe output path: "${params.targetPath}" is a symbolic link.`);
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
   }
 
   const tempPath = buildSiblingTempPath(targetPath);
@@ -867,6 +924,13 @@ export async function assertBrowserNavigationResultAllowed(
     parsed = new URL(rawUrl);
   } catch {
     return;
+  }
+
+  // Block data: and blob: URLs in post-navigation results — these can be used to exfiltrate data
+  if (parsed.protocol === 'data:' || parsed.protocol === 'blob:') {
+    throw new InvalidBrowserNavigationUrlError(
+      `Navigation result blocked: "${parsed.protocol}" URLs are not allowed.`,
+    );
   }
 
   if (NETWORK_NAVIGATION_PROTOCOLS.has(parsed.protocol) || isAllowedNonNetworkNavigationUrl(parsed)) {

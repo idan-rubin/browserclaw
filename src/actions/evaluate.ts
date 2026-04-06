@@ -5,6 +5,7 @@ import {
   refLocator,
   normalizeTimeoutMs,
   forceDisconnectPlaywrightConnection,
+  tryTerminateExecutionViaCdp,
 } from '../connection.js';
 
 export interface FrameEvalResult {
@@ -88,10 +89,11 @@ const BROWSER_EVALUATOR = new Function(
     '  catch (_) { candidate = (0, eval)(fnBody); }',
     '  var result = typeof candidate === "function" ? candidate() : candidate;',
     '  if (result && typeof result.then === "function") {',
+    '    var tid;',
     '    return Promise.race([',
-    '      result,',
+    '      result.then(function(v) { clearTimeout(tid); return v; }, function(e) { clearTimeout(tid); throw e; }),',
     '      new Promise(function(_, reject) {',
-    '        setTimeout(function() { reject(new Error("evaluate timed out after " + timeoutMs + "ms")); }, timeoutMs);',
+    '        tid = setTimeout(function() { reject(new Error("evaluate timed out after " + timeoutMs + "ms")); }, timeoutMs);',
     '      })',
     '    ]);',
     '  }',
@@ -115,10 +117,11 @@ const ELEMENT_EVALUATOR = new Function(
     '  catch (_) { candidate = (0, eval)(fnBody); }',
     '  var result = typeof candidate === "function" ? candidate(el) : candidate;',
     '  if (result && typeof result.then === "function") {',
+    '    var tid;',
     '    return Promise.race([',
-    '      result,',
+    '      result.then(function(v) { clearTimeout(tid); return v; }, function(e) { clearTimeout(tid); throw e; }),',
     '      new Promise(function(_, reject) {',
-    '        setTimeout(function() { reject(new Error("evaluate timed out after " + timeoutMs + "ms")); }, timeoutMs);',
+    '        tid = setTimeout(function() { reject(new Error("evaluate timed out after " + timeoutMs + "ms")); }, timeoutMs);',
     '      })',
     '    ]);',
     '  }',
@@ -170,13 +173,22 @@ export async function evaluateViaPlaywright(opts: {
 
   if (signal !== undefined) {
     const disconnect = () => {
-      forceDisconnectPlaywrightConnection({
-        cdpUrl: opts.cdpUrl,
-        targetId: opts.targetId,
-        reason: 'evaluate aborted',
-      }).catch(() => {
-        /* intentional no-op */
-      });
+      const targetId = opts.targetId?.trim() ?? '';
+      if (targetId !== '') {
+        // Targeted: only terminate execution on this target, preserving the shared connection
+        tryTerminateExecutionViaCdp(opts.cdpUrl, targetId).catch(() => {
+          /* intentional no-op */
+        });
+      } else {
+        // No target ID — forced to tear down the shared connection as last resort
+        console.warn('[browserclaw] evaluate abort: no targetId, forcing full disconnect');
+        forceDisconnectPlaywrightConnection({
+          cdpUrl: opts.cdpUrl,
+          reason: 'evaluate aborted (no targetId)',
+        }).catch(() => {
+          /* intentional no-op */
+        });
+      }
     };
     if (signal.aborted) {
       disconnect();

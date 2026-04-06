@@ -43,15 +43,15 @@ export async function traceStopViaPlaywright(opts: {
     throw new Error('No active trace. Start a trace before stopping it.');
   }
 
-  try {
-    await writeViaSiblingTempPath({
-      rootDir: dirname(opts.path),
-      targetPath: opts.path,
-      writeTemp: async (tempPath) => {
-        await context.tracing.stop({ path: tempPath });
-      },
-    });
-  } finally {
-    ctxState.traceActive = false;
-  }
+  // Mark traceActive = false BEFORE stopping, since context.tracing.stop() consumes the
+  // trace regardless of whether the file write/rename succeeds. A failed write should not
+  // leave traceActive = true (which would block starting a new trace).
+  ctxState.traceActive = false;
+  await writeViaSiblingTempPath({
+    rootDir: dirname(opts.path),
+    targetPath: opts.path,
+    writeTemp: async (tempPath) => {
+      await context.tracing.stop({ path: tempPath });
+    },
+  });
 }

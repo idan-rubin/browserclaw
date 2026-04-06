@@ -12,7 +12,10 @@ import { pressKeyViaPlaywright } from './keyboard.js';
 import { resizeViewportViaPlaywright, closePageViaPlaywright } from './navigation.js';
 import { waitForViaPlaywright } from './wait.js';
 
+import { BrowserTabNotFoundError, BlockedBrowserTargetError } from '../connection.js';
+
 const MAX_BATCH_DEPTH = 5;
+const MAX_BATCH_TIMEOUT_MS = 300_000;
 const MAX_BATCH_ACTIONS = 100;
 
 /** A single action within a batch. */
@@ -251,14 +254,21 @@ export async function batchViaPlaywright(opts: {
 
   const results: BatchActionResult[] = [];
   const evaluateEnabled = opts.evaluateEnabled !== false;
+  const deadline = Date.now() + MAX_BATCH_TIMEOUT_MS;
 
   for (const action of opts.actions) {
+    if (Date.now() > deadline) {
+      results.push({ ok: false, error: 'Batch timeout exceeded' });
+      break;
+    }
     try {
       await executeSingleAction(action, opts.cdpUrl, opts.targetId, evaluateEnabled, depth);
       results.push({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       results.push({ ok: false, error: message });
+      // Always stop on page-destroying errors regardless of stopOnError setting
+      if (err instanceof BrowserTabNotFoundError || err instanceof BlockedBrowserTargetError) break;
       if (opts.stopOnError !== false) break;
     }
   }

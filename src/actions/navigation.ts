@@ -41,7 +41,7 @@ async function createRecordingContext(
   recordVideo: { dir: string; size?: { width: number; height: number } },
 ): Promise<BrowserContext> {
   const context = await browser.newContext({ recordVideo });
-  observeContext(context);
+  await observeContext(context);
   recordingContexts.set(cdpUrl, context);
   context.on('close', () => recordingContexts.delete(cdpUrl));
   return context;
@@ -112,6 +112,14 @@ async function gotoPageWithNavigationGuard(opts: {
       return;
     }
     if (!isTopLevelNavigationRequest(opts.page, request)) {
+      await route.continue();
+      return;
+    }
+    // Only guard navigations initiated by this call:
+    // - initial request must match our target URL
+    // - redirects (redirectedFrom !== null) are always checked since they may be part of our chain
+    const isRedirect = request.redirectedFrom() !== null;
+    if (!isRedirect && request.url() !== opts.url) {
       await route.continue();
       return;
     }
@@ -261,6 +269,9 @@ export async function createPageViaPlaywright(opts: {
       });
     } catch (err) {
       if (isPolicyDenyNavigationError(err) || err instanceof BlockedBrowserTargetError) throw err;
+      console.warn(
+        `[browserclaw] createPage navigation failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
     await assertPageNavigationCompletedSafely({
       cdpUrl: opts.cdpUrl,

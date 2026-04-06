@@ -56,7 +56,7 @@ import { traceStartViaPlaywright, traceStopViaPlaywright } from './capture/trace
 import { launchChrome, stopChrome, isChromeReachable, discoverChromeCdpUrl } from './chrome-launcher.js';
 import {
   connectBrowser,
-  disconnectBrowser,
+  closePlaywrightBrowserConnection,
   getPageForTargetId,
   ensurePageState,
   pageTargetId,
@@ -132,19 +132,30 @@ import type {
  */
 export class CrawlPage {
   private readonly cdpUrl: string;
-  private readonly targetId: string;
+  private _targetId: string;
   private readonly ssrfPolicy: SsrfPolicy | undefined;
 
   /** @internal */
   constructor(cdpUrl: string, targetId: string, ssrfPolicy?: SsrfPolicy) {
     this.cdpUrl = cdpUrl;
-    this.targetId = targetId;
+    this._targetId = targetId;
     this.ssrfPolicy = ssrfPolicy;
   }
 
   /** The CDP target ID for this page. Use this to identify the page in multi-tab scenarios. */
   get id(): string {
-    return this.targetId;
+    return this._targetId;
+  }
+
+  /**
+   * Refresh the target ID by re-resolving the page from the browser.
+   * Useful after reconnection when the old target ID may be stale.
+   */
+  async refreshTargetId(): Promise<string> {
+    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const newId = await pageTargetId(page);
+    if (newId !== null && newId !== '') this._targetId = newId;
+    return this._targetId;
   }
 
   // ── Snapshot ──────────────────────────────────────────────────
@@ -174,7 +185,7 @@ export class CrawlPage {
     if (opts?.mode === 'role') {
       return snapshotRole({
         cdpUrl: this.cdpUrl,
-        targetId: this.targetId,
+        targetId: this._targetId,
         selector: opts.selector,
         frameSelector: opts.frameSelector,
         refsMode: opts.refsMode,
@@ -196,7 +207,7 @@ export class CrawlPage {
     }
     return snapshotAi({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       maxChars: opts?.maxChars,
       options: {
         interactive: opts?.interactive,
@@ -216,7 +227,7 @@ export class CrawlPage {
    * @returns Array of accessibility tree nodes
    */
   async ariaSnapshot(opts?: { limit?: number }): Promise<AriaSnapshotResult> {
-    return snapshotAria({ cdpUrl: this.cdpUrl, targetId: this.targetId, limit: opts?.limit });
+    return snapshotAria({ cdpUrl: this.cdpUrl, targetId: this._targetId, limit: opts?.limit });
   }
 
   // ── Interactions ─────────────────────────────────────────────
@@ -238,7 +249,7 @@ export class CrawlPage {
   async click(ref: string, opts?: ClickOptions): Promise<void> {
     return clickViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       ref,
       doubleClick: opts?.doubleClick,
       button: opts?.button,
@@ -266,7 +277,7 @@ export class CrawlPage {
   async clickBySelector(selector: string, opts?: ClickOptions): Promise<void> {
     return clickViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       selector,
       doubleClick: opts?.doubleClick,
       button: opts?.button,
@@ -300,7 +311,7 @@ export class CrawlPage {
   ): Promise<void> {
     return mouseClickViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       x,
       y,
       button: opts?.button,
@@ -328,7 +339,7 @@ export class CrawlPage {
   async pressAndHold(x: number, y: number, opts?: { delay?: number; holdMs?: number }): Promise<void> {
     return pressAndHoldViaCdp({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       x,
       y,
       delay: opts?.delay,
@@ -361,7 +372,7 @@ export class CrawlPage {
   ): Promise<void> {
     return clickByTextViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       text,
       exact: opts?.exact,
       button: opts?.button,
@@ -398,7 +409,7 @@ export class CrawlPage {
   ): Promise<void> {
     return clickByRoleViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       role,
       name,
       index: opts?.index,
@@ -428,7 +439,7 @@ export class CrawlPage {
   async type(ref: string, text: string, opts?: TypeOptions): Promise<void> {
     return typeViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       ref,
       text,
       submit: opts?.submit,
@@ -446,7 +457,7 @@ export class CrawlPage {
   async hover(ref: string, opts?: { timeoutMs?: number }): Promise<void> {
     return hoverViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       ref,
       timeoutMs: opts?.timeoutMs,
     });
@@ -467,7 +478,7 @@ export class CrawlPage {
   async select(ref: string, ...values: string[]): Promise<void> {
     return selectOptionViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       ref,
       values,
     });
@@ -483,7 +494,7 @@ export class CrawlPage {
   async drag(startRef: string, endRef: string, opts?: { timeoutMs?: number }): Promise<void> {
     return dragViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       startRef,
       endRef,
       timeoutMs: opts?.timeoutMs,
@@ -509,7 +520,7 @@ export class CrawlPage {
   async fill(fields: FormField[]): Promise<void> {
     return fillFormViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       fields,
     });
   }
@@ -523,7 +534,7 @@ export class CrawlPage {
   async scrollIntoView(ref: string, opts?: { timeoutMs?: number }): Promise<void> {
     return scrollIntoViewViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       ref,
       timeoutMs: opts?.timeoutMs,
     });
@@ -537,7 +548,7 @@ export class CrawlPage {
   async highlight(ref: string): Promise<void> {
     return highlightViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       ref,
     });
   }
@@ -551,7 +562,7 @@ export class CrawlPage {
   async uploadFile(ref: string, paths: string[]): Promise<void> {
     return setInputFilesViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       ref,
       paths,
     });
@@ -575,7 +586,7 @@ export class CrawlPage {
   async armDialog(opts: DialogOptions): Promise<void> {
     return armDialogViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       accept: opts.accept,
       promptText: opts.promptText,
       timeoutMs: opts.timeoutMs,
@@ -620,7 +631,7 @@ export class CrawlPage {
   async onDialog(handler: DialogHandler | undefined | null): Promise<void> {
     return setDialogHandler({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       handler: handler ?? undefined,
     });
   }
@@ -643,7 +654,7 @@ export class CrawlPage {
   async armFileUpload(paths?: string[], opts?: { timeoutMs?: number }): Promise<void> {
     return armFileUploadViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       paths,
       timeoutMs: opts?.timeoutMs,
     });
@@ -662,7 +673,7 @@ export class CrawlPage {
   ): Promise<{ results: BatchActionResult[] }> {
     return batchViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       actions,
       stopOnError: opts?.stopOnError,
       evaluateEnabled: opts?.evaluateEnabled,
@@ -689,7 +700,7 @@ export class CrawlPage {
   async press(key: string, opts?: { delayMs?: number }): Promise<void> {
     return pressKeyViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       key,
       delayMs: opts?.delayMs,
     });
@@ -701,7 +712,7 @@ export class CrawlPage {
    * Get the current URL of the page.
    */
   async url(): Promise<string> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
     return page.url();
   }
 
@@ -709,7 +720,7 @@ export class CrawlPage {
    * Get the page title.
    */
   async title(): Promise<string> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
     return page.title();
   }
 
@@ -723,7 +734,7 @@ export class CrawlPage {
   async goto(url: string, opts?: { timeoutMs?: number }): Promise<{ url: string }> {
     return navigateViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       url,
       timeoutMs: opts?.timeoutMs,
       ssrfPolicy: this.ssrfPolicy,
@@ -736,7 +747,7 @@ export class CrawlPage {
    * @param opts - Timeout options
    */
   async reload(opts?: { timeoutMs?: number }): Promise<void> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
     ensurePageState(page);
     await page.reload({ timeout: normalizeTimeoutMs(opts?.timeoutMs, 20000) });
   }
@@ -747,7 +758,7 @@ export class CrawlPage {
    * @param opts - Timeout options
    */
   async goBack(opts?: { timeoutMs?: number }): Promise<void> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
     ensurePageState(page);
     await page.goBack({ timeout: normalizeTimeoutMs(opts?.timeoutMs, 20000) });
   }
@@ -758,7 +769,7 @@ export class CrawlPage {
    * @param opts - Timeout options
    */
   async goForward(opts?: { timeoutMs?: number }): Promise<void> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
     ensurePageState(page);
     await page.goForward({ timeout: normalizeTimeoutMs(opts?.timeoutMs, 20000) });
   }
@@ -783,7 +794,7 @@ export class CrawlPage {
   async waitFor(opts: WaitOptions): Promise<void> {
     return waitForViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       ...opts,
     });
   }
@@ -810,7 +821,7 @@ export class CrawlPage {
   async evaluate(fn: string, opts?: { ref?: string; timeoutMs?: number; signal?: AbortSignal }): Promise<unknown> {
     return evaluateViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       fn,
       ref: opts?.ref,
       timeoutMs: opts?.timeoutMs,
@@ -838,7 +849,7 @@ export class CrawlPage {
   async evaluateInAllFrames(fn: string): Promise<FrameEvalResult[]> {
     return evaluateInAllFramesViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       fn,
     });
   }
@@ -861,7 +872,7 @@ export class CrawlPage {
   async screenshot(opts?: ScreenshotOptions): Promise<Buffer> {
     const result = await takeScreenshotViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       fullPage: opts?.fullPage,
       ref: opts?.ref,
       element: opts?.element,
@@ -878,7 +889,7 @@ export class CrawlPage {
    * @returns PDF document as a Buffer
    */
   async pdf(): Promise<Buffer> {
-    const result = await pdfViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    const result = await pdfViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId });
     return result.buffer;
   }
 
@@ -907,7 +918,7 @@ export class CrawlPage {
   }> {
     return screenshotWithLabelsViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       refs,
       maxLabels: opts?.maxLabels,
       type: opts?.type,
@@ -925,7 +936,7 @@ export class CrawlPage {
   async traceStart(opts?: TraceStartOptions): Promise<void> {
     return traceStartViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       screenshots: opts?.screenshots,
       snapshots: opts?.snapshots,
       sources: opts?.sources,
@@ -941,7 +952,7 @@ export class CrawlPage {
   async traceStop(path: string, opts?: { allowedOutputRoots?: string[] }): Promise<void> {
     return traceStopViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       path,
       allowedOutputRoots: opts?.allowedOutputRoots,
     });
@@ -963,7 +974,7 @@ export class CrawlPage {
   async responseBody(url: string, opts?: { timeoutMs?: number; maxChars?: number }): Promise<ResponseBodyResult> {
     return responseBodyViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       url,
       timeoutMs: opts?.timeoutMs,
       maxChars: opts?.maxChars,
@@ -995,7 +1006,7 @@ export class CrawlPage {
   ): Promise<RequestResult> {
     return waitForRequestViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       url,
       method: opts?.method,
       timeoutMs: opts?.timeoutMs,
@@ -1014,7 +1025,7 @@ export class CrawlPage {
   async consoleLogs(opts?: { level?: string; clear?: boolean }): Promise<ConsoleMessage[]> {
     return getConsoleMessagesViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       level: opts?.level,
       clear: opts?.clear,
     });
@@ -1029,7 +1040,7 @@ export class CrawlPage {
   async pageErrors(opts?: { clear?: boolean }): Promise<PageError[]> {
     const result = await getPageErrorsViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       clear: opts?.clear,
     });
     return result.errors;
@@ -1051,7 +1062,7 @@ export class CrawlPage {
   async networkRequests(opts?: { filter?: string; clear?: boolean }): Promise<NetworkRequest[]> {
     const result = await getNetworkRequestsViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       filter: opts?.filter,
       clear: opts?.clear,
     });
@@ -1069,7 +1080,7 @@ export class CrawlPage {
   async resize(width: number, height: number): Promise<void> {
     return resizeViewportViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       width,
       height,
     });
@@ -1083,7 +1094,7 @@ export class CrawlPage {
    * @returns Array of cookie objects
    */
   async cookies(): Promise<Awaited<ReturnType<BrowserContext['cookies']>>> {
-    const result = await cookiesGetViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    const result = await cookiesGetViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId });
     return result.cookies;
   }
 
@@ -1102,12 +1113,12 @@ export class CrawlPage {
    * ```
    */
   async setCookie(cookie: CookieData): Promise<void> {
-    return cookiesSetViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this.targetId, cookie });
+    return cookiesSetViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId, cookie });
   }
 
   /** Clear all cookies in the browser context. */
   async clearCookies(): Promise<void> {
-    return cookiesClearViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    return cookiesClearViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId });
   }
 
   /**
@@ -1120,7 +1131,7 @@ export class CrawlPage {
   async storageGet(kind: StorageKind, key?: string): Promise<Record<string, string>> {
     const result = await storageGetViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       kind,
       key,
     });
@@ -1137,7 +1148,7 @@ export class CrawlPage {
   async storageSet(kind: StorageKind, key: string, value: string): Promise<void> {
     return storageSetViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       kind,
       key,
       value,
@@ -1152,7 +1163,7 @@ export class CrawlPage {
   async storageClear(kind: StorageKind): Promise<void> {
     return storageClearViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       kind,
     });
   }
@@ -1180,7 +1191,7 @@ export class CrawlPage {
   ): Promise<DownloadResult> {
     return downloadViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       ref,
       path,
       timeoutMs: opts?.timeoutMs,
@@ -1203,7 +1214,7 @@ export class CrawlPage {
   }): Promise<DownloadResult> {
     return waitForDownloadViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       path: opts?.path,
       timeoutMs: opts?.timeoutMs,
       allowedOutputRoots: opts?.allowedOutputRoots,
@@ -1220,7 +1231,7 @@ export class CrawlPage {
   async setOffline(offline: boolean): Promise<void> {
     return setOfflineViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       offline,
     });
   }
@@ -1238,7 +1249,7 @@ export class CrawlPage {
   async setExtraHeaders(headers: Record<string, string>): Promise<void> {
     return setExtraHTTPHeadersViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       headers,
     });
   }
@@ -1251,7 +1262,7 @@ export class CrawlPage {
   async setHttpCredentials(opts: HttpCredentials): Promise<void> {
     return setHttpCredentialsViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       username: opts.username,
       password: opts.password,
       clear: opts.clear,
@@ -1272,7 +1283,7 @@ export class CrawlPage {
   async setGeolocation(opts: GeolocationOptions): Promise<void> {
     return setGeolocationViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       latitude: opts.latitude,
       longitude: opts.longitude,
       accuracy: opts.accuracy,
@@ -1294,7 +1305,7 @@ export class CrawlPage {
   async emulateMedia(opts: { colorScheme: ColorScheme }): Promise<void> {
     return emulateMediaViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       colorScheme: opts.colorScheme,
     });
   }
@@ -1307,7 +1318,7 @@ export class CrawlPage {
   async setLocale(locale: string): Promise<void> {
     return setLocaleViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       locale,
     });
   }
@@ -1320,7 +1331,7 @@ export class CrawlPage {
   async setTimezone(timezoneId: string): Promise<void> {
     return setTimezoneViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       timezoneId,
     });
   }
@@ -1338,7 +1349,7 @@ export class CrawlPage {
   async setDevice(name: string): Promise<void> {
     return setDeviceViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       name,
     });
   }
@@ -1361,7 +1372,7 @@ export class CrawlPage {
    * ```
    */
   async detectChallenge(): Promise<ChallengeInfo | null> {
-    return detectChallengeViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    return detectChallengeViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId });
   }
 
   /**
@@ -1387,7 +1398,7 @@ export class CrawlPage {
   async waitForChallenge(opts?: { timeoutMs?: number; pollMs?: number }): Promise<ChallengeWaitResult> {
     return waitForChallengeViaPlaywright({
       cdpUrl: this.cdpUrl,
-      targetId: this.targetId,
+      targetId: this._targetId,
       timeoutMs: opts?.timeoutMs,
       pollMs: opts?.pollMs,
     });
@@ -1427,7 +1438,7 @@ export class CrawlPage {
   async isAuthenticated(rules: AuthCheckRule[]): Promise<AuthCheckResult> {
     if (!rules.length) return { authenticated: true, checks: [] };
 
-    const page = await getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    const page = await getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this._targetId });
     const checks: AuthCheckDetail[] = [];
 
     for (const rule of rules) {
@@ -1470,7 +1481,7 @@ export class CrawlPage {
         try {
           const raw = await evaluateViaPlaywright({
             cdpUrl: this.cdpUrl,
-            targetId: this.targetId,
+            targetId: this._targetId,
             fn: '() => { const b = document.body; return b ? b.innerText : ""; }',
           });
           bodyText = typeof raw === 'string' ? raw : null;
@@ -1511,7 +1522,7 @@ export class CrawlPage {
         try {
           const result: unknown = await evaluateViaPlaywright({
             cdpUrl: this.cdpUrl,
-            targetId: this.targetId,
+            targetId: this._targetId,
             fn: rule.fn,
           });
           const passed = result !== null && result !== undefined && result !== false && result !== 0 && result !== '';
@@ -1563,7 +1574,7 @@ export class CrawlPage {
    * ```
    */
   async playwrightPage(): Promise<Page> {
-    return getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    return getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this._targetId });
   }
 
   /**
@@ -1587,7 +1598,7 @@ export class CrawlPage {
    * ```
    */
   async locator(selector: string): Promise<Locator> {
-    const pwPage = await getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this.targetId });
+    const pwPage = await getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this._targetId });
     return pwPage.locator(selector);
   }
 }
@@ -1661,25 +1672,32 @@ export class BrowserClaw {
   static async launch(opts: LaunchOptions = {}): Promise<BrowserClaw> {
     const startedAt = new Date().toISOString();
     const chrome = await launchChrome(opts);
-    const cdpUrl = `http://127.0.0.1:${String(chrome.cdpPort)}`;
-    /* eslint-disable @typescript-eslint/no-deprecated -- backward-compat bridge for allowInternal */
-    const ssrfPolicy =
-      opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
-    /* eslint-enable @typescript-eslint/no-deprecated */
-    const telemetry: RunTelemetry = {
-      launchMs: chrome.launchMs,
-      timestamps: { startedAt, launchedAt: new Date().toISOString() },
-    };
-    const browser = new BrowserClaw(cdpUrl, chrome, telemetry, ssrfPolicy, opts.recordVideo);
-    if (opts.url !== undefined && opts.url !== '') {
-      // connectBrowser is called lazily inside currentPage → connectBrowser; connectMs is recorded there
-      const page = await browser.currentPage();
-      const navT0 = Date.now();
-      await page.goto(opts.url);
-      telemetry.navMs = Date.now() - navT0;
-      telemetry.timestamps.navigatedAt = new Date().toISOString();
+    try {
+      const cdpUrl = `http://127.0.0.1:${String(chrome.cdpPort)}`;
+      /* eslint-disable @typescript-eslint/no-deprecated -- backward-compat bridge for allowInternal */
+      const ssrfPolicy =
+        opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
+      /* eslint-enable @typescript-eslint/no-deprecated */
+      const telemetry: RunTelemetry = {
+        launchMs: chrome.launchMs,
+        timestamps: { startedAt, launchedAt: new Date().toISOString() },
+      };
+      const browser = new BrowserClaw(cdpUrl, chrome, telemetry, ssrfPolicy, opts.recordVideo);
+      if (opts.url !== undefined && opts.url !== '') {
+        // connectBrowser is called lazily inside currentPage → connectBrowser; connectMs is recorded there
+        const page = await browser.currentPage();
+        const navT0 = Date.now();
+        await page.goto(opts.url);
+        telemetry.navMs = Date.now() - navT0;
+        telemetry.timestamps.navigatedAt = new Date().toISOString();
+      }
+      return browser;
+    } catch (err) {
+      await stopChrome(chrome).catch(() => {
+        /* noop — best-effort cleanup */
+      });
+      throw err;
     }
-    return browser;
   }
 
   /**
@@ -1849,7 +1867,7 @@ export class BrowserClaw {
     if (exitReason !== undefined) this._telemetry.exitReason = exitReason;
     try {
       clearRecordingContext(this.cdpUrl);
-      await disconnectBrowser();
+      await closePlaywrightBrowserConnection({ cdpUrl: this.cdpUrl });
       if (this.chrome) {
         await stopChrome(this.chrome);
         this.chrome = null;
