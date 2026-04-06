@@ -1,4 +1,4 @@
-import { getPageForTargetId, ensurePageState, restoreRoleRefsForTarget, refLocator } from '../connection.js';
+import { getPageForTargetId, ensurePageState, refLocator } from '../connection.js';
 
 export async function takeScreenshotViaPlaywright(opts: {
   cdpUrl: string;
@@ -10,7 +10,6 @@ export async function takeScreenshotViaPlaywright(opts: {
 }): Promise<{ buffer: Buffer }> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
   const type = opts.type ?? 'png';
 
   if (opts.ref !== undefined && opts.ref !== '') {
@@ -37,7 +36,6 @@ export async function screenshotWithLabelsViaPlaywright(opts: {
 }> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
 
   const maxLabels =
     typeof opts.maxLabels === 'number' && Number.isFinite(opts.maxLabels)

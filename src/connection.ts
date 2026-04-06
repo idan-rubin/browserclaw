@@ -12,7 +12,7 @@ import {
   hasProxyEnvConfigured,
 } from './chrome-launcher.js';
 import { ensurePageState, observeBrowser, setDialogHandlerOnPage } from './page-utils.js';
-import { clearRoleRefsForCdpUrl, normalizeCdpUrl, restoreRoleRefsForTarget } from './ref-resolver.js';
+import { clearRoleRefsForCdpUrl, normalizeCdpUrl } from './ref-resolver.js';
 import type { DialogHandler } from './types.js';
 
 // Re-export everything from sub-modules so existing `import … from './connection.js'`
@@ -484,7 +484,9 @@ export async function disconnectBrowser(): Promise<void> {
 export async function closePlaywrightBrowserConnection(opts?: { cdpUrl?: string }): Promise<void> {
   if (opts?.cdpUrl !== undefined && opts.cdpUrl !== '') {
     return withConnectionLock(async () => {
-      const normalized = normalizeCdpUrl(opts.cdpUrl!);
+      const cdpUrl = opts.cdpUrl
+      if (cdpUrl === undefined || cdpUrl === '') return;
+      const normalized = normalizeCdpUrl(cdpUrl);
       clearBlockedTargetsForCdpUrl(normalized);
       clearBlockedPageRefsForCdpUrl(normalized);
       const cur = cachedByCdpUrl.get(normalized);
@@ -721,7 +723,6 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
     }),
   );
 
-  const resolvedViaCdp = results.some(({ tid }) => tid !== null);
   const matched = results.find(({ tid }) => tid !== null && tid !== '' && tid === targetId);
   if (matched) return matched.page;
 
@@ -731,9 +732,6 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
     } catch {}
   }
 
-  // Last resort: if CDP sessions failed for all pages and there's only one, return it.
-  // Only use this fallback when no specific targetId was requested via cdpUrl lookup.
-  if (!resolvedViaCdp && pages.length === 1 && cdpUrl !== undefined) return pages[0] ?? null;
   return null;
 }
 
@@ -781,12 +779,6 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
   if (opts.targetId === undefined || opts.targetId === '') return first;
   const found = await findPageByTargetId(browser, opts.targetId, opts.cdpUrl);
   if (!found) {
-    if (pages.length === 1) {
-      console.warn(
-        `[browserclaw] targetId "${opts.targetId}" not found, returning only available page (url: ${first.url()})`,
-      );
-      return first;
-    }
     throw new BrowserTabNotFoundError(
       `Tab not found (targetId: ${opts.targetId}). Call browser.tabs() to list open tabs.`,
     );
@@ -806,11 +798,10 @@ export async function resolvePageByTargetIdOrThrow(opts: { cdpUrl: string; targe
 }
 
 /**
- * Get a page for a target, ensuring page state is initialized and role refs are restored.
+ * Get a page for a target, ensuring page state is initialized.
  */
 export async function getRestoredPageForTarget(opts: { cdpUrl: string; targetId?: string }): Promise<Page> {
   const page = await getPageForTargetId(opts);
   ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
   return page;
 }

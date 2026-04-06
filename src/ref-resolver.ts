@@ -80,11 +80,6 @@ export function storeRoleRefsForTarget(opts: {
   });
 }
 
-export function restoreRoleRefsForTarget(opts: { cdpUrl: string; targetId?: string; page: Page }): void {
-  // Intentional no-op: cached refs from a previous connection are stale after
-  // reconnection. Consumers must re-snapshot to get fresh refs. This prevents
-  // acting on outdated element references that no longer match the DOM.
-}
 
 /**
  * Clear role refs for all targets associated with a CDP URL.
@@ -163,7 +158,7 @@ export function refLocator(page: Page, ref: string) {
       const ageMs = Date.now() - state.roleRefsStoredAt;
       if (ageMs > REFS_STALENESS_THRESHOLD_MS) {
         console.warn(
-          `[browserclaw] refs are ${Math.round(ageMs / 1000)}s old — consider re-snapshotting for fresh refs`,
+          `[browserclaw] refs are ${String(Math.round(ageMs / 1000))}s old — consider re-snapshotting for fresh refs`,
         );
       }
     }

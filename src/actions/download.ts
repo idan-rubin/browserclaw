@@ -5,7 +5,6 @@ import type { Page, Download } from 'playwright-core';
 import {
   getPageForTargetId,
   ensurePageState,
-  restoreRoleRefsForTarget,
   refLocator,
   toAIFriendlyError,
   normalizeTimeoutMs,
@@ -100,7 +99,6 @@ export async function downloadViaPlaywright(opts: {
 
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   const state = ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
   const outPath = opts.path.trim();

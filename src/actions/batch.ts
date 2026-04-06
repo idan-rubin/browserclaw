@@ -1,3 +1,5 @@
+import { BrowserTabNotFoundError, BlockedBrowserTargetError } from '../connection.js';
+
 import { evaluateViaPlaywright } from './evaluate.js';
 import {
   clickViaPlaywright,
@@ -12,7 +14,6 @@ import { pressKeyViaPlaywright } from './keyboard.js';
 import { resizeViewportViaPlaywright, closePageViaPlaywright } from './navigation.js';
 import { waitForViaPlaywright } from './wait.js';
 
-import { BrowserTabNotFoundError, BlockedBrowserTargetError } from '../connection.js';
 
 const MAX_BATCH_DEPTH = 5;
 const MAX_BATCH_TIMEOUT_MS = 300_000;

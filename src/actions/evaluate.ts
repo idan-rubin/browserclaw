@@ -1,7 +1,6 @@
 import {
   getPageForTargetId,
   ensurePageState,
-  restoreRoleRefsForTarget,
   refLocator,
   normalizeTimeoutMs,
   forceDisconnectPlaywrightConnection,
@@ -151,7 +150,6 @@ export async function evaluateViaPlaywright(opts: {
 
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
-  restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
 
   const outerTimeout = normalizeTimeoutMs(opts.timeoutMs, 20000);
   // Browser-side timeout must be strictly less than outer timeout so Playwright
