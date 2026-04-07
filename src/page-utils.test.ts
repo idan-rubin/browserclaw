@@ -1,3 +1,4 @@
+import type { Page, BrowserContext } from 'playwright-core';
 import { describe, it, expect } from 'vitest';
 
 import {
@@ -14,25 +15,28 @@ import type { PageState, NetworkRequest } from './types.js';
 
 // ─── Minimal mocks ───
 
-function mockPage(): import('playwright-core').Page {
-  const handlers: Record<string, ((...args: unknown[]) => void)[]> = {};
+function mockPage(): Page {
   return {
-    on: (event: string, fn: (...args: unknown[]) => void) => {
-      (handlers[event] ??= []).push(fn);
+    on: () => {
+      /* noop */
     },
-    off: () => {},
+    off: () => {
+      /* noop */
+    },
     url: () => 'about:blank',
-    evaluate: async () => undefined,
-    context: () => ({ newCDPSession: async () => ({}) }),
-  } as unknown as import('playwright-core').Page;
+    evaluate: () => Promise.resolve(undefined),
+    context: () => ({ newCDPSession: () => Promise.resolve({}) }),
+  } as unknown as Page;
 }
 
-function mockContext(): import('playwright-core').BrowserContext {
+function mockContext(): BrowserContext {
   return {
     pages: () => [],
-    on: () => {},
-    addInitScript: async () => {},
-  } as unknown as import('playwright-core').BrowserContext;
+    on: () => {
+      /* noop */
+    },
+    addInitScript: () => Promise.resolve(),
+  } as unknown as BrowserContext;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

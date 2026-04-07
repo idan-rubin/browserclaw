@@ -1,5 +1,7 @@
+import type { Page } from 'playwright-core';
 import { describe, it, expect, beforeEach } from 'vitest';
 
+import { ensurePageState } from './page-utils.js';
 import {
   normalizeCdpUrl,
   parseRoleRef,
@@ -12,17 +14,18 @@ import {
   clearRoleRefsForCdpUrl,
   refLocator,
 } from './ref-resolver.js';
-import { ensurePageState } from './page-utils.js';
 
 // ─── Minimal mock helpers ───
 
-function mockPage(overrides: Record<string, unknown> = {}): import('playwright-core').Page {
+function mockPage(overrides: Record<string, unknown> = {}): Page {
   const handlers: Record<string, ((...args: unknown[]) => void)[]> = {};
   return {
     on: (event: string, fn: (...args: unknown[]) => void) => {
       (handlers[event] ??= []).push(fn);
     },
-    off: () => {},
+    off: () => {
+      /* noop */
+    },
     url: () => 'about:blank',
     getByRole: (role: string, opts?: { name?: string; exact?: boolean }) => ({
       _role: role,
@@ -40,10 +43,10 @@ function mockPage(overrides: Record<string, unknown> = {}): import('playwright-c
         nth: (n: number) => ({ _frameSel: sel, _role: role, _name: opts?.name, _nth: n }),
       }),
     }),
-    context: () => ({ newCDPSession: async () => ({}) }),
-    evaluate: async () => undefined,
+    context: () => ({ newCDPSession: () => Promise.resolve({}) }),
+    evaluate: () => Promise.resolve(undefined),
     ...overrides,
-  } as unknown as import('playwright-core').Page;
+  } as unknown as Page;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -248,7 +251,6 @@ describe('resolveBoundedDelayMs', () => {
 
 describe('role refs storage', () => {
   beforeEach(() => {
-    // Clear all cached refs
     clearRoleRefsForCdpUrl('ws://localhost:9222');
     clearRoleRefsForCdpUrl('ws://localhost:9223');
   });
@@ -256,7 +258,6 @@ describe('role refs storage', () => {
   describe('rememberRoleRefsForTarget', () => {
     it('stores refs for a target (does not throw on valid input)', () => {
       const refs = { e1: { role: 'button', name: 'Go' } };
-      // Should not throw
       rememberRoleRefsForTarget({
         cdpUrl: 'ws://localhost:9222',
         targetId: 'target1',
@@ -265,13 +266,11 @@ describe('role refs storage', () => {
     });
 
     it('ignores empty targetId (does not store)', () => {
-      // Should not throw even with empty targetId
       rememberRoleRefsForTarget({
         cdpUrl: 'ws://localhost:9222',
         targetId: '',
         refs: { e1: { role: 'button' } },
       });
-      // Clearing shouldn't throw either (nothing was stored)
       clearRoleRefsForCdpUrl('ws://localhost:9222');
     });
 
@@ -342,7 +341,6 @@ describe('role refs storage', () => {
         mode: 'role',
       });
 
-      // Page state should have the refs
       const state = ensurePageState(page);
       expect(state.roleRefs).toEqual(refs);
       expect(state.roleRefsMode).toBe('role');
@@ -364,7 +362,9 @@ describe('role refs storage', () => {
 
   describe('clearRoleRefsForCdpUrl', () => {
     it('does not throw on URLs with no cached refs', () => {
-      expect(() => clearRoleRefsForCdpUrl('ws://localhost:9999')).not.toThrow();
+      expect(() => {
+        clearRoleRefsForCdpUrl('ws://localhost:9999');
+      }).not.toThrow();
     });
 
     it('clears remembered refs so they cannot be used', () => {
@@ -374,8 +374,6 @@ describe('role refs storage', () => {
         refs: { e1: { role: 'button' } },
       });
       clearRoleRefsForCdpUrl('ws://localhost:9222');
-      // After clearing, the refs should not be findable (no way to observe directly,
-      // but clearing and re-remembering should work without hitting cache limit)
       rememberRoleRefsForTarget({
         cdpUrl: 'ws://localhost:9222',
         targetId: 'tgt1',
@@ -389,8 +387,9 @@ describe('role refs storage', () => {
         targetId: 'tgt1',
         refs: { e1: { role: 'button' } },
       });
-      // Should clear refs stored with trailing slash
-      expect(() => clearRoleRefsForCdpUrl('ws://localhost:9222')).not.toThrow();
+      expect(() => {
+        clearRoleRefsForCdpUrl('ws://localhost:9222');
+      }).not.toThrow();
     });
 
     it('does not clear refs for other cdpUrls', () => {
@@ -405,7 +404,6 @@ describe('role refs storage', () => {
         refs: { e2: { role: 'link' } },
       });
       clearRoleRefsForCdpUrl('ws://localhost:9222');
-      // 9223 refs should still be accessible (we can verify by remembering and clearing)
       clearRoleRefsForCdpUrl('ws://localhost:9223');
     });
   });

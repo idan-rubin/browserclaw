@@ -1,3 +1,7 @@
+import http from 'node:http';
+import https from 'node:https';
+
+import type { Browser } from 'playwright-core';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import {
@@ -11,8 +15,6 @@ import {
   withNoProxyForCdpUrl,
   getAllPages,
 } from './connection.js';
-import http from 'node:http';
-import https from 'node:https';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error classes
@@ -214,19 +216,22 @@ describe('withNoProxyForCdpUrl', () => {
   });
 
   afterEach(() => {
-    // Restore env
     for (const [key, value] of Object.entries(savedEnv)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
+      if (value === undefined) {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
     }
   });
 
   it('passes through directly for non-loopback URLs', async () => {
     process.env.HTTP_PROXY = 'http://proxy:8080';
     let called = false;
-    await withNoProxyForCdpUrl('ws://example.com:9222', async () => {
+    await withNoProxyForCdpUrl('ws://example.com:9222', () => {
       called = true;
-      return 'result';
+      return Promise.resolve('result');
     });
     expect(called).toBe(true);
   });
@@ -238,7 +243,7 @@ describe('withNoProxyForCdpUrl', () => {
     delete process.env.http_proxy;
     delete process.env.https_proxy;
     delete process.env.all_proxy;
-    const result = await withNoProxyForCdpUrl('ws://localhost:9222', async () => 42);
+    const result = await withNoProxyForCdpUrl('ws://localhost:9222', () => Promise.resolve(42));
     expect(result).toBe(42);
   });
 
@@ -248,8 +253,9 @@ describe('withNoProxyForCdpUrl', () => {
     delete process.env.no_proxy;
 
     let noProxyDuringFn: string | undefined;
-    await withNoProxyForCdpUrl('ws://localhost:9222', async () => {
+    await withNoProxyForCdpUrl('ws://localhost:9222', () => {
       noProxyDuringFn = process.env.NO_PROXY;
+      return Promise.resolve();
     });
     expect(noProxyDuringFn).toContain('localhost');
     expect(noProxyDuringFn).toContain('127.0.0.1');
@@ -261,7 +267,7 @@ describe('withNoProxyForCdpUrl', () => {
     process.env.NO_PROXY = 'original.com';
     delete process.env.no_proxy;
 
-    await withNoProxyForCdpUrl('ws://localhost:9222', async () => {});
+    await withNoProxyForCdpUrl('ws://localhost:9222', () => Promise.resolve());
     expect(process.env.NO_PROXY).toBe('original.com');
   });
 
@@ -270,11 +276,9 @@ describe('withNoProxyForCdpUrl', () => {
     process.env.NO_PROXY = 'original.com';
     delete process.env.no_proxy;
 
-    await expect(
-      withNoProxyForCdpUrl('ws://localhost:9222', async () => {
-        throw new Error('boom');
-      }),
-    ).rejects.toThrow('boom');
+    await expect(withNoProxyForCdpUrl('ws://localhost:9222', () => Promise.reject(new Error('boom')))).rejects.toThrow(
+      'boom',
+    );
     expect(process.env.NO_PROXY).toBe('original.com');
   });
 
@@ -284,8 +288,9 @@ describe('withNoProxyForCdpUrl', () => {
     delete process.env.no_proxy;
 
     let noProxyDuringFn: string | undefined;
-    await withNoProxyForCdpUrl('ws://localhost:9222', async () => {
+    await withNoProxyForCdpUrl('ws://localhost:9222', () => {
       noProxyDuringFn = process.env.NO_PROXY;
+      return Promise.resolve();
     });
     expect(noProxyDuringFn).toContain('internal.corp');
     expect(noProxyDuringFn).toContain('localhost');
@@ -296,10 +301,10 @@ describe('withNoProxyForCdpUrl', () => {
     process.env.NO_PROXY = 'foo,localhost,127.0.0.1,[::1],bar';
 
     let noProxyDuringFn: string | undefined;
-    await withNoProxyForCdpUrl('ws://localhost:9222', async () => {
+    await withNoProxyForCdpUrl('ws://localhost:9222', () => {
       noProxyDuringFn = process.env.NO_PROXY;
+      return Promise.resolve();
     });
-    // Should remain unchanged since it already covers all loopback entries
     expect(noProxyDuringFn).toBe('foo,localhost,127.0.0.1,[::1],bar');
   });
 
@@ -308,7 +313,7 @@ describe('withNoProxyForCdpUrl', () => {
     delete process.env.NO_PROXY;
     delete process.env.no_proxy;
 
-    await withNoProxyForCdpUrl('ws://localhost:9222', async () => {});
+    await withNoProxyForCdpUrl('ws://localhost:9222', () => Promise.resolve());
     expect(process.env.NO_PROXY).toBeUndefined();
   });
 
@@ -333,7 +338,6 @@ describe('withNoProxyForCdpUrl', () => {
 
     await Promise.all([p1, p2]);
 
-    // fn2 should start after fn1 ends (serialized by mutex)
     const fn1EndIdx = events.indexOf('fn1-end');
     const fn2StartIdx = events.indexOf('fn2-start');
     expect(fn2StartIdx).toBeGreaterThan(fn1EndIdx);
@@ -343,7 +347,7 @@ describe('withNoProxyForCdpUrl', () => {
     process.env.HTTP_PROXY = 'http://proxy:8080';
     delete process.env.NO_PROXY;
     delete process.env.no_proxy;
-    const result = await withNoProxyForCdpUrl('ws://localhost:9222', async () => 'hello');
+    const result = await withNoProxyForCdpUrl('ws://localhost:9222', () => Promise.resolve('hello'));
     expect(result).toBe('hello');
   });
 });
@@ -359,7 +363,7 @@ describe('getAllPages', () => {
     const page3 = { url: () => 'page3' };
     const browser = {
       contexts: () => [{ pages: () => [page1, page2] }, { pages: () => [page3] }],
-    } as unknown as import('playwright-core').Browser;
+    } as unknown as Browser;
     const pages = getAllPages(browser);
     expect(pages).toHaveLength(3);
   });
@@ -367,14 +371,14 @@ describe('getAllPages', () => {
   it('returns empty array when no contexts', () => {
     const browser = {
       contexts: () => [],
-    } as unknown as import('playwright-core').Browser;
+    } as unknown as Browser;
     expect(getAllPages(browser)).toHaveLength(0);
   });
 
   it('returns empty array when contexts have no pages', () => {
     const browser = {
       contexts: () => [{ pages: () => [] }, { pages: () => [] }],
-    } as unknown as import('playwright-core').Browser;
+    } as unknown as Browser;
     expect(getAllPages(browser)).toHaveLength(0);
   });
 });
