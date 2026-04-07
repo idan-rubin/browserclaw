@@ -1,4 +1,6 @@
-<h2 align="center">🦞 BrowserClaw™ — AI-native browser automation for agents</h2>
+<p align="center">
+  <img src="assets/logo.png" alt="BrowserClaw" width="400" />
+</p>
 
 <p align="center">
   <a href="https://browserclaw.org"><img src="https://img.shields.io/badge/Live-browserclaw.org-orange" alt="Live" /></a>
