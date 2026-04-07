@@ -1,0 +1,197 @@
+import { describe, it, expect } from 'vitest';
+
+import {
+  isLoopbackHost,
+  hasProxyEnvConfigured,
+  normalizeCdpWsUrl,
+  normalizeCdpHttpBaseForJsonEndpoints,
+} from './chrome-launcher.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// isLoopbackHost
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('isLoopbackHost', () => {
+  it('recognizes localhost', () => {
+    expect(isLoopbackHost('localhost')).toBe(true);
+  });
+
+  it('recognizes 127.0.0.1', () => {
+    expect(isLoopbackHost('127.0.0.1')).toBe(true);
+  });
+
+  it('recognizes ::1', () => {
+    expect(isLoopbackHost('::1')).toBe(true);
+  });
+
+  it('recognizes [::1]', () => {
+    expect(isLoopbackHost('[::1]')).toBe(true);
+  });
+
+  it('strips trailing dots', () => {
+    expect(isLoopbackHost('localhost.')).toBe(true);
+    expect(isLoopbackHost('localhost...')).toBe(true);
+  });
+
+  it('rejects external hostnames', () => {
+    expect(isLoopbackHost('example.com')).toBe(false);
+    expect(isLoopbackHost('192.168.1.1')).toBe(false);
+    expect(isLoopbackHost('10.0.0.1')).toBe(false);
+    expect(isLoopbackHost('0.0.0.0')).toBe(false);
+  });
+
+  it('rejects empty string', () => {
+    expect(isLoopbackHost('')).toBe(false);
+  });
+
+  it('is case sensitive (hostnames are typically lowercase)', () => {
+    expect(isLoopbackHost('LOCALHOST')).toBe(false);
+    expect(isLoopbackHost('Localhost')).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// hasProxyEnvConfigured
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('hasProxyEnvConfigured', () => {
+  it('returns false for empty env', () => {
+    expect(hasProxyEnvConfigured({})).toBe(false);
+  });
+
+  it('detects HTTP_PROXY', () => {
+    expect(hasProxyEnvConfigured({ HTTP_PROXY: 'http://proxy:8080' })).toBe(true);
+  });
+
+  it('detects HTTPS_PROXY', () => {
+    expect(hasProxyEnvConfigured({ HTTPS_PROXY: 'http://proxy:8080' })).toBe(true);
+  });
+
+  it('detects ALL_PROXY', () => {
+    expect(hasProxyEnvConfigured({ ALL_PROXY: 'socks5://proxy:1080' })).toBe(true);
+  });
+
+  it('detects lowercase variants', () => {
+    expect(hasProxyEnvConfigured({ http_proxy: 'http://proxy:8080' })).toBe(true);
+    expect(hasProxyEnvConfigured({ https_proxy: 'http://proxy:8080' })).toBe(true);
+    expect(hasProxyEnvConfigured({ all_proxy: 'socks5://proxy:1080' })).toBe(true);
+  });
+
+  it('ignores empty string values', () => {
+    expect(hasProxyEnvConfigured({ HTTP_PROXY: '' })).toBe(false);
+  });
+
+  it('ignores whitespace-only values', () => {
+    expect(hasProxyEnvConfigured({ HTTP_PROXY: '   ' })).toBe(false);
+  });
+
+  it('ignores undefined values', () => {
+    expect(hasProxyEnvConfigured({ HTTP_PROXY: undefined })).toBe(false);
+  });
+
+  it('ignores unrelated env vars', () => {
+    expect(hasProxyEnvConfigured({ NODE_ENV: 'production', HOME: '/root' })).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// normalizeCdpWsUrl
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('normalizeCdpWsUrl', () => {
+  it('preserves ws URL when both are local', () => {
+    const result = normalizeCdpWsUrl('ws://127.0.0.1:9222/devtools/browser/abc', 'http://127.0.0.1:9222');
+    expect(result).toContain('ws://');
+    expect(result).toContain('127.0.0.1');
+  });
+
+  it('replaces loopback hostname with external CDP hostname', () => {
+    const result = normalizeCdpWsUrl('ws://127.0.0.1:9222/devtools/browser/abc', 'https://remote.example.com:3000');
+    expect(result).toContain('remote.example.com');
+    expect(result).toContain('3000');
+    expect(result).toContain('wss://');
+  });
+
+  it('replaces wildcard bind 0.0.0.0 with CDP hostname', () => {
+    const result = normalizeCdpWsUrl('ws://0.0.0.0:9222/devtools/browser/abc', 'https://my-host.com:4000');
+    expect(result).toContain('my-host.com');
+  });
+
+  it('replaces wildcard bind [::] with CDP hostname', () => {
+    const result = normalizeCdpWsUrl('ws://[::]:9222/devtools/browser/abc', 'https://my-host.com:4000');
+    expect(result).toContain('my-host.com');
+  });
+
+  it('upgrades ws to wss when CDP is https', () => {
+    const result = normalizeCdpWsUrl('ws://127.0.0.1:9222/path', 'https://remote.com');
+    expect(result.startsWith('wss://')).toBe(true);
+  });
+
+  it('inherits URL credentials from CDP URL', () => {
+    const result = normalizeCdpWsUrl('ws://localhost:9222/path', 'http://user:pass@localhost:9222');
+    const parsed = new URL(result);
+    expect(parsed.username).toBe('user');
+    expect(parsed.password).toBe('pass');
+  });
+
+  it('does not override existing ws credentials', () => {
+    const result = normalizeCdpWsUrl('ws://wsuser:wspass@localhost:9222/path', 'http://cdpuser:cdppass@localhost:9222');
+    const parsed = new URL(result);
+    expect(parsed.username).toBe('wsuser');
+  });
+
+  it('inherits search params from CDP URL', () => {
+    const result = normalizeCdpWsUrl('ws://localhost:9222/path', 'http://localhost:9222?token=abc');
+    expect(result).toContain('token=abc');
+  });
+
+  it('does not override existing ws search params', () => {
+    const result = normalizeCdpWsUrl('ws://localhost:9222/path?token=ws', 'http://localhost:9222?token=cdp');
+    const parsed = new URL(result);
+    expect(parsed.searchParams.get('token')).toBe('ws');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// normalizeCdpHttpBaseForJsonEndpoints
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('normalizeCdpHttpBaseForJsonEndpoints', () => {
+  it('converts ws: to http:', () => {
+    expect(normalizeCdpHttpBaseForJsonEndpoints('ws://localhost:9222')).toBe('http://localhost:9222');
+  });
+
+  it('converts wss: to https:', () => {
+    expect(normalizeCdpHttpBaseForJsonEndpoints('wss://remote.com:9222')).toBe('https://remote.com:9222');
+  });
+
+  it('strips /devtools/browser/ path', () => {
+    const result = normalizeCdpHttpBaseForJsonEndpoints('ws://localhost:9222/devtools/browser/abc-123');
+    expect(result).toBe('http://localhost:9222');
+  });
+
+  it('strips /cdp path', () => {
+    const result = normalizeCdpHttpBaseForJsonEndpoints('ws://localhost:9222/cdp');
+    expect(result).toBe('http://localhost:9222');
+  });
+
+  it('strips trailing slash', () => {
+    const result = normalizeCdpHttpBaseForJsonEndpoints('http://localhost:9222/');
+    expect(result).toBe('http://localhost:9222');
+  });
+
+  it('handles already-http URLs', () => {
+    expect(normalizeCdpHttpBaseForJsonEndpoints('http://localhost:9222')).toBe('http://localhost:9222');
+  });
+
+  it('fallback: handles malformed URLs gracefully', () => {
+    // The fallback branch uses string replacement
+    const result = normalizeCdpHttpBaseForJsonEndpoints('ws://localhost:9222/devtools/browser/xyz');
+    expect(result).toBe('http://localhost:9222');
+  });
+
+  it('preserves custom paths that are not CDP-specific', () => {
+    const result = normalizeCdpHttpBaseForJsonEndpoints('ws://localhost:9222/custom/path');
+    expect(result).toContain('/custom/path');
+  });
+});
