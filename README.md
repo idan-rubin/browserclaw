@@ -1,7 +1,5 @@
 <p align="center">
   <img src="assets/logo.png" alt="BrowserClaw" width="400" />
-  <br />
-  <em>Born from OpenClaw, built for agents, by agents.</em>
 </p>
 
 <p align="center">
