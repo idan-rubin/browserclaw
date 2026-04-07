@@ -783,6 +783,9 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
     );
   }
   if (isBlockedPageRef(opts.cdpUrl, found)) throw new BlockedBrowserTargetError();
+  const foundTargetId = await pageTargetId(found).catch(() => null);
+  if (foundTargetId !== null && foundTargetId !== '' && isBlockedTarget(opts.cdpUrl, foundTargetId))
+    throw new BlockedBrowserTargetError();
   return found;
 }
 
