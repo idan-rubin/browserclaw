@@ -1,4 +1,5 @@
 import { BrowserTabNotFoundError, BlockedBrowserTargetError } from '../connection.js';
+import type { SsrfPolicy } from '../types.js';
 
 import { evaluateViaPlaywright } from './evaluate.js';
 import {
@@ -90,6 +91,7 @@ export async function executeSingleAction(
   targetId: string | undefined,
   evaluateEnabled: boolean,
   depth = 0,
+  ssrfPolicy?: SsrfPolicy,
 ): Promise<void> {
   if (depth > MAX_BATCH_DEPTH) throw new Error(`Batch nesting depth exceeds maximum of ${String(MAX_BATCH_DEPTH)}`);
   const effectiveTargetId = action.targetId ?? targetId;
@@ -106,6 +108,7 @@ export async function executeSingleAction(
         modifiers: action.modifiers as ('Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift')[] | undefined,
         delayMs: action.delayMs,
         timeoutMs: action.timeoutMs,
+        ssrfPolicy,
       });
       break;
     case 'type':
@@ -118,6 +121,7 @@ export async function executeSingleAction(
         submit: action.submit,
         slowly: action.slowly,
         timeoutMs: action.timeoutMs,
+        ssrfPolicy,
       });
       break;
     case 'press':
@@ -126,6 +130,7 @@ export async function executeSingleAction(
         targetId: effectiveTargetId,
         key: action.key,
         delayMs: action.delayMs,
+        ssrfPolicy,
       });
       break;
     case 'hover':
@@ -224,6 +229,7 @@ export async function executeSingleAction(
         stopOnError: action.stopOnError,
         evaluateEnabled,
         depth: depth + 1,
+        ssrfPolicy,
       });
       break;
     default:
@@ -246,6 +252,7 @@ export async function batchViaPlaywright(opts: {
   stopOnError?: boolean;
   evaluateEnabled?: boolean;
   depth?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<{ results: BatchActionResult[] }> {
   const depth = opts.depth ?? 0;
   if (depth > MAX_BATCH_DEPTH) throw new Error(`Batch nesting depth exceeds maximum of ${String(MAX_BATCH_DEPTH)}`);
@@ -262,7 +269,7 @@ export async function batchViaPlaywright(opts: {
       break;
     }
     try {
-      await executeSingleAction(action, opts.cdpUrl, opts.targetId, evaluateEnabled, depth);
+      await executeSingleAction(action, opts.cdpUrl, opts.targetId, evaluateEnabled, depth, opts.ssrfPolicy);
       results.push({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -1,6 +1,7 @@
+import { assertPageNavigationCompletedSafely } from '../actions/navigation.js';
 import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget, normalizeTimeoutMs } from '../connection.js';
 import type { PageWithAI } from '../connection.js';
-import type { SnapshotResult, SnapshotOptions } from '../types.js';
+import type { SnapshotResult, SnapshotOptions, SsrfPolicy } from '../types.js';
 
 import { buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
 
@@ -14,9 +15,20 @@ export async function snapshotAi(opts: {
   maxChars?: number;
   timeoutMs?: number;
   options?: SnapshotOptions;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<SnapshotResult> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
+
+  if (opts.ssrfPolicy) {
+    await assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page,
+      response: null,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
+  }
 
   const maybe = page as PageWithAI;
   if (!maybe._snapshotForAI) {

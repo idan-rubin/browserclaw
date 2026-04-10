@@ -195,6 +195,7 @@ export class CrawlPage {
           compact: opts.compact,
           maxDepth: opts.maxDepth,
         },
+        ssrfPolicy: this.ssrfPolicy,
       });
     }
     if (
@@ -214,6 +215,7 @@ export class CrawlPage {
         compact: opts?.compact,
         maxDepth: opts?.maxDepth,
       },
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -227,7 +229,12 @@ export class CrawlPage {
    * @returns Array of accessibility tree nodes
    */
   async ariaSnapshot(opts?: { limit?: number }): Promise<AriaSnapshotResult> {
-    return snapshotAria({ cdpUrl: this.cdpUrl, targetId: this._targetId, limit: opts?.limit });
+    return snapshotAria({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      limit: opts?.limit,
+      ssrfPolicy: this.ssrfPolicy,
+    });
   }
 
   // ── Interactions ─────────────────────────────────────────────
@@ -257,6 +264,7 @@ export class CrawlPage {
       delayMs: opts?.delayMs,
       timeoutMs: opts?.timeoutMs,
       force: opts?.force,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -285,6 +293,7 @@ export class CrawlPage {
       delayMs: opts?.delayMs,
       timeoutMs: opts?.timeoutMs,
       force: opts?.force,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -445,6 +454,7 @@ export class CrawlPage {
       submit: opts?.submit,
       slowly: opts?.slowly,
       timeoutMs: opts?.timeoutMs,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -677,6 +687,7 @@ export class CrawlPage {
       actions,
       stopOnError: opts?.stopOnError,
       evaluateEnabled: opts?.evaluateEnabled,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -703,6 +714,7 @@ export class CrawlPage {
       targetId: this._targetId,
       key,
       delayMs: opts?.delayMs,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 

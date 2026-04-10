@@ -1,3 +1,4 @@
+import { assertPageNavigationCompletedSafely } from '../actions/navigation.js';
 import {
   getPageForTargetId,
   ensurePageState,
@@ -6,7 +7,7 @@ import {
   withPlaywrightPageCdpSession,
 } from '../connection.js';
 import type { PageWithAI } from '../connection.js';
-import type { SnapshotResult, AriaSnapshotResult, AriaNode } from '../types.js';
+import type { SnapshotResult, AriaSnapshotResult, AriaNode, SsrfPolicy } from '../types.js';
 
 import { buildRoleSnapshotFromAriaSnapshot, buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
 
@@ -29,9 +30,20 @@ export async function snapshotRole(opts: {
     compact?: boolean;
     maxDepth?: number;
   };
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<SnapshotResult> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
+
+  if (opts.ssrfPolicy) {
+    await assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page,
+      response: null,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
+  }
 
   const sourceUrl = page.url();
 
@@ -124,10 +136,21 @@ export async function snapshotAria(opts: {
   cdpUrl: string;
   targetId?: string;
   limit?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<AriaSnapshotResult> {
   const limit = Math.max(1, Math.min(2000, Math.floor(opts.limit ?? 500)));
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
+
+  if (opts.ssrfPolicy) {
+    await assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page,
+      response: null,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
+  }
 
   const sourceUrl = page.url();
 

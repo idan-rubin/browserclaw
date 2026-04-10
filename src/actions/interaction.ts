@@ -17,7 +17,9 @@ import {
   withPageScopedCdpClient,
 } from '../connection.js';
 import { resolveStrictExistingPathsWithinRoot, DEFAULT_UPLOAD_DIR } from '../security.js';
-import type { FormField } from '../types.js';
+import type { FormField, SsrfPolicy } from '../types.js';
+
+import { assertPostInteractionNavigationSafe } from './navigation.js';
 
 type MouseButton = 'left' | 'right' | 'middle';
 type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
@@ -151,6 +153,7 @@ export async function clickViaPlaywright(opts: {
   delayMs?: number;
   timeoutMs?: number;
   force?: boolean;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   const page = await getRestoredPageForTarget(opts);
@@ -214,6 +217,12 @@ export async function clickViaPlaywright(opts: {
           });
       }
     }
+    await assertPostInteractionNavigationSafe({
+      cdpUrl: opts.cdpUrl,
+      page,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
   } catch (err) {
     throw toAIFriendlyError(err, label);
   }
@@ -247,6 +256,7 @@ export async function typeViaPlaywright(opts: {
   submit?: boolean;
   slowly?: boolean;
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   const text = opts.text;
@@ -262,7 +272,15 @@ export async function typeViaPlaywright(opts: {
     } else {
       await locator.fill(text, { timeout });
     }
-    if (opts.submit === true) await locator.press('Enter', { timeout });
+    if (opts.submit === true) {
+      await locator.press('Enter', { timeout });
+      await assertPostInteractionNavigationSafe({
+        cdpUrl: opts.cdpUrl,
+        page,
+        ssrfPolicy: opts.ssrfPolicy,
+        targetId: opts.targetId,
+      });
+    }
   } catch (err) {
     throw toAIFriendlyError(err, label);
   }
