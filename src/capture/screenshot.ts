@@ -1,4 +1,6 @@
+import { assertPageNavigationCompletedSafely } from '../actions/navigation.js';
 import { getPageForTargetId, ensurePageState, refLocator } from '../connection.js';
+import type { SsrfPolicy } from '../types.js';
 
 export async function takeScreenshotViaPlaywright(opts: {
   cdpUrl: string;
@@ -7,9 +9,21 @@ export async function takeScreenshotViaPlaywright(opts: {
   ref?: string;
   element?: string;
   type?: 'png' | 'jpeg';
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<{ buffer: Buffer }> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
+
+  if (opts.ssrfPolicy) {
+    await assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page,
+      response: null,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
+  }
+
   const type = opts.type ?? 'png';
 
   if (opts.ref !== undefined && opts.ref !== '') {
@@ -29,6 +43,7 @@ export async function screenshotWithLabelsViaPlaywright(opts: {
   refs: string[];
   maxLabels?: number;
   type?: 'png' | 'jpeg';
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<{
   buffer: Buffer;
   labels: { ref: string; index: number; box: { x: number; y: number; width: number; height: number } }[];
@@ -36,6 +51,16 @@ export async function screenshotWithLabelsViaPlaywright(opts: {
 }> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
+
+  if (opts.ssrfPolicy) {
+    await assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page,
+      response: null,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
+  }
 
   const maxLabels =
     typeof opts.maxLabels === 'number' && Number.isFinite(opts.maxLabels)

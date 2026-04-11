@@ -17,7 +17,9 @@ import {
   withPageScopedCdpClient,
 } from '../connection.js';
 import { resolveStrictExistingPathsWithinRoot, DEFAULT_UPLOAD_DIR } from '../security.js';
-import type { FormField } from '../types.js';
+import type { FormField, SsrfPolicy } from '../types.js';
+
+import { assertPostInteractionNavigationSafe } from './navigation.js';
 
 type MouseButton = 'left' | 'right' | 'middle';
 type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
@@ -55,12 +57,19 @@ export async function mouseClickViaPlaywright(opts: {
   button?: MouseButton;
   clickCount?: number;
   delayMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const page = await getRestoredPageForTarget(opts);
   await page.mouse.click(opts.x, opts.y, {
     button: opts.button,
     clickCount: opts.clickCount,
     delay: opts.delayMs,
+  });
+  await assertPostInteractionNavigationSafe({
+    cdpUrl: opts.cdpUrl,
+    page,
+    ssrfPolicy: opts.ssrfPolicy,
+    targetId: opts.targetId,
   });
 }
 
@@ -74,6 +83,7 @@ export async function pressAndHoldViaCdp(opts: {
   y: number;
   delay?: number;
   holdMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
@@ -92,6 +102,12 @@ export async function pressAndHoldViaCdp(opts: {
       await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
     },
   });
+  await assertPostInteractionNavigationSafe({
+    cdpUrl: opts.cdpUrl,
+    page,
+    ssrfPolicy: opts.ssrfPolicy,
+    targetId: opts.targetId,
+  });
 }
 
 export async function clickByTextViaPlaywright(opts: {
@@ -102,6 +118,7 @@ export async function clickByTextViaPlaywright(opts: {
   button?: MouseButton;
   modifiers?: KeyModifier[];
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const page = await getRestoredPageForTarget(opts);
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
@@ -112,6 +129,12 @@ export async function clickByTextViaPlaywright(opts: {
     .first();
   try {
     await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
+    await assertPostInteractionNavigationSafe({
+      cdpUrl: opts.cdpUrl,
+      page,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
   } catch (err) {
     throw toAIFriendlyError(err, `text="${opts.text}"`);
   }
@@ -126,6 +149,7 @@ export async function clickByRoleViaPlaywright(opts: {
   button?: MouseButton;
   modifiers?: KeyModifier[];
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const page = await getRestoredPageForTarget(opts);
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
@@ -135,6 +159,12 @@ export async function clickByRoleViaPlaywright(opts: {
     .nth(opts.index ?? 0);
   try {
     await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
+    await assertPostInteractionNavigationSafe({
+      cdpUrl: opts.cdpUrl,
+      page,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
   } catch (err) {
     throw toAIFriendlyError(err, label);
   }
@@ -151,6 +181,7 @@ export async function clickViaPlaywright(opts: {
   delayMs?: number;
   timeoutMs?: number;
   force?: boolean;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   const page = await getRestoredPageForTarget(opts);
@@ -214,6 +245,12 @@ export async function clickViaPlaywright(opts: {
           });
       }
     }
+    await assertPostInteractionNavigationSafe({
+      cdpUrl: opts.cdpUrl,
+      page,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
   } catch (err) {
     throw toAIFriendlyError(err, label);
   }
@@ -247,6 +284,7 @@ export async function typeViaPlaywright(opts: {
   submit?: boolean;
   slowly?: boolean;
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   const text = opts.text;
@@ -262,7 +300,15 @@ export async function typeViaPlaywright(opts: {
     } else {
       await locator.fill(text, { timeout });
     }
-    if (opts.submit === true) await locator.press('Enter', { timeout });
+    if (opts.submit === true) {
+      await locator.press('Enter', { timeout });
+      await assertPostInteractionNavigationSafe({
+        cdpUrl: opts.cdpUrl,
+        page,
+        ssrfPolicy: opts.ssrfPolicy,
+        targetId: opts.targetId,
+      });
+    }
   } catch (err) {
     throw toAIFriendlyError(err, label);
   }
@@ -275,6 +321,7 @@ export async function selectOptionViaPlaywright(opts: {
   selector?: string;
   values: string[];
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   if (opts.values.length === 0) throw new Error('values are required');
@@ -284,6 +331,12 @@ export async function selectOptionViaPlaywright(opts: {
 
   try {
     await locator.selectOption(opts.values, { timeout: resolveInteractionTimeoutMs(opts.timeoutMs) });
+    await assertPostInteractionNavigationSafe({
+      cdpUrl: opts.cdpUrl,
+      page,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
   } catch (err) {
     throw toAIFriendlyError(err, label);
   }
@@ -297,6 +350,7 @@ export async function dragViaPlaywright(opts: {
   endRef?: string;
   endSelector?: string;
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const resolvedStart = requireRefOrSelector(opts.startRef, opts.startSelector);
   const resolvedEnd = requireRefOrSelector(opts.endRef, opts.endSelector);
@@ -308,6 +362,12 @@ export async function dragViaPlaywright(opts: {
 
   try {
     await startLocator.dragTo(endLocator, { timeout: resolveInteractionTimeoutMs(opts.timeoutMs) });
+    await assertPostInteractionNavigationSafe({
+      cdpUrl: opts.cdpUrl,
+      page,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
   } catch (err) {
     throw toAIFriendlyError(err, `${startLabel} -> ${endLabel}`);
   }

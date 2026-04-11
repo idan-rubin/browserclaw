@@ -57,11 +57,22 @@ function isPolicyDenyNavigationError(err: unknown): boolean {
 }
 
 function isTopLevelNavigationRequest(page: Page, request: Request): boolean {
-  if (!request.isNavigationRequest()) return false;
+  let sameMainFrame = false;
   try {
-    return request.frame() === page.mainFrame();
+    sameMainFrame = request.frame() === page.mainFrame();
   } catch {
-    return true;
+    sameMainFrame = true;
+  }
+  if (!sameMainFrame) return false;
+  try {
+    if (request.isNavigationRequest()) return true;
+  } catch {
+    /* fall through to resourceType check */
+  }
+  try {
+    return request.resourceType() === 'document';
+  } catch {
+    return false;
   }
 }
 
@@ -76,7 +87,7 @@ async function closeBlockedNavigationTarget(opts: { cdpUrl: string; page: Page; 
   });
 }
 
-async function assertPageNavigationCompletedSafely(opts: {
+export async function assertPageNavigationCompletedSafely(opts: {
   cdpUrl: string;
   page: Page;
   response: Awaited<ReturnType<Page['goto']>>;
@@ -92,6 +103,29 @@ async function assertPageNavigationCompletedSafely(opts: {
       await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page: opts.page, targetId: opts.targetId });
     throw err;
   }
+}
+
+/**
+ * Post-interaction navigation safety check. Call after any interaction that
+ * could trigger navigation (click, type-submit, press) — validates the final
+ * page URL against the SSRF policy and closes the tab if blocked.
+ *
+ * No-op if no policy is provided.
+ */
+export async function assertPostInteractionNavigationSafe(opts: {
+  cdpUrl: string;
+  page: Page;
+  ssrfPolicy?: SsrfPolicy;
+  targetId?: string;
+}): Promise<void> {
+  if (!opts.ssrfPolicy) return;
+  await assertPageNavigationCompletedSafely({
+    cdpUrl: opts.cdpUrl,
+    page: opts.page,
+    response: null,
+    ssrfPolicy: opts.ssrfPolicy,
+    targetId: opts.targetId,
+  });
 }
 
 async function gotoPageWithNavigationGuard(opts: {
