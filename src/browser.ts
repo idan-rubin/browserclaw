@@ -326,6 +326,7 @@ export class CrawlPage {
       button: opts?.button,
       clickCount: opts?.clickCount,
       delayMs: opts?.delayMs,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -353,6 +354,7 @@ export class CrawlPage {
       y,
       delay: opts?.delay,
       holdMs: opts?.holdMs,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -387,6 +389,7 @@ export class CrawlPage {
       button: opts?.button,
       modifiers: opts?.modifiers,
       timeoutMs: opts?.timeoutMs,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -425,6 +428,7 @@ export class CrawlPage {
       button: opts?.button,
       modifiers: opts?.modifiers,
       timeoutMs: opts?.timeoutMs,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -491,6 +495,7 @@ export class CrawlPage {
       targetId: this._targetId,
       ref,
       values,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -508,6 +513,7 @@ export class CrawlPage {
       startRef,
       endRef,
       timeoutMs: opts?.timeoutMs,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -889,6 +895,7 @@ export class CrawlPage {
       ref: opts?.ref,
       element: opts?.element,
       type: opts?.type,
+      ssrfPolicy: this.ssrfPolicy,
     });
     return result.buffer;
   }
@@ -901,7 +908,11 @@ export class CrawlPage {
    * @returns PDF document as a Buffer
    */
   async pdf(): Promise<Buffer> {
-    const result = await pdfViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const result = await pdfViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     return result.buffer;
   }
 
@@ -934,6 +945,7 @@ export class CrawlPage {
       refs,
       maxLabels: opts?.maxLabels,
       type: opts?.type,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 

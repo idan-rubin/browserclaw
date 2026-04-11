@@ -160,6 +160,7 @@ export async function executeSingleAction(
         endRef: action.endRef,
         endSelector: action.endSelector,
         timeoutMs: action.timeoutMs,
+        ssrfPolicy,
       });
       break;
     case 'select':
@@ -170,6 +171,7 @@ export async function executeSingleAction(
         selector: action.selector,
         values: action.values,
         timeoutMs: action.timeoutMs,
+        ssrfPolicy,
       });
       break;
     case 'fill':
