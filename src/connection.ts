@@ -13,7 +13,8 @@ import {
 } from './chrome-launcher.js';
 import { ensurePageState, observeBrowser, setDialogHandlerOnPage } from './page-utils.js';
 import { clearRoleRefsForCdpUrl, normalizeCdpUrl } from './ref-resolver.js';
-import type { DialogHandler } from './types.js';
+import { assertCdpEndpointAllowed } from './security.js';
+import type { DialogHandler, SsrfPolicy } from './types.js';
 
 // Re-export everything from sub-modules so existing `import … from './connection.js'`
 // paths keep working. When adding a public function to page-utils or ref-resolver,
@@ -260,6 +261,10 @@ interface CachedConnection {
 
 const cachedByCdpUrl = new Map<string, CachedConnection>();
 const connectingByCdpUrl = new Map<string, Promise<CachedConnection>>();
+// Remembered per-URL so reconnects re-run assertCdpEndpointAllowed even when
+// the action function chain doesn't thread a policy through. Closes the
+// DNS-rebinding window between connect attempts.
+const lastPolicyByCdpUrl = new Map<string, SsrfPolicy>();
 
 // ── Connection Mutex ──
 // Serializes connect/disconnect operations to prevent races where a disconnect
@@ -388,11 +393,19 @@ export async function setDialogHandler(opts: {
 
 // ── Connect to Browser ──
 
-export async function connectBrowser(cdpUrl: string, authToken?: string): Promise<CachedConnection> {
+export async function connectBrowser(
+  cdpUrl: string,
+  authToken?: string,
+  ssrfPolicy?: SsrfPolicy,
+): Promise<CachedConnection> {
   const normalized = normalizeCdpUrl(cdpUrl);
   // Lock-free fast path: return cached connection
   const existing_cached = cachedByCdpUrl.get(normalized);
   if (existing_cached) return existing_cached;
+
+  if (ssrfPolicy !== undefined) lastPolicyByCdpUrl.set(normalized, ssrfPolicy);
+  const effectivePolicy = ssrfPolicy ?? lastPolicyByCdpUrl.get(normalized);
+  await assertCdpEndpointAllowed(normalized, effectivePolicy);
 
   const existing = connectingByCdpUrl.get(normalized);
   if (existing) return await existing;
@@ -411,7 +424,8 @@ export async function connectBrowser(cdpUrl: string, authToken?: string): Promis
         try {
           const timeout = 5000 + attempt * 2000;
           const endpoint =
-            (await getChromeWebSocketUrl(normalized, timeout, authToken).catch(() => null)) ?? normalized;
+            (await getChromeWebSocketUrl(normalized, timeout, authToken, effectivePolicy).catch(() => null)) ??
+            normalized;
           const headers: Record<string, string> = getHeadersWithAuth(endpoint);
           if (authToken !== undefined && authToken !== '' && !headers.Authorization)
             headers.Authorization = `Bearer ${authToken}`;
@@ -472,6 +486,7 @@ export async function disconnectBrowser(): Promise<void> {
       });
     }
     cachedByCdpUrl.clear();
+    lastPolicyByCdpUrl.clear();
     clearBlockedTargetsForCdpUrl();
     clearBlockedPageRefsForCdpUrl();
   });
@@ -491,6 +506,7 @@ export async function closePlaywrightBrowserConnection(opts?: { cdpUrl?: string 
       const cur = cachedByCdpUrl.get(normalized);
       cachedByCdpUrl.delete(normalized);
       connectingByCdpUrl.delete(normalized);
+      lastPolicyByCdpUrl.delete(normalized);
       if (!cur) return;
       if (cur.onDisconnected && typeof cur.browser.off === 'function')
         cur.browser.off('disconnected', cur.onDisconnected);
@@ -699,7 +715,13 @@ function matchPageByTargetList(pages: Page[], targets: CdpTarget[], targetId: st
   return null;
 }
 
-async function findPageByTargetIdViaTargetList(pages: Page[], targetId: string, cdpUrl: string): Promise<Page | null> {
+async function findPageByTargetIdViaTargetList(
+  pages: Page[],
+  targetId: string,
+  cdpUrl: string,
+  ssrfPolicy?: SsrfPolicy,
+): Promise<Page | null> {
+  await assertCdpEndpointAllowed(cdpUrl, ssrfPolicy);
   const targets = await fetchJsonForCdp(
     appendCdpPath(normalizeCdpHttpBaseForJsonEndpoints(cdpUrl), '/json/list'),
     2000,
@@ -708,7 +730,7 @@ async function findPageByTargetIdViaTargetList(pages: Page[], targetId: string, 
   return matchPageByTargetList(pages, targets as CdpTarget[], targetId);
 }
 
-export async function findPageByTargetId(browser: Browser, targetId: string, cdpUrl?: string) {
+export async function findPageByTargetId(browser: Browser, targetId: string, cdpUrl?: string, ssrfPolicy?: SsrfPolicy) {
   const pages = getAllPages(browser);
 
   const results = await Promise.all(
@@ -727,7 +749,7 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
 
   if (cdpUrl !== undefined && cdpUrl !== '') {
     try {
-      return await findPageByTargetIdViaTargetList(pages, targetId, cdpUrl);
+      return await findPageByTargetIdViaTargetList(pages, targetId, cdpUrl, ssrfPolicy);
     } catch {}
   }
 
@@ -763,10 +785,10 @@ async function partitionAccessiblePages(opts: {
   return { accessible, blockedCount };
 }
 
-export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: string }) {
+export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: SsrfPolicy }) {
   if (opts.targetId !== undefined && opts.targetId !== '' && isBlockedTarget(opts.cdpUrl, opts.targetId))
     throw new BlockedBrowserTargetError();
-  const { browser } = await connectBrowser(opts.cdpUrl);
+  const { browser } = await connectBrowser(opts.cdpUrl, undefined, opts.ssrfPolicy);
   const pages = getAllPages(browser);
   if (!pages.length) throw new Error('No pages available in the connected browser.');
   const { accessible, blockedCount } = await partitionAccessiblePages({ cdpUrl: opts.cdpUrl, pages });
@@ -776,7 +798,7 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
   }
   const first = accessible[0];
   if (opts.targetId === undefined || opts.targetId === '') return first;
-  const found = await findPageByTargetId(browser, opts.targetId, opts.cdpUrl);
+  const found = await findPageByTargetId(browser, opts.targetId, opts.cdpUrl, opts.ssrfPolicy);
   if (!found) {
     throw new BrowserTabNotFoundError(
       `Tab not found (targetId: ${opts.targetId}). Call browser.tabs() to list open tabs.`,
@@ -792,9 +814,13 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
 /**
  * Resolve a page by targetId or throw BrowserTabNotFoundError.
  */
-export async function resolvePageByTargetIdOrThrow(opts: { cdpUrl: string; targetId: string }): Promise<Page> {
-  const { browser } = await connectBrowser(opts.cdpUrl);
-  const page = await findPageByTargetId(browser, opts.targetId, opts.cdpUrl);
+export async function resolvePageByTargetIdOrThrow(opts: {
+  cdpUrl: string;
+  targetId: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<Page> {
+  const { browser } = await connectBrowser(opts.cdpUrl, undefined, opts.ssrfPolicy);
+  const page = await findPageByTargetId(browser, opts.targetId, opts.cdpUrl, opts.ssrfPolicy);
   if (!page) throw new BrowserTabNotFoundError();
   return page;
 }
@@ -802,7 +828,11 @@ export async function resolvePageByTargetIdOrThrow(opts: { cdpUrl: string; targe
 /**
  * Get a page for a target, ensuring page state is initialized.
  */
-export async function getRestoredPageForTarget(opts: { cdpUrl: string; targetId?: string }): Promise<Page> {
+export async function getRestoredPageForTarget(opts: {
+  cdpUrl: string;
+  targetId?: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<Page> {
   const page = await getPageForTargetId(opts);
   ensurePageState(page);
   return page;

@@ -52,6 +52,45 @@ export class InvalidBrowserNavigationUrlError extends Error {
   }
 }
 
+/** Thrown when the CDP endpoint URL is blocked by the configured SSRF policy. */
+export class BrowserCdpEndpointBlockedError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message);
+    this.name = 'BrowserCdpEndpointBlockedError';
+    if (options?.cause !== undefined) (this as { cause?: unknown }).cause = options.cause;
+  }
+}
+
+/**
+ * Validate a CDP endpoint URL against an SSRF policy. No-op without a policy.
+ * Connecting to local Chrome with a strict policy requires `dangerouslyAllowPrivateNetwork: true`.
+ */
+export async function assertCdpEndpointAllowed(cdpUrl: string, ssrfPolicy?: SsrfPolicy): Promise<void> {
+  if (!ssrfPolicy) return;
+  let parsed: URL;
+  try {
+    parsed = new URL(cdpUrl);
+  } catch {
+    throw new BrowserCdpEndpointBlockedError(`CDP endpoint blocked: invalid URL "${cdpUrl}"`);
+  }
+  const allowedProtocols = new Set(['http:', 'https:', 'ws:', 'wss:']);
+  if (!allowedProtocols.has(parsed.protocol)) {
+    throw new BrowserCdpEndpointBlockedError(
+      `CDP endpoint blocked: protocol "${parsed.protocol.replace(':', '')}" is not allowed (use http/https/ws/wss)`,
+    );
+  }
+  try {
+    await resolvePinnedHostnameWithPolicy(parsed.hostname, { policy: ssrfPolicy });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new BrowserCdpEndpointBlockedError(
+      `CDP endpoint "${parsed.hostname}" blocked by SSRF policy: ${reason}. ` +
+        `If connecting to local Chrome, set ssrfPolicy.dangerouslyAllowPrivateNetwork = true.`,
+      { cause: error },
+    );
+  }
+}
+
 /** Options for browser navigation SSRF policy. */
 export interface BrowserNavigationPolicyOptions {
   ssrfPolicy?: SsrfPolicy;
