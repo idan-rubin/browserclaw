@@ -65,6 +65,7 @@ import {
   setDialogHandler,
   getRestoredPageForTarget,
 } from './connection.js';
+import { assertCdpEndpointAllowed } from './security.js';
 import { snapshotAi } from './snapshot/ai-snapshot.js';
 import { snapshotRole, snapshotAria } from './snapshot/aria-snapshot.js';
 import {
@@ -606,6 +607,7 @@ export class CrawlPage {
       accept: opts.accept,
       promptText: opts.promptText,
       timeoutMs: opts.timeoutMs,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -673,6 +675,7 @@ export class CrawlPage {
       targetId: this._targetId,
       paths,
       timeoutMs: opts?.timeoutMs,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -844,6 +847,7 @@ export class CrawlPage {
       ref: opts?.ref,
       timeoutMs: opts?.timeoutMs,
       signal: opts?.signal,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -869,6 +873,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       fn,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1474,6 +1479,7 @@ export class CrawlPage {
           cdpUrl: this.cdpUrl,
           targetId: this._targetId,
           fn: '() => { const b = document.body; return b ? b.innerText : ""; }',
+          ssrfPolicy: this.ssrfPolicy,
         });
         bodyText = typeof raw === 'string' ? raw : null;
       } catch (err) {
@@ -1551,6 +1557,7 @@ export class CrawlPage {
             cdpUrl: this.cdpUrl,
             targetId: this._targetId,
             fn: rule.fn,
+            ssrfPolicy: this.ssrfPolicy,
           });
           const passed = result !== null && result !== undefined && result !== false && result !== 0 && result !== '';
           checks.push({
@@ -1705,13 +1712,14 @@ export class BrowserClaw {
       const ssrfPolicy =
         opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
       /* eslint-enable @typescript-eslint/no-deprecated */
+      // Bootstrap connect to our own freshly-spawned loopback Chrome — no policy check.
+      await connectBrowser(cdpUrl, undefined);
       const telemetry: RunTelemetry = {
         launchMs: chrome.launchMs,
         timestamps: { startedAt, launchedAt: new Date().toISOString() },
       };
       const browser = new BrowserClaw(cdpUrl, chrome, telemetry, ssrfPolicy, opts.recordVideo);
       if (opts.url !== undefined && opts.url !== '') {
-        // connectBrowser is called lazily inside currentPage → connectBrowser; connectMs is recorded there
         const page = await browser.currentPage();
         const navT0 = Date.now();
         await page.goto(opts.url);
@@ -1754,14 +1762,17 @@ export class BrowserClaw {
       }
       resolvedUrl = discovered;
     }
-    if (!(await isChromeReachable(resolvedUrl, 3000, opts?.authToken))) {
-      throw new Error(`Cannot connect to Chrome at ${resolvedUrl}. Is Chrome running with --remote-debugging-port?`);
-    }
-    await connectBrowser(resolvedUrl, opts?.authToken);
     /* eslint-disable @typescript-eslint/no-deprecated -- backward-compat bridge for allowInternal */
     const ssrfPolicy =
       opts?.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts?.ssrfPolicy;
     /* eslint-enable @typescript-eslint/no-deprecated */
+    // Surface SSRF policy errors with the right error type rather than letting
+    // isChromeReachable swallow them and report the generic "Cannot connect".
+    await assertCdpEndpointAllowed(resolvedUrl, ssrfPolicy);
+    if (!(await isChromeReachable(resolvedUrl, 3000, opts?.authToken, ssrfPolicy))) {
+      throw new Error(`Cannot connect to Chrome at ${resolvedUrl}. Is Chrome running with --remote-debugging-port?`);
+    }
+    await connectBrowser(resolvedUrl, opts?.authToken, ssrfPolicy);
     const telemetry: RunTelemetry = {
       connectMs: Date.now() - connectT0,
       timestamps: { startedAt, connectedAt: new Date().toISOString() },

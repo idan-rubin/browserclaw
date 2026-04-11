@@ -19,7 +19,7 @@ import {
 import { resolveStrictExistingPathsWithinRoot, DEFAULT_UPLOAD_DIR } from '../security.js';
 import type { FormField, SsrfPolicy } from '../types.js';
 
-import { assertPostInteractionNavigationSafe } from './navigation.js';
+import { assertInteractionNavigationCompletedSafely } from './navigation.js';
 
 type MouseButton = 'left' | 'right' | 'middle';
 type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
@@ -60,14 +60,18 @@ export async function mouseClickViaPlaywright(opts: {
   ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const page = await getRestoredPageForTarget(opts);
-  await page.mouse.click(opts.x, opts.y, {
-    button: opts.button,
-    clickCount: opts.clickCount,
-    delay: opts.delayMs,
-  });
-  await assertPostInteractionNavigationSafe({
+  const previousUrl = page.url();
+  await assertInteractionNavigationCompletedSafely({
+    action: async () => {
+      await page.mouse.click(opts.x, opts.y, {
+        button: opts.button,
+        clickCount: opts.clickCount,
+        delay: opts.delayMs,
+      });
+    },
     cdpUrl: opts.cdpUrl,
     page,
+    previousUrl,
     ssrfPolicy: opts.ssrfPolicy,
     targetId: opts.targetId,
   });
@@ -85,26 +89,34 @@ export async function pressAndHoldViaCdp(opts: {
   holdMs?: number;
   ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   ensurePageState(page);
 
   const { x, y } = opts;
+  const previousUrl = page.url();
 
-  await withPageScopedCdpClient({
-    cdpUrl: opts.cdpUrl,
-    page,
-    targetId: opts.targetId,
-    fn: async (send) => {
-      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' });
-      if (opts.delay !== undefined && opts.delay !== 0) await new Promise((r) => setTimeout(r, opts.delay));
-      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
-      if (opts.holdMs !== undefined && opts.holdMs !== 0) await new Promise((r) => setTimeout(r, opts.holdMs));
-      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+  await assertInteractionNavigationCompletedSafely({
+    action: async () => {
+      await withPageScopedCdpClient({
+        cdpUrl: opts.cdpUrl,
+        page,
+        targetId: opts.targetId,
+        fn: async (send) => {
+          await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' });
+          if (opts.delay !== undefined && opts.delay !== 0) await new Promise((r) => setTimeout(r, opts.delay));
+          await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+          if (opts.holdMs !== undefined && opts.holdMs !== 0) await new Promise((r) => setTimeout(r, opts.holdMs));
+          await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+        },
+      });
     },
-  });
-  await assertPostInteractionNavigationSafe({
     cdpUrl: opts.cdpUrl,
     page,
+    previousUrl,
     ssrfPolicy: opts.ssrfPolicy,
     targetId: opts.targetId,
   });
@@ -127,11 +139,15 @@ export async function clickByTextViaPlaywright(opts: {
     .or(page.getByTitle(opts.text, { exact: opts.exact }))
     .and(page.locator(':visible'))
     .first();
+  const previousUrl = page.url();
   try {
-    await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
-    await assertPostInteractionNavigationSafe({
+    await assertInteractionNavigationCompletedSafely({
+      action: async () => {
+        await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
+      },
       cdpUrl: opts.cdpUrl,
       page,
+      previousUrl,
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
     });
@@ -157,11 +173,15 @@ export async function clickByRoleViaPlaywright(opts: {
   const locator = page
     .getByRole(opts.role as Parameters<typeof page.getByRole>[0], { name: opts.name })
     .nth(opts.index ?? 0);
+  const previousUrl = page.url();
   try {
-    await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
-    await assertPostInteractionNavigationSafe({
+    await assertInteractionNavigationCompletedSafely({
+      action: async () => {
+        await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers });
+      },
       cdpUrl: opts.cdpUrl,
       page,
+      previousUrl,
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
     });
@@ -188,6 +208,7 @@ export async function clickViaPlaywright(opts: {
   const label = resolved.ref ?? resolved.selector ?? '';
   const locator = resolveLocator(page, resolved);
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
+  const previousUrl = page.url();
 
   // Determine if this is a checkable role element so we can verify the click worked.
   let checkableRole = false;
@@ -201,53 +222,58 @@ export async function clickViaPlaywright(opts: {
   }
 
   try {
-    const delayMs = resolveBoundedDelayMs(opts.delayMs, 'click delayMs', MAX_CLICK_DELAY_MS);
-    if (delayMs > 0) {
-      await locator.hover({ timeout, force: opts.force });
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-
-    // For checkable roles, capture aria-checked before the click.
-    let ariaCheckedBefore: string | null | undefined;
-    if (checkableRole && opts.doubleClick !== true) {
-      ariaCheckedBefore = await locator.getAttribute('aria-checked', { timeout }).catch(() => undefined);
-    }
-
-    if (opts.doubleClick === true) {
-      await locator.dblclick({ timeout, button: opts.button, modifiers: opts.modifiers, force: opts.force });
-    } else {
-      await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers, force: opts.force });
-    }
-
-    // If this is a checkable role and aria-checked didn't change, fall back to JS click.
-    // Poll briefly to give async frameworks time to update the DOM before concluding
-    // the click didn't work — otherwise we'd fire a second click that un-toggles it.
-    if (checkableRole && opts.doubleClick !== true && ariaCheckedBefore !== undefined) {
-      const POLL_INTERVAL_MS = 50;
-      const POLL_TIMEOUT_MS = 500;
-      const ATTR_TIMEOUT_MS = Math.min(timeout, POLL_TIMEOUT_MS);
-      let changed = false;
-      for (let elapsed = 0; elapsed < POLL_TIMEOUT_MS; elapsed += POLL_INTERVAL_MS) {
-        const current = await locator.getAttribute('aria-checked', { timeout: ATTR_TIMEOUT_MS }).catch(() => undefined);
-        if (current === undefined || current !== ariaCheckedBefore) {
-          changed = true;
-          break;
+    await assertInteractionNavigationCompletedSafely({
+      action: async () => {
+        const delayMs = resolveBoundedDelayMs(opts.delayMs, 'click delayMs', MAX_CLICK_DELAY_MS);
+        if (delayMs > 0) {
+          await locator.hover({ timeout, force: opts.force });
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
         }
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-      }
-      if (!changed) {
-        await locator
-          .evaluate((el: Element) => {
-            (el as HTMLElement).click();
-          })
-          .catch(() => {
-            /* intentional no-op */
-          });
-      }
-    }
-    await assertPostInteractionNavigationSafe({
+
+        // For checkable roles, capture aria-checked before the click.
+        let ariaCheckedBefore: string | null | undefined;
+        if (checkableRole && opts.doubleClick !== true) {
+          ariaCheckedBefore = await locator.getAttribute('aria-checked', { timeout }).catch(() => undefined);
+        }
+
+        if (opts.doubleClick === true) {
+          await locator.dblclick({ timeout, button: opts.button, modifiers: opts.modifiers, force: opts.force });
+        } else {
+          await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers, force: opts.force });
+        }
+
+        // If this is a checkable role and aria-checked didn't change, fall back to JS click.
+        // Poll briefly to give async frameworks time to update the DOM before concluding
+        // the click didn't work — otherwise we'd fire a second click that un-toggles it.
+        if (checkableRole && opts.doubleClick !== true && ariaCheckedBefore !== undefined) {
+          const POLL_INTERVAL_MS = 50;
+          const POLL_TIMEOUT_MS = 500;
+          const ATTR_TIMEOUT_MS = Math.min(timeout, POLL_TIMEOUT_MS);
+          let changed = false;
+          for (let elapsed = 0; elapsed < POLL_TIMEOUT_MS; elapsed += POLL_INTERVAL_MS) {
+            const current = await locator
+              .getAttribute('aria-checked', { timeout: ATTR_TIMEOUT_MS })
+              .catch(() => undefined);
+            if (current === undefined || current !== ariaCheckedBefore) {
+              changed = true;
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+          }
+          if (!changed) {
+            await locator
+              .evaluate((el: Element) => {
+                (el as HTMLElement).click();
+              })
+              .catch(() => {
+                /* intentional no-op */
+              });
+          }
+        }
+      },
       cdpUrl: opts.cdpUrl,
       page,
+      previousUrl,
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
     });
@@ -301,10 +327,14 @@ export async function typeViaPlaywright(opts: {
       await locator.fill(text, { timeout });
     }
     if (opts.submit === true) {
-      await locator.press('Enter', { timeout });
-      await assertPostInteractionNavigationSafe({
+      const previousUrl = page.url();
+      await assertInteractionNavigationCompletedSafely({
+        action: async () => {
+          await locator.press('Enter', { timeout });
+        },
         cdpUrl: opts.cdpUrl,
         page,
+        previousUrl,
         ssrfPolicy: opts.ssrfPolicy,
         targetId: opts.targetId,
       });
@@ -328,12 +358,16 @@ export async function selectOptionViaPlaywright(opts: {
   const page = await getRestoredPageForTarget(opts);
   const label = resolved.ref ?? resolved.selector ?? '';
   const locator = resolveLocator(page, resolved);
+  const previousUrl = page.url();
 
   try {
-    await locator.selectOption(opts.values, { timeout: resolveInteractionTimeoutMs(opts.timeoutMs) });
-    await assertPostInteractionNavigationSafe({
+    await assertInteractionNavigationCompletedSafely({
+      action: async () => {
+        await locator.selectOption(opts.values, { timeout: resolveInteractionTimeoutMs(opts.timeoutMs) });
+      },
       cdpUrl: opts.cdpUrl,
       page,
+      previousUrl,
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
     });
@@ -359,12 +393,16 @@ export async function dragViaPlaywright(opts: {
   const endLocator = resolveLocator(page, resolvedEnd);
   const startLabel = resolvedStart.ref ?? resolvedStart.selector ?? '';
   const endLabel = resolvedEnd.ref ?? resolvedEnd.selector ?? '';
+  const previousUrl = page.url();
 
   try {
-    await startLocator.dragTo(endLocator, { timeout: resolveInteractionTimeoutMs(opts.timeoutMs) });
-    await assertPostInteractionNavigationSafe({
+    await assertInteractionNavigationCompletedSafely({
+      action: async () => {
+        await startLocator.dragTo(endLocator, { timeout: resolveInteractionTimeoutMs(opts.timeoutMs) });
+      },
       cdpUrl: opts.cdpUrl,
       page,
+      previousUrl,
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
     });
@@ -517,8 +555,13 @@ export async function armDialogViaPlaywright(opts: {
   accept: boolean;
   promptText?: string;
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   const state = ensurePageState(page);
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
@@ -554,8 +597,13 @@ export async function armFileUploadViaPlaywright(opts: {
   targetId?: string;
   paths?: string[];
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   const state = ensurePageState(page);
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);

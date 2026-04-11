@@ -10,6 +10,8 @@ import {
   createPinnedLookup,
   resolvePinnedHostnameWithPolicy,
   assertBrowserNavigationAllowed,
+  assertCdpEndpointAllowed,
+  BrowserCdpEndpointBlockedError,
   assertSafeOutputPath,
   assertSafeUploadPaths,
   resolveStrictExistingUploadPaths,
@@ -1664,6 +1666,71 @@ describe('security.ts', () => {
           },
         }),
       ).rejects.toThrow('outside the allowed root');
+    });
+  });
+
+  describe('assertCdpEndpointAllowed', () => {
+    it('is a no-op when no policy is provided', async () => {
+      await expect(assertCdpEndpointAllowed('http://localhost:9222')).resolves.toBeUndefined();
+      await expect(assertCdpEndpointAllowed('http://169.254.169.254/')).resolves.toBeUndefined();
+    });
+
+    it('is a no-op when policy is undefined explicitly', async () => {
+      await expect(assertCdpEndpointAllowed('http://localhost:9222', undefined)).resolves.toBeUndefined();
+    });
+
+    it('blocks loopback hostnames under a strict policy', async () => {
+      await expect(assertCdpEndpointAllowed('http://localhost:9222', {})).rejects.toThrow(
+        BrowserCdpEndpointBlockedError,
+      );
+    });
+
+    it('allows loopback when dangerouslyAllowPrivateNetwork is true', async () => {
+      await expect(
+        assertCdpEndpointAllowed('http://127.0.0.1:9222', { dangerouslyAllowPrivateNetwork: true }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('allows ws:// loopback when dangerouslyAllowPrivateNetwork is true', async () => {
+      await expect(
+        assertCdpEndpointAllowed('ws://127.0.0.1:9222/devtools/browser/abc', {
+          dangerouslyAllowPrivateNetwork: true,
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('rejects unsupported protocols even with permissive policy', async () => {
+      await expect(
+        assertCdpEndpointAllowed('file:///tmp/cdp.sock', { dangerouslyAllowPrivateNetwork: true }),
+      ).rejects.toThrow(BrowserCdpEndpointBlockedError);
+      await expect(
+        assertCdpEndpointAllowed('javascript:alert(1)', { dangerouslyAllowPrivateNetwork: true }),
+      ).rejects.toThrow(/protocol/);
+    });
+
+    it('rejects malformed URLs with a clear error', async () => {
+      await expect(assertCdpEndpointAllowed('not a url', {})).rejects.toThrow(BrowserCdpEndpointBlockedError);
+      await expect(assertCdpEndpointAllowed('not a url', {})).rejects.toThrow(/invalid URL/);
+    });
+
+    it('error message points users at the dangerouslyAllowPrivateNetwork fix', async () => {
+      try {
+        await assertCdpEndpointAllowed('http://localhost:9222', {});
+        expect.fail('expected throw');
+      } catch (err) {
+        expect(err).toBeInstanceOf(BrowserCdpEndpointBlockedError);
+        expect((err as Error).message).toContain('dangerouslyAllowPrivateNetwork');
+      }
+    });
+
+    it('preserves the underlying error as cause', async () => {
+      try {
+        await assertCdpEndpointAllowed('http://localhost:9222', {});
+        expect.fail('expected throw');
+      } catch (err) {
+        expect(err).toBeInstanceOf(BrowserCdpEndpointBlockedError);
+        expect((err as { cause?: unknown }).cause).toBeDefined();
+      }
     });
   });
 });

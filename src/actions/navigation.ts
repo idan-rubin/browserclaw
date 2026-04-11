@@ -1,4 +1,4 @@
-import type { Browser, BrowserContext, Page, Route, Request } from 'playwright-core';
+import type { Browser, BrowserContext, Page, Route, Request, Frame } from 'playwright-core';
 
 import {
   BrowserTabNotFoundError,
@@ -76,6 +76,26 @@ function isTopLevelNavigationRequest(page: Page, request: Request): boolean {
   }
 }
 
+function isSubframeDocumentNavigationRequest(page: Page, request: Request): boolean {
+  let sameMainFrame = false;
+  try {
+    sameMainFrame = request.frame() === page.mainFrame();
+  } catch {
+    return true;
+  }
+  if (sameMainFrame) return false;
+  try {
+    if (request.isNavigationRequest()) return true;
+  } catch {
+    /* fall through to resourceType check */
+  }
+  try {
+    return request.resourceType() === 'document';
+  } catch {
+    return false;
+  }
+}
+
 async function closeBlockedNavigationTarget(opts: { cdpUrl: string; page: Page; targetId?: string }): Promise<void> {
   markPageRefBlocked(opts.cdpUrl, opts.page);
   const resolvedTargetId = await pageTargetId(opts.page).catch(() => null);
@@ -105,27 +125,272 @@ export async function assertPageNavigationCompletedSafely(opts: {
   }
 }
 
-/**
- * Post-interaction navigation safety check. Call after any interaction that
- * could trigger navigation (click, type-submit, press) — validates the final
- * page URL against the SSRF policy and closes the tab if blocked.
- *
- * No-op if no policy is provided.
- */
-export async function assertPostInteractionNavigationSafe(opts: {
+// ── Interaction-time navigation guard ──────────────────────────────
+
+const INTERACTION_NAVIGATION_GRACE_MS = 250;
+const pendingInteractionNavigationGuardCleanup = new WeakMap<Page, () => void>();
+
+function didCrossDocumentUrlChange(page: Page, previousUrl: string): boolean {
+  const currentUrl = page.url();
+  if (currentUrl === previousUrl) return false;
+  try {
+    const prev = new URL(previousUrl);
+    const curr = new URL(currentUrl);
+    if (prev.origin === curr.origin && prev.pathname === curr.pathname && prev.search === curr.search) return false;
+  } catch {
+    /* invalid URLs — treat as cross-document */
+  }
+  return true;
+}
+
+function isHashOnlyNavigation(currentUrl: string, previousUrl: string): boolean {
+  if (currentUrl === previousUrl) return false;
+  try {
+    const prev = new URL(previousUrl);
+    const curr = new URL(currentUrl);
+    return prev.origin === curr.origin && prev.pathname === curr.pathname && prev.search === curr.search;
+  } catch {
+    return false;
+  }
+}
+
+function isMainFrameNavigation(page: Page, frame: Frame): boolean {
+  if (typeof page.mainFrame !== 'function') return true;
+  return frame === page.mainFrame();
+}
+
+async function assertSubframeNavigationAllowed(frameUrl: string, ssrfPolicy?: SsrfPolicy): Promise<void> {
+  if (!ssrfPolicy) return;
+  if (!frameUrl.startsWith('http://') && !frameUrl.startsWith('https://')) return;
+  await assertBrowserNavigationResultAllowed({ url: frameUrl, ...withBrowserNavigationPolicy(ssrfPolicy) });
+}
+
+function snapshotNetworkFrameUrl(frame: Frame): string | null {
+  try {
+    const frameUrl = frame.url();
+    return frameUrl.startsWith('http://') || frameUrl.startsWith('https://') ? frameUrl : null;
+  } catch {
+    return null;
+  }
+}
+
+interface ObservedNavigations {
+  mainFrameNavigated: boolean;
+  subframes: string[];
+}
+
+function formatThrown(value: unknown): string {
+  if (value instanceof Error) return value.message;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return 'unknown error';
+}
+
+async function assertObservedDelayedNavigations(opts: {
   cdpUrl: string;
   page: Page;
   ssrfPolicy?: SsrfPolicy;
   targetId?: string;
+  observed: ObservedNavigations;
 }): Promise<void> {
-  if (!opts.ssrfPolicy) return;
-  await assertPageNavigationCompletedSafely({
-    cdpUrl: opts.cdpUrl,
-    page: opts.page,
-    response: null,
-    ssrfPolicy: opts.ssrfPolicy,
-    targetId: opts.targetId,
+  let subframeError: Error | undefined;
+  try {
+    for (const frameUrl of opts.observed.subframes) await assertSubframeNavigationAllowed(frameUrl, opts.ssrfPolicy);
+  } catch (err) {
+    subframeError = err instanceof Error ? err : new Error(formatThrown(err));
+  }
+  if (opts.observed.mainFrameNavigated) {
+    await assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page: opts.page,
+      response: null,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
+  }
+  if (subframeError !== undefined) throw subframeError;
+}
+
+function observeDelayedInteractionNavigation(page: Page, previousUrl: string): Promise<ObservedNavigations> {
+  if (didCrossDocumentUrlChange(page, previousUrl)) {
+    return Promise.resolve({ mainFrameNavigated: true, subframes: [] });
+  }
+  if (typeof page.on !== 'function' || typeof page.off !== 'function') {
+    return Promise.resolve({ mainFrameNavigated: false, subframes: [] });
+  }
+  return new Promise((resolve) => {
+    const subframes: string[] = [];
+    const timer: { id: ReturnType<typeof setTimeout> | undefined } = { id: undefined };
+    const cleanup = (): void => {
+      if (timer.id !== undefined) clearTimeout(timer.id);
+      page.off('framenavigated', onFrameNavigated);
+    };
+    const onFrameNavigated = (frame: Frame): void => {
+      if (!isMainFrameNavigation(page, frame)) {
+        const frameUrl = snapshotNetworkFrameUrl(frame);
+        if (frameUrl !== null) subframes.push(frameUrl);
+        return;
+      }
+      if (isHashOnlyNavigation(page.url(), previousUrl)) return;
+      cleanup();
+      resolve({ mainFrameNavigated: true, subframes });
+    };
+    timer.id = setTimeout(() => {
+      cleanup();
+      resolve({ mainFrameNavigated: didCrossDocumentUrlChange(page, previousUrl), subframes });
+    }, INTERACTION_NAVIGATION_GRACE_MS);
+    page.on('framenavigated', onFrameNavigated);
   });
+}
+
+function scheduleDelayedInteractionNavigationGuard(opts: {
+  cdpUrl: string;
+  page: Page;
+  previousUrl: string;
+  ssrfPolicy?: SsrfPolicy;
+  targetId?: string;
+}): Promise<void> {
+  if (!opts.ssrfPolicy) return Promise.resolve();
+  const page = opts.page;
+  if (didCrossDocumentUrlChange(page, opts.previousUrl)) {
+    return assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page: opts.page,
+      response: null,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
+  }
+  if (typeof page.on !== 'function' || typeof page.off !== 'function') return Promise.resolve();
+  // Cancels overlap when two interactions race on the same page (Promise.all).
+  pendingInteractionNavigationGuardCleanup.get(opts.page)?.();
+  return new Promise<void>((resolve, reject) => {
+    const subframes: string[] = [];
+    const timer: { id: ReturnType<typeof setTimeout> | undefined } = { id: undefined };
+    const settle = (err?: unknown): void => {
+      cleanup();
+      if (err !== undefined) {
+        reject(err instanceof Error ? err : new Error(formatThrown(err)));
+        return;
+      }
+      resolve();
+    };
+    const cleanup = (): void => {
+      if (timer.id !== undefined) clearTimeout(timer.id);
+      page.off('framenavigated', onFrameNavigated);
+      if (pendingInteractionNavigationGuardCleanup.get(opts.page) === settle) {
+        pendingInteractionNavigationGuardCleanup.delete(opts.page);
+      }
+    };
+    const onFrameNavigated = (frame: Frame): void => {
+      if (!isMainFrameNavigation(page, frame)) {
+        const frameUrl = snapshotNetworkFrameUrl(frame);
+        if (frameUrl !== null) subframes.push(frameUrl);
+        return;
+      }
+      if (isHashOnlyNavigation(page.url(), opts.previousUrl)) return;
+      cleanup();
+      assertObservedDelayedNavigations({
+        cdpUrl: opts.cdpUrl,
+        page: opts.page,
+        ssrfPolicy: opts.ssrfPolicy,
+        targetId: opts.targetId,
+        observed: { mainFrameNavigated: true, subframes },
+      }).then(() => {
+        settle();
+      }, settle);
+    };
+    timer.id = setTimeout(() => {
+      cleanup();
+      assertObservedDelayedNavigations({
+        cdpUrl: opts.cdpUrl,
+        page: opts.page,
+        ssrfPolicy: opts.ssrfPolicy,
+        targetId: opts.targetId,
+        observed: {
+          mainFrameNavigated: didCrossDocumentUrlChange(page, opts.previousUrl),
+          subframes,
+        },
+      }).then(() => {
+        settle();
+      }, settle);
+    }, INTERACTION_NAVIGATION_GRACE_MS);
+    pendingInteractionNavigationGuardCleanup.set(opts.page, settle);
+    page.on('framenavigated', onFrameNavigated);
+  });
+}
+
+export async function assertInteractionNavigationCompletedSafely<T>(opts: {
+  action: () => Promise<T>;
+  cdpUrl: string;
+  page: Page;
+  previousUrl: string;
+  ssrfPolicy?: SsrfPolicy;
+  targetId?: string;
+}): Promise<T> {
+  if (!opts.ssrfPolicy) return await opts.action();
+  const navPage = opts.page;
+  const navState: { observed: boolean } = { observed: false };
+  const subframeNavigationsDuringAction: string[] = [];
+  const onFrameNavigated = (frame: Frame): void => {
+    if (!isMainFrameNavigation(navPage, frame)) {
+      const frameUrl = snapshotNetworkFrameUrl(frame);
+      if (frameUrl !== null) subframeNavigationsDuringAction.push(frameUrl);
+      return;
+    }
+    if (!isHashOnlyNavigation(opts.page.url(), opts.previousUrl)) navState.observed = true;
+  };
+  if (typeof navPage.on === 'function') navPage.on('framenavigated', onFrameNavigated);
+  let result: T | undefined;
+  let actionError: Error | undefined;
+  try {
+    result = await opts.action();
+  } catch (err) {
+    actionError = err instanceof Error ? err : new Error(formatThrown(err));
+  } finally {
+    if (typeof navPage.off === 'function') navPage.off('framenavigated', onFrameNavigated);
+  }
+  const navigationObserved = navState.observed || didCrossDocumentUrlChange(opts.page, opts.previousUrl);
+  let subframeError: Error | undefined;
+  try {
+    for (const frameUrl of subframeNavigationsDuringAction) {
+      await assertSubframeNavigationAllowed(frameUrl, opts.ssrfPolicy);
+    }
+  } catch (err) {
+    subframeError = err instanceof Error ? err : new Error(formatThrown(err));
+  }
+  if (navigationObserved) {
+    await assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page: opts.page,
+      response: null,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
+  } else if (actionError !== undefined) {
+    const observed = await observeDelayedInteractionNavigation(opts.page, opts.previousUrl);
+    if (observed.mainFrameNavigated || observed.subframes.length > 0) {
+      await assertObservedDelayedNavigations({
+        cdpUrl: opts.cdpUrl,
+        page: opts.page,
+        ssrfPolicy: opts.ssrfPolicy,
+        targetId: opts.targetId,
+        observed,
+      });
+    }
+  } else {
+    await scheduleDelayedInteractionNavigationGuard({
+      cdpUrl: opts.cdpUrl,
+      page: opts.page,
+      previousUrl: opts.previousUrl,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
+  }
+  // Precedence: SSRF block > action error. The security signal wins.
+  if (subframeError !== undefined) throw subframeError;
+  if (actionError !== undefined) throw actionError;
+  return result as T;
 }
 
 async function gotoPageWithNavigationGuard(opts: {
@@ -145,23 +410,33 @@ async function gotoPageWithNavigationGuard(opts: {
       });
       return;
     }
-    if (!isTopLevelNavigationRequest(opts.page, request)) {
+    const isTopLevel = isTopLevelNavigationRequest(opts.page, request);
+    const isSubframeDocument = !isTopLevel && isSubframeDocumentNavigationRequest(opts.page, request);
+    if (!isTopLevel && !isSubframeDocument) {
       await route.continue();
       return;
     }
-    // Only guard navigations initiated by this call:
-    // - initial request must match our target URL
-    // - redirects (redirectedFrom !== null) are always checked since they may be part of our chain
-    const isRedirect = request.redirectedFrom() !== null;
-    if (!isRedirect && request.url() !== opts.url) {
-      await route.continue();
-      return;
+    if (isTopLevel) {
+      // Only guard top-level navigations initiated by this call:
+      // - initial request must match our target URL
+      // - redirects (redirectedFrom !== null) are always checked since they may be part of our chain
+      const isRedirect = request.redirectedFrom() !== null;
+      if (!isRedirect && request.url() !== opts.url) {
+        await route.continue();
+        return;
+      }
     }
     try {
       await assertBrowserNavigationAllowed({ url: request.url(), ...navigationPolicy });
     } catch (err) {
       if (isPolicyDenyNavigationError(err)) {
-        state.blocked = err as Error;
+        if (isTopLevel) {
+          state.blocked = err as Error;
+        } else {
+          console.warn(
+            `[browserclaw] blocked subframe navigation to ${request.url()}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
         await route.abort().catch((e: unknown) => {
           console.warn('[browserclaw] route abort failed', e);
         });

@@ -215,6 +215,7 @@ export async function executeSingleAction(
         fn: action.fn,
         ref: action.ref,
         timeoutMs: action.timeoutMs,
+        ssrfPolicy,
       });
       break;
     case 'close':

@@ -6,6 +6,9 @@ import {
   forceDisconnectPlaywrightConnection,
   tryTerminateExecutionViaCdp,
 } from '../connection.js';
+import type { SsrfPolicy } from '../types.js';
+
+import { assertInteractionNavigationCompletedSafely } from './navigation.js';
 
 export interface FrameEvalResult {
   frameUrl: string;
@@ -22,11 +25,16 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
   fn: string;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<FrameEvalResult[]> {
   const fnText = opts.fn.trim();
   if (!fnText) throw new Error('function is required');
 
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   const frames = page.frames();
   const results: FrameEvalResult[] = [];
 
@@ -144,11 +152,16 @@ export async function evaluateViaPlaywright(opts: {
   ref?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<unknown> {
   const fnText = opts.fn.trim();
   if (!fnText) throw new Error('function is required');
 
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   ensurePageState(page);
 
   const outerTimeout = normalizeTimeoutMs(opts.timeoutMs, 20000);
@@ -206,25 +219,42 @@ export async function evaluateViaPlaywright(opts: {
     }
   }
 
+  const previousUrl = page.url();
   try {
     if (opts.ref !== undefined && opts.ref !== '') {
       const locator = refLocator(page, opts.ref);
-      return await awaitEvalWithAbort(
-        locator.evaluate(ELEMENT_EVALUATOR as (...args: unknown[]) => unknown, {
-          fnBody: fnText,
-          timeoutMs: evaluateTimeout,
-        }),
-        abortPromise,
-      );
+      return await assertInteractionNavigationCompletedSafely({
+        action: () =>
+          awaitEvalWithAbort(
+            locator.evaluate(ELEMENT_EVALUATOR as (...args: unknown[]) => unknown, {
+              fnBody: fnText,
+              timeoutMs: evaluateTimeout,
+            }),
+            abortPromise,
+          ),
+        cdpUrl: opts.cdpUrl,
+        page,
+        previousUrl,
+        ssrfPolicy: opts.ssrfPolicy,
+        targetId: opts.targetId,
+      });
     }
 
-    return await awaitEvalWithAbort(
-      page.evaluate(BROWSER_EVALUATOR as (...args: unknown[]) => unknown, {
-        fnBody: fnText,
-        timeoutMs: evaluateTimeout,
-      }),
-      abortPromise,
-    );
+    return await assertInteractionNavigationCompletedSafely({
+      action: () =>
+        awaitEvalWithAbort(
+          page.evaluate(BROWSER_EVALUATOR as (...args: unknown[]) => unknown, {
+            fnBody: fnText,
+            timeoutMs: evaluateTimeout,
+          }),
+          abortPromise,
+        ),
+      cdpUrl: opts.cdpUrl,
+      page,
+      previousUrl,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
   } finally {
     if (signal && abortListener) signal.removeEventListener('abort', abortListener);
     // Release closure references to prevent memory leaks in long-lived signals
