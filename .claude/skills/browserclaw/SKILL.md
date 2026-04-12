@@ -293,15 +293,239 @@ const requests = await page.networkRequests(); // XHR/fetch calls
 
 All skills live at: https://github.com/idan-rubin/browserclaw-agent/tree/main/src/Services/Browser/src/skills
 
-| Scenario                                   | File                                                                                                                                         | What it handles                                                                                                              |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| PerimeterX / "press and hold" challenge    | [`press-and-hold.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/press-and-hold.ts)           | Finds button at bottom-center +60px, holds 4–10s with randomized jitter and delay, refreshes and retries if still blocked    |
-| Cloudflare "Verify you are human" checkbox | [`cloudflare-checkbox.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/cloudflare-checkbox.ts) | Locates the Cloudflare iframe checkbox and clicks it via CDP                                                                 |
-| Cookie banners and generic popups          | [`dismiss-popup.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/dismiss-popup.ts)             | Detects and dismisses common cookie consent banners and modal overlays                                                       |
-| Tab opened by a click                      | [`tab-manager.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/tab-manager.ts)                 | Tracks known tab IDs, detects new tabs after clicks, switches focus automatically                                            |
-| Agent stuck repeating the same action      | [`loop-detection.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/loop-detection.ts)           | Counts repeated action+ref pairs over a sliding window; escalates nudge from gentle → warning → urgent at 5/8/12 repetitions |
+| Scenario                                        | File                                                                                                                                         | What it handles                                                                                                              |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Anti-bot detection + snapshot enrichment        | [`press-and-hold.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/press-and-hold.ts)           | `getPageText`, `detectAntiBot`, `enrichSnapshot`, `isStillBlocked`, `pressAndHold` — the orchestration hub                   |
+| Cloudflare "Verify you are human" checkbox      | [`cloudflare-checkbox.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/cloudflare-checkbox.ts) | Locates the Cloudflare iframe checkbox and clicks it via CDP                                                                 |
+| Cookie banners and generic popups               | [`dismiss-popup.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/dismiss-popup.ts)             | Detects and dismisses common cookie consent banners and modal overlays                                                       |
+| Raw CDP access (mouse events, target switching) | [`cdp-utils.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/cdp-utils.ts)                     | `openCdpConnection`, `cdpClick`, `activateCdpTarget` — used by cloudflare-checkbox and tab-manager                           |
+| Tab opened by a click                           | [`tab-manager.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/tab-manager.ts)                 | Tracks known tab IDs, detects new tabs after clicks, switches focus automatically                                            |
+| Agent stuck repeating the same action           | [`loop-detection.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/loop-detection.ts)           | Counts repeated action+ref pairs over a sliding window; escalates nudge from gentle → warning → urgent at 5/8/12 repetitions |
 
 **If you encounter an anti-bot challenge, popup, or tab management need: read the relevant file above first.** These are production implementations that handle edge cases you'll otherwise spend hours debugging.
+
+---
+
+## Anti-Bot Orchestration
+
+When a page might be blocked, use this detection-first flow before attempting any solver. All the pieces live in `press-and-hold.ts` and connect together as follows.
+
+### `AntiBotType` — the dispatch key
+
+```typescript
+type AntiBotType = 'press_and_hold' | 'cloudflare_checkbox' | null;
+```
+
+`detectAntiBot` returns one of these values. `null` means no anti-bot challenge detected. Everything downstream dispatches on this type.
+
+### The full flow
+
+```typescript
+import { getPageText, detectAntiBot, enrichSnapshot, isStillBlocked, pressAndHold } from './skills/press-and-hold.js';
+import { clickCloudflareCheckbox } from './skills/cloudflare-checkbox.js';
+import { detectPopup, dismissPopup } from './skills/dismiss-popup.js';
+
+// 1. Read full DOM text including iframes
+const domText = await getPageText(page);
+
+// 2. Classify the challenge
+const antiBotType = detectAntiBot(domText);
+// 'press_and_hold'      → PerimeterX "press and hold" overlay
+// 'cloudflare_checkbox' → Cloudflare turnstile / "Verify you are human"
+// null                  → no anti-bot challenge detected
+
+// 3. Enrich the snapshot with anti-bot context for agent reasoning
+const { snapshot } = await page.snapshot({ interactive: true, compact: true });
+const enrichedSnapshot = enrichSnapshot(snapshot, domText, antiBotType);
+// enrichSnapshot appends a [ANTI-BOT OVERLAY DETECTED] or [SECURITY VERIFICATION]
+// note to the snapshot text so the agent knows what to do next
+
+// 4. Dispatch to the right solver
+if (antiBotType === 'press_and_hold') {
+  await pressAndHold(page);
+} else if (antiBotType === 'cloudflare_checkbox') {
+  await clickCloudflareCheckbox(page);
+} else {
+  // No anti-bot — check for generic popups
+  if (await detectPopup(page)) {
+    await dismissPopup(page);
+  }
+}
+
+// 5. Retry check — isStillBlocked knows which patterns to test per type
+const blocked = await isStillBlocked(page, antiBotType);
+if (blocked) {
+  /* escalate to user — don't loop indefinitely */
+}
+```
+
+### `isStillBlocked` — type-aware retry check
+
+```typescript
+const blocked = await isStillBlocked(page, antiBotType);
+```
+
+`isStillBlocked` takes the `AntiBotType` and tests type-specific patterns against `document.body.innerText`:
+
+- `'press_and_hold'` → `/press.*hold|verify.*human|not a bot|access.*denied/i`
+- `'cloudflare_checkbox'` → `/performing security verification|verify you are human|just a moment/i`
+- `null` → always returns `false`
+
+Both `pressAndHold` and `clickCloudflareCheckbox` use `isStillBlocked` internally for their post-action retry checks. Use it directly when you need to verify state between retries in your own logic.
+
+### Detection priority
+
+`detectAntiBot` checks in this order:
+
+1. Press-and-hold pattern first (`/press.*hold|hold.*to.*confirm/i`)
+2. Cloudflare-specific patterns (`/performing security verification|cloudflare|just a moment/i`)
+3. Generic anti-bot (`/verify.*human|not a bot|captcha/i`) → treated as `cloudflare_checkbox`
+
+Press-and-hold is checked first because a page can match both patterns and the solvers are incompatible — using the wrong one will fail.
+
+---
+
+## Handling PerimeterX Press-and-Hold Challenges
+
+Some sites (via PerimeterX) show a "press and hold" verification overlay. This is distinct from Cloudflare — the DOM text will say something like "Press and hold to confirm you're human." Handle it as follows.
+
+### 1. Detect the challenge
+
+Read DOM text from the page **and all iframes** (the overlay is often in an iframe):
+
+```typescript
+const domText = (await page.evaluate(`
+  (function() {
+    var text = document.body.innerText || '';
+    var iframes = document.querySelectorAll('iframe');
+    for (var i = 0; i < iframes.length; i++) {
+      try {
+        if (iframes[i].contentDocument && iframes[i].contentDocument.body) {
+          text += ' ' + iframes[i].contentDocument.body.innerText;
+        }
+      } catch(e) {}
+    }
+    return text;
+  })()
+`)) as string;
+
+const isPressAndHold = /press.*hold|hold.*to.*confirm/i.test(domText);
+```
+
+If the pattern matches, it's a press-and-hold challenge. Do not treat it as a Cloudflare checkbox.
+
+### 2. Find the button coordinates
+
+The button is located by finding the element whose text matches the challenge pattern, then targeting **bottom-center + 60px below it**. Search main DOM, shadow DOM, and iframes:
+
+```typescript
+const result = (await page.evaluate(`
+  (function() {
+    var PATTERN = /press.*hold|verify.*human|hold.*to.*confirm|not a bot/i;
+    var BUTTON_Y_OFFSET = 60;
+
+    function toCandidate(el, offsetX, offsetY) {
+      var rect = el.getBoundingClientRect();
+      return {
+        width: rect.width, height: rect.height,
+        x: Math.round(rect.left + rect.width / 2 + offsetX),
+        y: Math.round(rect.bottom + BUTTON_Y_OFFSET + offsetY),
+      };
+    }
+
+    function search(root, offsetX, offsetY) {
+      var results = [];
+      var all = root.querySelectorAll('*');
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        if (PATTERN.test((el.innerText || '').trim())) results.push(toCandidate(el, offsetX, offsetY));
+        if (el.shadowRoot) {
+          var sh = el.shadowRoot.querySelectorAll('*');
+          for (var s = 0; s < sh.length; s++)
+            if (PATTERN.test((sh[s].innerText || '').trim())) results.push(toCandidate(sh[s], offsetX, offsetY));
+        }
+      }
+      return results;
+    }
+
+    var candidates = search(document, 0, 0);
+    var iframes = document.querySelectorAll('iframe');
+    for (var i = 0; i < iframes.length; i++) {
+      try {
+        var doc = iframes[i].contentDocument;
+        if (doc && doc.body) {
+          var r = iframes[i].getBoundingClientRect();
+          candidates = candidates.concat(search(doc, r.left, r.top));
+        }
+      } catch(e) {}
+    }
+
+    // Pick: width > 100px, height 20-80px, prefer smallest height
+    var best = null;
+    for (var j = 0; j < candidates.length; j++) {
+      var c = candidates[j];
+      if (c.width > 100 && c.height > 20 && c.height < 80) {
+        if (!best || c.height < best.height) best = c;
+      }
+    }
+    return JSON.stringify({ found: !!best, best: best });
+  })()
+`)) as string;
+
+const { found, best } = JSON.parse(result);
+if (!found) {
+  /* no button found — log and skip */
+}
+const { x, y } = best;
+```
+
+**Coordinate logic:** x = horizontal center of the matching element, y = element's bottom edge + 60px. The actual hold target is below the text label, not on it.
+
+### 3. Execute the hold
+
+Apply ±10px/±5px jitter and a randomized 4–10s hold with a 100–300ms pre-delay:
+
+```typescript
+const urlBefore = await page.url();
+const jitterX = x + Math.floor(Math.random() * 20) - 10; // ±10px
+const jitterY = y + Math.floor(Math.random() * 10) - 5; // ±5px
+const holdMs = 4000 + Math.floor(Math.random() * 6000); // 4–10s
+const delay = 100 + Math.floor(Math.random() * 200); // 100–300ms pre-delay
+
+await page.pressAndHold(jitterX, jitterY, { delay, holdMs });
+```
+
+### 4. Verify and retry
+
+After releasing, wait 2s and check if the challenge cleared. If still blocked, refresh and check again:
+
+```typescript
+await page.waitFor({ timeMs: 2000 });
+
+const stillBlocked = (await page.evaluate(
+  '!!(document.body && document.body.innerText && document.body.innerText.match(/press.*hold|verify.*human|not a bot|access.*denied/i))',
+)) as boolean;
+
+if (stillBlocked) {
+  await page.goto(urlBefore);
+  await page.waitFor({ timeMs: 3000 });
+  const blockedAfterRefresh = (await page.evaluate(
+    '!!(document.body && document.body.innerText && document.body.innerText.match(/press.*hold|verify.*human|not a bot|access.*denied/i))',
+  )) as boolean;
+  if (blockedAfterRefresh) {
+    /* challenge failed — escalate */
+  }
+}
+
+// Challenge cleared — re-snapshot and continue
+const { snapshot } = await page.snapshot({ interactive: true, compact: true });
+```
+
+**Key points:**
+
+- Always save `page.url()` before the hold — you need it for the refresh retry
+- The "still blocked" check reads from `document.body.innerText` only (not iframes), matching `/press.*hold|verify.*human|not a bot|access.*denied/i`
+- If blocked after refresh, escalate to the user — don't loop indefinitely
 
 ---
 
