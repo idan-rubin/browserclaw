@@ -67,26 +67,11 @@ Always use `{ interactive: true, compact: true }`. This filters to actionable el
 
 **Refs are ephemeral.** After navigation or DOM changes, re-snapshot — old refs are invalid.
 
-**If the snapshot looks empty or skeleton-like**, the page is still loading. Concrete readiness heuristic: count non-empty lines, then compare text length to element count.
-
-- `< 10` lines → **empty** (wait and retry)
-- `> 20` lines but text density (chars / line) `< 5` → **skeleton** (wait and retry)
-- otherwise → **ready**
+**If the snapshot looks empty or skeleton-like** (few elements, very little text), the page is still loading. Wait and try again:
 
 ```typescript
-function isPageReady(snapshot: string): 'ready' | 'empty' | 'skeleton' {
-  const lines = snapshot.split('\n').filter((l) => l.trim() !== '');
-  const textLength = lines.reduce((sum, l) => sum + l.replace(/\[.*?\]/g, '').trim().length, 0);
-  if (lines.length < 10) return 'empty';
-  if (lines.length > 20 && textLength < lines.length * 5) return 'skeleton';
-  return 'ready';
-}
-
-let { snapshot } = await page.snapshot({ interactive: true, compact: true });
-for (let i = 0; i < 2 && isPageReady(snapshot) !== 'ready'; i++) {
-  await page.waitFor({ timeMs: 2000 });
-  ({ snapshot } = await page.snapshot({ interactive: true, compact: true }));
-}
+await page.waitFor({ timeMs: 1500 });
+const { snapshot } = await page.snapshot({ interactive: true, compact: true });
 ```
 
 ---
@@ -402,18 +387,145 @@ Press-and-hold is checked first because a page can match both patterns and the s
 
 ## Handling PerimeterX Press-and-Hold Challenges
 
-Some sites (via PerimeterX) show a "press and hold" verification overlay. This is distinct from Cloudflare — the DOM text will say something like "Press and hold to confirm you're human."
+Some sites (via PerimeterX) show a "press and hold" verification overlay. This is distinct from Cloudflare — the DOM text will say something like "Press and hold to confirm you're human." Handle it as follows.
 
-**Don't reimplement this — use [`pressAndHold` in `press-and-hold.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/press-and-hold.ts).** It handles the edge cases (main DOM + shadow DOM + iframes search, coordinate jitter, randomized hold duration, refresh-and-retry) that you'll otherwise spend hours rediscovering.
+### 1. Detect the challenge
 
-The shape of what that file does, so you know what to expect:
+Read DOM text from the page **and all iframes** (the overlay is often in an iframe):
 
-1. **Detect** — read DOM text across page and iframes; match `/press.*hold|hold.*to.*confirm/i`. If no match, it's not this challenge.
-2. **Locate button** — find the element whose text matches the challenge pattern, then target **bottom-center + 60px below it**. The actual hold target is beneath the label, not on it.
-3. **Hold** — apply ±10px/±5px coordinate jitter and a randomized 4–10s hold duration with a 100–300ms pre-delay. `page.pressAndHold(x, y, { delay, holdMs })` is the library primitive.
-4. **Verify** — wait 2s, check `document.body.innerText` for the challenge pattern. If still blocked, refresh the page and check once more. If still blocked after refresh, escalate — never loop indefinitely.
+```typescript
+const domText = (await page.evaluate(`
+  (function() {
+    var text = document.body.innerText || '';
+    var iframes = document.querySelectorAll('iframe');
+    for (var i = 0; i < iframes.length; i++) {
+      try {
+        if (iframes[i].contentDocument && iframes[i].contentDocument.body) {
+          text += ' ' + iframes[i].contentDocument.body.innerText;
+        }
+      } catch(e) {}
+    }
+    return text;
+  })()
+`)) as string;
 
-If you genuinely need to reimplement (different bot vendor, different challenge shape), read the canonical file first and diff against it before shipping your own version.
+const isPressAndHold = /press.*hold|hold.*to.*confirm/i.test(domText);
+```
+
+If the pattern matches, it's a press-and-hold challenge. Do not treat it as a Cloudflare checkbox.
+
+### 2. Find the button coordinates
+
+The button is located by finding the element whose text matches the challenge pattern, then targeting **bottom-center + 60px below it**. Search main DOM, shadow DOM, and iframes:
+
+```typescript
+const result = (await page.evaluate(`
+  (function() {
+    var PATTERN = /press.*hold|verify.*human|hold.*to.*confirm|not a bot/i;
+    var BUTTON_Y_OFFSET = 60;
+
+    function toCandidate(el, offsetX, offsetY) {
+      var rect = el.getBoundingClientRect();
+      return {
+        width: rect.width, height: rect.height,
+        x: Math.round(rect.left + rect.width / 2 + offsetX),
+        y: Math.round(rect.bottom + BUTTON_Y_OFFSET + offsetY),
+      };
+    }
+
+    function search(root, offsetX, offsetY) {
+      var results = [];
+      var all = root.querySelectorAll('*');
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        if (PATTERN.test((el.innerText || '').trim())) results.push(toCandidate(el, offsetX, offsetY));
+        if (el.shadowRoot) {
+          var sh = el.shadowRoot.querySelectorAll('*');
+          for (var s = 0; s < sh.length; s++)
+            if (PATTERN.test((sh[s].innerText || '').trim())) results.push(toCandidate(sh[s], offsetX, offsetY));
+        }
+      }
+      return results;
+    }
+
+    var candidates = search(document, 0, 0);
+    var iframes = document.querySelectorAll('iframe');
+    for (var i = 0; i < iframes.length; i++) {
+      try {
+        var doc = iframes[i].contentDocument;
+        if (doc && doc.body) {
+          var r = iframes[i].getBoundingClientRect();
+          candidates = candidates.concat(search(doc, r.left, r.top));
+        }
+      } catch(e) {}
+    }
+
+    // Pick: width > 100px, height 20-80px, prefer smallest height
+    var best = null;
+    for (var j = 0; j < candidates.length; j++) {
+      var c = candidates[j];
+      if (c.width > 100 && c.height > 20 && c.height < 80) {
+        if (!best || c.height < best.height) best = c;
+      }
+    }
+    return JSON.stringify({ found: !!best, best: best });
+  })()
+`)) as string;
+
+const { found, best } = JSON.parse(result);
+if (!found) {
+  /* no button found — log and skip */
+}
+const { x, y } = best;
+```
+
+**Coordinate logic:** x = horizontal center of the matching element, y = element's bottom edge + 60px. The actual hold target is below the text label, not on it.
+
+### 3. Execute the hold
+
+Apply ±10px/±5px jitter and a randomized 4–10s hold with a 100–300ms pre-delay:
+
+```typescript
+const urlBefore = await page.url();
+const jitterX = x + Math.floor(Math.random() * 20) - 10; // ±10px
+const jitterY = y + Math.floor(Math.random() * 10) - 5; // ±5px
+const holdMs = 4000 + Math.floor(Math.random() * 6000); // 4–10s
+const delay = 100 + Math.floor(Math.random() * 200); // 100–300ms pre-delay
+
+await page.pressAndHold(jitterX, jitterY, { delay, holdMs });
+```
+
+### 4. Verify and retry
+
+After releasing, wait 2s and check if the challenge cleared. If still blocked, refresh and check again:
+
+```typescript
+await page.waitFor({ timeMs: 2000 });
+
+const stillBlocked = (await page.evaluate(
+  '!!(document.body && document.body.innerText && document.body.innerText.match(/press.*hold|verify.*human|not a bot|access.*denied/i))',
+)) as boolean;
+
+if (stillBlocked) {
+  await page.goto(urlBefore);
+  await page.waitFor({ timeMs: 3000 });
+  const blockedAfterRefresh = (await page.evaluate(
+    '!!(document.body && document.body.innerText && document.body.innerText.match(/press.*hold|verify.*human|not a bot|access.*denied/i))',
+  )) as boolean;
+  if (blockedAfterRefresh) {
+    /* challenge failed — escalate */
+  }
+}
+
+// Challenge cleared — re-snapshot and continue
+const { snapshot } = await page.snapshot({ interactive: true, compact: true });
+```
+
+**Key points:**
+
+- Always save `page.url()` before the hold — you need it for the refresh retry
+- The "still blocked" check reads from `document.body.innerText` only (not iframes), matching `/press.*hold|verify.*human|not a bot|access.*denied/i`
+- If blocked after refresh, escalate to the user — don't loop indefinitely
 
 ---
 
