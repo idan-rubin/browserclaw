@@ -289,9 +289,9 @@ const requests = await page.networkRequests(); // XHR/fetch calls
 
 ## Production Skill Reference
 
-**Don't reinvent — reuse.** The browserclaw-agent repo contains battle-tested implementations for the hard problems. When you hit any of the scenarios below, read the relevant file before writing your own solution.
+**Reference implementations.** browserclaw is the vehicle; these files show how the browserclaw-agent project builds driver-level skills on top of browserclaw primitives. Read them when you need more depth than this skill provides, or to model your own implementation against a proven example — you can't directly import across the vehicle/driver boundary, so the goal is pattern learning, not code reuse.
 
-All skills live at: https://github.com/idan-rubin/browserclaw-agent/tree/main/src/Services/Browser/src/skills
+All reference skills live at: https://github.com/idan-rubin/browserclaw-agent/tree/main/src/Services/Browser/src/skills
 
 | Scenario                                        | File                                                                                                                                         | What it handles                                                                                                              |
 | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
@@ -302,7 +302,7 @@ All skills live at: https://github.com/idan-rubin/browserclaw-agent/tree/main/sr
 | Tab opened by a click                           | [`tab-manager.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/tab-manager.ts)                 | Tracks known tab IDs, detects new tabs after clicks, switches focus automatically                                            |
 | Agent stuck repeating the same action           | [`loop-detection.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/loop-detection.ts)           | Counts repeated action+ref pairs over a sliding window; escalates nudge from gentle → warning → urgent at 5/8/12 repetitions |
 
-**If you encounter an anti-bot challenge, popup, or tab management need: read the relevant file above first.** These are production implementations that handle edge cases you'll otherwise spend hours debugging.
+**If you encounter an anti-bot challenge, popup, or tab management need: model your solution on the relevant reference above.** These are production implementations that handle edge cases you'll otherwise spend hours debugging.
 
 ---
 
