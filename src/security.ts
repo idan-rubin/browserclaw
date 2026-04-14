@@ -1000,7 +1000,22 @@ export async function assertBrowserNavigationRedirectChainAllowed(
 
 /**
  * Returns true if the SSRF policy requires redirect chain inspection.
+ * Strict inspection is required only when `dangerouslyAllowPrivateNetwork: false` is explicitly set.
  */
 export function requiresInspectableBrowserNavigationRedirects(ssrfPolicy?: SsrfPolicy): boolean {
-  return !isPrivateNetworkAllowedByPolicy(ssrfPolicy);
+  return ssrfPolicy?.dangerouslyAllowPrivateNetwork === false;
+}
+
+/**
+ * Like `requiresInspectableBrowserNavigationRedirects`, but also requires the URL's protocol
+ * to be http/https — non-network protocols (file:, about:) never need redirect inspection.
+ */
+export function requiresInspectableBrowserNavigationRedirectsForUrl(url: string, ssrfPolicy?: SsrfPolicy): boolean {
+  if (!requiresInspectableBrowserNavigationRedirects(ssrfPolicy)) return false;
+  try {
+    const parsed = new URL(url);
+    return NETWORK_NAVIGATION_PROTOCOLS.has(parsed.protocol);
+  } catch {
+    return false;
+  }
 }

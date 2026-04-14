@@ -24,6 +24,7 @@ import {
   assertBrowserNavigationResultAllowed,
   assertBrowserNavigationRedirectChainAllowed,
   requiresInspectableBrowserNavigationRedirects,
+  requiresInspectableBrowserNavigationRedirectsForUrl,
   withBrowserNavigationPolicy,
   InvalidBrowserNavigationUrlError,
   DEFAULT_BROWSER_TMP_DIR,
@@ -875,8 +876,8 @@ describe('security.ts', () => {
   // ────────────────────────────────────────────────
 
   describe('requiresInspectableBrowserNavigationRedirects', () => {
-    it('should return true when no policy is provided', () => {
-      expect(requiresInspectableBrowserNavigationRedirects()).toBe(true);
+    it('should return false when no policy is provided', () => {
+      expect(requiresInspectableBrowserNavigationRedirects()).toBe(false);
     });
 
     it('should return true with strict policy', () => {
@@ -889,6 +890,40 @@ describe('security.ts', () => {
 
     it('should return false with deprecated allowPrivateNetwork', () => {
       expect(requiresInspectableBrowserNavigationRedirects({ allowPrivateNetwork: true })).toBe(false);
+    });
+
+    it('should return false for policy without explicit dangerouslyAllowPrivateNetwork', () => {
+      expect(requiresInspectableBrowserNavigationRedirects({})).toBe(false);
+    });
+  });
+
+  // ────────────────────────────────────────────────
+  // requiresInspectableBrowserNavigationRedirectsForUrl
+  // ────────────────────────────────────────────────
+
+  describe('requiresInspectableBrowserNavigationRedirectsForUrl', () => {
+    it('should return true for http URL with strict policy', () => {
+      expect(requiresInspectableBrowserNavigationRedirectsForUrl('http://example.com', STRICT_POLICY)).toBe(true);
+    });
+
+    it('should return true for https URL with strict policy', () => {
+      expect(requiresInspectableBrowserNavigationRedirectsForUrl('https://example.com', STRICT_POLICY)).toBe(true);
+    });
+
+    it('should return false for non-network protocols with strict policy', () => {
+      expect(requiresInspectableBrowserNavigationRedirectsForUrl('file:///etc/passwd', STRICT_POLICY)).toBe(false);
+      expect(requiresInspectableBrowserNavigationRedirectsForUrl('about:blank', STRICT_POLICY)).toBe(false);
+      expect(requiresInspectableBrowserNavigationRedirectsForUrl('data:text/plain,x', STRICT_POLICY)).toBe(false);
+    });
+
+    it('should return false when policy does not require inspection', () => {
+      expect(requiresInspectableBrowserNavigationRedirectsForUrl('http://example.com', PERMISSIVE_POLICY)).toBe(false);
+      expect(requiresInspectableBrowserNavigationRedirectsForUrl('http://example.com')).toBe(false);
+      expect(requiresInspectableBrowserNavigationRedirectsForUrl('http://example.com', {})).toBe(false);
+    });
+
+    it('should return false for invalid URLs', () => {
+      expect(requiresInspectableBrowserNavigationRedirectsForUrl('not a url', STRICT_POLICY)).toBe(false);
     });
   });
 

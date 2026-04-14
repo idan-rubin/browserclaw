@@ -12,6 +12,7 @@ export {
   assertBrowserNavigationResultAllowed,
   assertBrowserNavigationRedirectChainAllowed,
   requiresInspectableBrowserNavigationRedirects,
+  requiresInspectableBrowserNavigationRedirectsForUrl,
   sanitizeUntrustedFileName,
   createPinnedLookup,
   resolvePinnedHostnameWithPolicy,
