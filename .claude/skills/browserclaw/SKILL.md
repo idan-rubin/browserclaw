@@ -201,10 +201,11 @@ const { snapshot } = await page.snapshot({ interactive: true, compact: true });
 ### Handle a native dialog
 
 ```typescript
-const dialogDone = page.armDialog({ accept: true });
-await page.click('e7'); // triggers confirm()
-await dialogDone;
+await page.armDialog({ accept: true }); // register the handler (resolves immediately)
+await page.click('e7');                 // triggers confirm() — handled in the background
 ```
+
+Use `page.onDialog(handler)` for a persistent handler that handles every dialog until cleared.
 
 ### Wait for something specific
 
@@ -245,7 +246,7 @@ const items = await page.evaluate(`
 ```typescript
 const browser = await BrowserClaw.launch({
   url: 'https://example.com',
-  headless: false,            // default is environment-dependent; set explicitly if it matters
+  headless: false,            // default is false — pass true to run without a visible window
   ignoreHTTPSErrors: true,    // local dev servers with self-signed certs
   chromeArgs: [               // extra Chrome flags
     '--disable-web-security', // cross-origin iframes loading scripts from localhost
