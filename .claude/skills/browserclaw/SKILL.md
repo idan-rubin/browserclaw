@@ -266,7 +266,7 @@ To attach to an already-running Chrome: `await BrowserClaw.connect('http://local
 
 ## Anti-bot challenges
 
-If a page shows a Cloudflare "Verify you are human" checkbox, a PerimeterX "press and hold" overlay, or similar blocking UI, see **`anti-bot.md`** in this skill directory for detection + solver flow. Don't try to bypass these inline — there's a specific dispatch pattern and retry protocol.
+browserclaw is the library layer — it gives you the primitives (`page.pressAndHold`, `page.click`, snapshots) but does not ship challenge-solving orchestration. If a page shows a Cloudflare "Verify you are human" checkbox, a PerimeterX "press and hold" overlay, or similar blocker, use the production solvers in the [browserclaw-agent](https://github.com/idan-rubin/browserclaw-agent/tree/main/src/Services/Browser/src/skills) project: `press-and-hold.ts` (dispatch + PerimeterX), `cloudflare-checkbox.ts`, `dismiss-popup.ts`. Those files are the authoritative implementation — don't re-derive them inline.
 
 ## Reference implementations
 
