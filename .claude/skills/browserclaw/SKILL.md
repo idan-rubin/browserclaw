@@ -227,7 +227,7 @@ await browser.focus(page.id);                                        // switch b
 await browser.close(page2.id);                                       // close a single tab
 ```
 
-For handling tabs opened by a click (not by explicit `open()`), see the [tab-manager reference](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/tab-manager.ts).
+For tabs opened by a click (not by explicit `open()`), see the tab-manager entry in [Agentic skills](#agentic-skills-browserclaw-agent) below.
 
 ### Extract data from a listing
 
@@ -264,22 +264,20 @@ To attach to an already-running Chrome: `await BrowserClaw.connect('http://local
 
 **Form submitted but nothing happened** — check the next snapshot for errors, check `page.consoleLogs()` / `page.pageErrors()`, then `waitFor({ loadState: 'networkidle' })` and re-snapshot.
 
-## Anti-bot challenges
+## Agentic skills (browserclaw-agent)
 
-browserclaw is the library layer — it gives you the primitives (`page.pressAndHold`, `page.click`, snapshots) but does not ship challenge-solving orchestration. If a page shows a Cloudflare "Verify you are human" checkbox, a PerimeterX "press and hold" overlay, or similar blocker, use the production solvers in the [browserclaw-agent](https://github.com/idan-rubin/browserclaw-agent/tree/main/src/Services/Browser/src/skills) project: `press-and-hold.ts` (dispatch + PerimeterX), `cloudflare-checkbox.ts`, `dismiss-popup.ts`. Those files are the authoritative implementation — don't re-derive them inline.
+browserclaw ships only the library primitives: snapshots, clicks, types, `pressAndHold`, etc. Higher-level orchestration — anti-bot solvers, popup dismissal, tab lifecycle, loop detection — lives in a separate project, **[browserclaw-agent](https://github.com/idan-rubin/browserclaw-agent/tree/main/src/Services/Browser/src/skills)**, as a set of composable agentic skills.
 
-## Reference implementations
+**Reach for these any time you hit a scenario below. They are the authoritative implementation — don't re-derive them inline.** The files aren't importable across the library/agent boundary, so copy the pattern into your own agent rather than trying to `import` from node_modules.
 
-These files live in a separate project (browserclaw-agent) — you can't import them, but they show production patterns worth modeling:
-
-| Scenario                      | File                                                                                                                                         |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Anti-bot detection + solvers  | [`press-and-hold.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/press-and-hold.ts)           |
-| Cloudflare checkbox           | [`cloudflare-checkbox.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/cloudflare-checkbox.ts) |
-| Cookie banners / popups       | [`dismiss-popup.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/dismiss-popup.ts)             |
-| Tab opened by a click         | [`tab-manager.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/tab-manager.ts)                 |
-| Raw CDP access                | [`cdp-utils.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/cdp-utils.ts)                     |
-| Stuck-in-a-loop detection     | [`loop-detection.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/loop-detection.ts)           |
+| Scenario                                        | Skill file                                                                                                                                   |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cloudflare / PerimeterX / "verify you're human" | [`press-and-hold.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/press-and-hold.ts) (dispatch hub) |
+| Cloudflare checkbox specifically                | [`cloudflare-checkbox.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/cloudflare-checkbox.ts) |
+| Cookie banners and generic popups               | [`dismiss-popup.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/dismiss-popup.ts)             |
+| Tab opened by a click (not explicit `open()`)   | [`tab-manager.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/tab-manager.ts)                 |
+| Raw CDP access (mouse events, target switching) | [`cdp-utils.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/cdp-utils.ts)                     |
+| Agent stuck repeating the same action           | [`loop-detection.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/loop-detection.ts)           |
 
 ## Key rules
 
