@@ -19,7 +19,9 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    ".claude/skills/browserclaw/SKILL.md",
+    ".claude/skills/browserclaw/anti-bot.md"
   ],
   "scripts": {
     "build": "tsup && node -e \"import('./dist/index.js')\"",
