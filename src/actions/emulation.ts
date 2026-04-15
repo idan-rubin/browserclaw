@@ -86,12 +86,20 @@ export async function setDeviceViaPlaywright(opts: { cdpUrl: string; targetId?: 
             configurable: true,
             get: () => max,
           });
-        } catch {
-          /* another init script already defined it — leave it alone */
+        } catch (e: unknown) {
+          // Most likely: a prior init script already defined this property
+          // non-configurably. Logged to the browser console for debugging.
+          try {
+            console.warn('[browserclaw] maxTouchPoints override failed:', e instanceof Error ? e.message : String(e));
+          } catch {
+            /* page may have replaced console — nothing we can do */
+          }
         }
       }, TOUCH_MAX_POINTS)
-      .catch(() => {
-        /* best-effort — CDP override above still applies to the current frame */
+      .catch((err: unknown) => {
+        console.warn(
+          `[browserclaw] addInitScript(maxTouchPoints) failed: ${err instanceof Error ? err.message : String(err)} (CDP-level override above still applies to the current frame)`,
+        );
       });
   }
 
