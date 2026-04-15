@@ -3,6 +3,10 @@ import { devices } from 'playwright-core';
 import { getPageForTargetId, ensurePageState, withPageScopedCdpClient } from '../connection.js';
 import type { ColorScheme } from '../types.js';
 
+// Matches iOS/Android defaults. Chromium's Emulation.setTouchEmulationEnabled
+// defaults to 1 if unspecified; real phones report 5.
+const TOUCH_MAX_POINTS = 5;
+
 export async function emulateMediaViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
@@ -68,9 +72,13 @@ export async function setDeviceViaPlaywright(opts: { cdpUrl: string; targetId?: 
   });
 
   if (device.hasTouch) {
-    // Belt-and-suspenders: ensure `navigator.maxTouchPoints` is exposed on every
-    // future navigation in this page, in case the CDP override is reset by the
-    // renderer (observed on some cross-origin navigations).
+    // Belt-and-suspenders: also define `navigator.maxTouchPoints` on every new
+    // document via init script. The CDP override above is sufficient for most
+    // frames, but a page-scoped init script ensures the value is present in
+    // any subsequent document (navigations, same-page reloads) without needing
+    // to re-send the CDP command. Note: if the caller later switches to a
+    // non-touch device on the same page, this init script persists — callers
+    // who need to toggle touch mid-session should create a fresh page.
     await page
       .addInitScript((max: number) => {
         try {
@@ -95,10 +103,6 @@ export async function setDeviceViaPlaywright(opts: { cdpUrl: string; targetId?: 
     });
   }
 }
-
-// Matches iOS/Android defaults. Chromium's ToT Emulation.setTouchEmulationEnabled
-// defaults to 1 if unspecified; real phones report 5.
-const TOUCH_MAX_POINTS = 5;
 
 export async function setExtraHTTPHeadersViaPlaywright(opts: {
   cdpUrl: string;
