@@ -59,10 +59,33 @@ export async function setDeviceViaPlaywright(opts: { cdpUrl: string; targetId?: 
         });
       }
       if (device.hasTouch) {
-        await send('Emulation.setTouchEmulationEnabled', { enabled: true });
+        // Pass maxTouchPoints so `navigator.maxTouchPoints` reflects the emulated device.
+        // Without this the renderer defaults to 1, leaving a `hasTouch && maxTouchPoints <= 1`
+        // mismatch that bot-detection scripts flag as headless.
+        await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: TOUCH_MAX_POINTS });
       }
     },
   });
+
+  if (device.hasTouch) {
+    // Belt-and-suspenders: ensure `navigator.maxTouchPoints` is exposed on every
+    // future navigation in this page, in case the CDP override is reset by the
+    // renderer (observed on some cross-origin navigations).
+    await page
+      .addInitScript((max: number) => {
+        try {
+          Object.defineProperty(Navigator.prototype, 'maxTouchPoints', {
+            configurable: true,
+            get: () => max,
+          });
+        } catch {
+          /* another init script already defined it — leave it alone */
+        }
+      }, TOUCH_MAX_POINTS)
+      .catch(() => {
+        /* best-effort — CDP override above still applies to the current frame */
+      });
+  }
 
   // Also set viewport at the Playwright level for proper layout
   if (device.viewport !== null) {
@@ -72,6 +95,10 @@ export async function setDeviceViaPlaywright(opts: { cdpUrl: string; targetId?: 
     });
   }
 }
+
+// Matches iOS/Android defaults. Chromium's ToT Emulation.setTouchEmulationEnabled
+// defaults to 1 if unspecified; real phones report 5.
+const TOUCH_MAX_POINTS = 5;
 
 export async function setExtraHTTPHeadersViaPlaywright(opts: {
   cdpUrl: string;

@@ -464,18 +464,39 @@ const DNS_CACHE_TTL_MS = 30_000;
 const MAX_DNS_CACHE_SIZE = 100;
 const dnsCache = new Map<string, { result: PinnedHostname; expiresAt: number }>();
 
-function getCachedDnsResult(hostname: string): PinnedHostname | undefined {
-  const entry = dnsCache.get(hostname);
+/**
+ * Build a fingerprint of the SSRF policy fields that affect DNS validation.
+ * The cache key includes this fingerprint so a permissive-policy result cannot
+ * be served to a stricter-policy caller (which would skip the per-address check).
+ */
+function dnsPolicyFingerprint(policy: SsrfPolicy | undefined): string {
+  const allowPrivate = isPrivateNetworkAllowedByPolicy(policy);
+  const allowed = normalizeHostnameSet(policy?.allowedHostnames);
+  const allowlist = normalizeHostnameAllowlist(policy?.hostnameAllowlist);
+  const allowRfc2544 = policy?.allowRfc2544BenchmarkRange === true;
+  const allowedKey = [...allowed].sort().join(',');
+  const allowlistKey = allowlist.sort().join(',');
+  return `${allowPrivate ? '1' : '0'}|${allowRfc2544 ? '1' : '0'}|${allowedKey}|${allowlistKey}`;
+}
+
+function dnsCacheKey(hostname: string, policy: SsrfPolicy | undefined): string {
+  return `${hostname}\u0000${dnsPolicyFingerprint(policy)}`;
+}
+
+function getCachedDnsResult(hostname: string, policy: SsrfPolicy | undefined): PinnedHostname | undefined {
+  const key = dnsCacheKey(hostname, policy);
+  const entry = dnsCache.get(key);
   if (!entry) return undefined;
   if (Date.now() > entry.expiresAt) {
-    dnsCache.delete(hostname);
+    dnsCache.delete(key);
     return undefined;
   }
   return entry.result;
 }
 
-function cacheDnsResult(hostname: string, result: PinnedHostname): void {
-  dnsCache.set(hostname, { result, expiresAt: Date.now() + DNS_CACHE_TTL_MS });
+function cacheDnsResult(hostname: string, policy: SsrfPolicy | undefined, result: PinnedHostname): void {
+  const key = dnsCacheKey(hostname, policy);
+  dnsCache.set(key, { result, expiresAt: Date.now() + DNS_CACHE_TTL_MS });
   if (dnsCache.size > MAX_DNS_CACHE_SIZE) {
     const first = dnsCache.keys().next();
     if (first.done !== true) dnsCache.delete(first.value);
@@ -515,8 +536,11 @@ export async function resolvePinnedHostnameWithPolicy(
     }
   }
 
-  // Return cached result if available (avoids redundant DNS lookups in redirect chains)
-  const cached = getCachedDnsResult(normalized);
+  // Return cached result if available (avoids redundant DNS lookups in redirect chains).
+  // The cache is keyed by policy fingerprint so a permissive-policy result cannot
+  // be served to a stricter-policy caller (which would otherwise skip address-level
+  // validation and admit private IPs within the TTL window).
+  const cached = getCachedDnsResult(normalized, params.policy);
   if (cached) return cached;
 
   const lookupFn = params.lookupFn ?? dnsLookup;
@@ -557,7 +581,7 @@ export async function resolvePinnedHostnameWithPolicy(
     addresses,
     lookup: createPinnedLookup({ hostname: normalized, addresses }),
   };
-  cacheDnsResult(normalized, pinned);
+  cacheDnsResult(normalized, params.policy, pinned);
   return pinned;
 }
 

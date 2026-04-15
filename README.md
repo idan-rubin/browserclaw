@@ -158,6 +158,24 @@ const browser = await BrowserClaw.connect();
 
 **Anti-detection:** browserclaw automatically hides `navigator.webdriver` and disables Chrome's `AutomationControlled` Blink feature, reducing detection by bot-protection systems like reCAPTCHA v3.
 
+#### SSRF policy (navigating agent-supplied URLs)
+
+By default, browserclaw permits navigation to **any** address — including private/loopback ranges such as `127.0.0.1`, `10.0.0.0/8`, and cloud metadata endpoints like `169.254.169.254`. This "trusted-network" default is convenient for local development and dev-tunnel workflows.
+
+If your agent navigates to URLs it received from an untrusted source (LLM output, user input, external API), you should opt into strict public-only enforcement:
+
+```typescript
+const browser = await BrowserClaw.launch({
+  ssrfPolicy: {
+    dangerouslyAllowPrivateNetwork: false, // block loopback, RFC1918, link-local, metadata endpoints
+    hostnameAllowlist: ['*.example.com'],  // optional allowlist
+    allowedHostnames: ['internal.myapp.com'], // optional private-IP exceptions
+  },
+});
+```
+
+Under strict mode browserclaw resolves DNS up front, pins the result, validates every resolved address against the policy, and re-checks redirect chains. The DNS cache is keyed by policy, so a permissive call does not leak cached private IPs to a later strict call.
+
 ### Pages & Tabs
 
 ```typescript
@@ -291,12 +309,23 @@ await page.highlight('e1'); // Playwright built-in highlight
 
 #### File Upload
 
+Upload paths are confined to a sandboxed directory: `$TMPDIR/browserclaw/uploads` (e.g. `/tmp/browserclaw/uploads` on Linux). Files must exist inside this directory before uploading — paths outside it are rejected. Stage the file first, then reference it by path:
+
 ```typescript
+import { DEFAULT_UPLOAD_DIR } from 'browserclaw';
+import { copyFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+
+// Stage the file inside the sandboxed uploads directory
+await mkdir(DEFAULT_UPLOAD_DIR, { recursive: true });
+const staged = join(DEFAULT_UPLOAD_DIR, 'file.pdf');
+await copyFile('/path/to/file.pdf', staged);
+
 // Direct: set files on an <input type="file">
-await page.uploadFile('e3', ['/path/to/file.pdf']);
+await page.uploadFile('e3', [staged]);
 
 // Arm pattern: for non-input file pickers
-const uploadDone = page.armFileUpload(['/path/to/file.pdf']);
+const uploadDone = page.armFileUpload([staged]);
 await page.click('e3'); // triggers the file chooser
 await uploadDone;
 ```
