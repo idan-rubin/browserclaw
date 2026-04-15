@@ -20,6 +20,9 @@ export {
   assertSafeUploadPaths,
   resolveStrictExistingUploadPaths,
   resolveStrictExistingPathsWithinRoot,
+  DEFAULT_BROWSER_TMP_DIR,
+  DEFAULT_DOWNLOAD_DIR,
+  DEFAULT_UPLOAD_DIR,
 } from './security.js';
 export type { BrowserNavigationPolicyOptions, BrowserNavigationRequestLike, LookupFn } from './security.js';
 export {

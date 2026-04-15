@@ -777,6 +777,25 @@ describe('security.ts', () => {
       });
       expect(result.hostname).toBe('playwright.dev');
     });
+
+    it('does not reuse a permissive-policy cache entry for a stricter-policy caller', async () => {
+      // Regression for DNS-cache-not-keyed-by-policy bypass: a prior call with
+      // `dangerouslyAllowPrivateNetwork: true` must not let a later strict call
+      // receive the cached pinned result (which contains a private IP).
+      const hostname = `cache-bypass-${randomUUID()}.test`;
+      const permissive = await resolvePinnedHostnameWithPolicy(hostname, {
+        lookupFn: mockLoopbackLookup(),
+        policy: PERMISSIVE_POLICY,
+      });
+      expect(permissive.addresses).toContain('127.0.0.1');
+
+      await expect(
+        resolvePinnedHostnameWithPolicy(hostname, {
+          lookupFn: mockLoopbackLookup(),
+          policy: STRICT_POLICY,
+        }),
+      ).rejects.toThrow(InvalidBrowserNavigationUrlError);
+    });
   });
 
   // ────────────────────────────────────────────────

@@ -3,6 +3,10 @@ import { devices } from 'playwright-core';
 import { getPageForTargetId, ensurePageState, withPageScopedCdpClient } from '../connection.js';
 import type { ColorScheme } from '../types.js';
 
+// Matches iOS/Android defaults. Chromium's Emulation.setTouchEmulationEnabled
+// defaults to 1 if unspecified; real phones report 5.
+const TOUCH_MAX_POINTS = 5;
+
 export async function emulateMediaViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
@@ -59,10 +63,45 @@ export async function setDeviceViaPlaywright(opts: { cdpUrl: string; targetId?: 
         });
       }
       if (device.hasTouch) {
-        await send('Emulation.setTouchEmulationEnabled', { enabled: true });
+        // Pass maxTouchPoints so `navigator.maxTouchPoints` reflects the emulated device.
+        // Without this the renderer defaults to 1, leaving a `hasTouch && maxTouchPoints <= 1`
+        // mismatch that bot-detection scripts flag as headless.
+        await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: TOUCH_MAX_POINTS });
       }
     },
   });
+
+  if (device.hasTouch) {
+    // Belt-and-suspenders: also define `navigator.maxTouchPoints` on every new
+    // document via init script. The CDP override above is sufficient for most
+    // frames, but a page-scoped init script ensures the value is present in
+    // any subsequent document (navigations, same-page reloads) without needing
+    // to re-send the CDP command. Note: if the caller later switches to a
+    // non-touch device on the same page, this init script persists — callers
+    // who need to toggle touch mid-session should create a fresh page.
+    await page
+      .addInitScript((max: number) => {
+        try {
+          Object.defineProperty(Navigator.prototype, 'maxTouchPoints', {
+            configurable: true,
+            get: () => max,
+          });
+        } catch (e: unknown) {
+          // Most likely: a prior init script already defined this property
+          // non-configurably. Logged to the browser console for debugging.
+          try {
+            console.warn('[browserclaw] maxTouchPoints override failed:', e instanceof Error ? e.message : String(e));
+          } catch {
+            /* page may have replaced console — nothing we can do */
+          }
+        }
+      }, TOUCH_MAX_POINTS)
+      .catch((err: unknown) => {
+        console.warn(
+          `[browserclaw] addInitScript(maxTouchPoints) failed: ${err instanceof Error ? err.message : String(err)} (CDP-level override above still applies to the current frame)`,
+        );
+      });
+  }
 
   // Also set viewport at the Playwright level for proper layout
   if (device.viewport !== null) {
