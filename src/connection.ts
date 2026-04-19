@@ -52,10 +52,35 @@ export class BrowserTabNotFoundError extends Error {
   }
 }
 
-/** Page extended with Playwright's private `_snapshotForAI` method. */
+/**
+ * Page extended with Playwright's AI-snapshot APIs.
+ *
+ * Playwright <1.59 exposed `_snapshotForAI` on the client Page class; Playwright >=1.59
+ * removed it and promoted the capability to `ariaSnapshot({ mode: 'ai', _track: ... })`.
+ * We keep both shapes here and pick whichever is available at runtime.
+ */
 export type PageWithAI = Page & {
   _snapshotForAI?: (opts: { timeout: number; track: string }) => Promise<{ full?: string }>;
+  ariaSnapshot?: (opts: { timeout?: number; mode?: string; _track?: string }) => Promise<string>;
 };
+
+/**
+ * Take an AI-mode snapshot using whichever API the installed playwright-core exposes.
+ * Returns the raw snapshot text (the `e1`/`e2` ref-style aria tree).
+ */
+export async function takeAiSnapshotText(page: Page, timeoutMs: number): Promise<string> {
+  const maybe = page as PageWithAI;
+  if (typeof maybe._snapshotForAI === 'function') {
+    const result = await maybe._snapshotForAI({ timeout: timeoutMs, track: 'response' });
+    return result.full ?? '';
+  }
+  if (typeof maybe.ariaSnapshot === 'function') {
+    return await maybe.ariaSnapshot({ timeout: timeoutMs, mode: 'ai', _track: 'response' });
+  }
+  throw new Error(
+    'AI snapshot API not available. Install playwright-core >=1.50 (uses _snapshotForAI) or >=1.59 (uses ariaSnapshot with mode: "ai").',
+  );
+}
 
 async function fetchJsonForCdp(url: string, timeoutMs: number): Promise<unknown> {
   const ctrl = new AbortController();
