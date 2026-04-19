@@ -56,12 +56,12 @@ export class BrowserTabNotFoundError extends Error {
  * Page extended with Playwright's AI-snapshot APIs.
  *
  * Playwright <1.59 exposed `_snapshotForAI` on the client Page class; Playwright >=1.59
- * removed it and promoted the capability to `ariaSnapshot({ mode: 'ai', _track: ... })`.
+ * removed it and promoted the capability to `ariaSnapshot({ mode: 'ai' })`.
  * We keep both shapes here and pick whichever is available at runtime.
  */
 export type PageWithAI = Page & {
-  _snapshotForAI?: (opts: { timeout: number; track: string }) => Promise<{ full?: string }>;
-  ariaSnapshot?: (opts: { timeout?: number; mode?: string; _track?: string }) => Promise<string>;
+  _snapshotForAI?: (opts: { timeout: number }) => Promise<{ full?: string }>;
+  ariaSnapshot?: (opts: { timeout?: number; mode?: string }) => Promise<string>;
 };
 
 /**
@@ -69,13 +69,13 @@ export type PageWithAI = Page & {
  * Returns the raw snapshot text (the `e1`/`e2` ref-style aria tree).
  */
 export async function takeAiSnapshotText(page: Page, timeoutMs: number): Promise<string> {
-  const maybe = page as PageWithAI;
-  if (typeof maybe._snapshotForAI === 'function') {
-    const result = await maybe._snapshotForAI({ timeout: timeoutMs, track: 'response' });
+  const pageWithAI = page as PageWithAI;
+  if (typeof pageWithAI._snapshotForAI === 'function') {
+    const result = await pageWithAI._snapshotForAI({ timeout: timeoutMs });
     return result.full ?? '';
   }
-  if (typeof maybe.ariaSnapshot === 'function') {
-    return await maybe.ariaSnapshot({ timeout: timeoutMs, mode: 'ai', _track: 'response' });
+  if (typeof pageWithAI.ariaSnapshot === 'function') {
+    return await pageWithAI.ariaSnapshot({ timeout: timeoutMs, mode: 'ai' });
   }
   throw new Error(
     'AI snapshot API not available. Install playwright-core >=1.50 (uses _snapshotForAI) or >=1.59 (uses ariaSnapshot with mode: "ai").',

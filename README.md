@@ -168,7 +168,7 @@ If your agent navigates to URLs it received from an untrusted source (LLM output
 const browser = await BrowserClaw.launch({
   ssrfPolicy: {
     dangerouslyAllowPrivateNetwork: false, // block loopback, RFC1918, link-local, metadata endpoints
-    hostnameAllowlist: ['*.example.com'],  // optional allowlist
+    hostnameAllowlist: ['*.example.com'], // optional allowlist
     allowedHostnames: ['internal.myapp.com'], // optional private-IP exceptions
   },
 });
@@ -232,7 +232,7 @@ const { nodes } = await page.ariaSnapshot({ limit: 500 });
 
 **Snapshot modes:**
 
-- `'aria'` (default) — Uses Playwright's `_snapshotForAI()`. Refs are resolved via `aria-ref` locators. Best for most use cases. Requires `playwright-core` >= 1.50.
+- `'aria'` (default) — Uses Playwright's AI-mode snapshot. Refs are resolved via `aria-ref` locators. Best for most use cases. Requires `playwright-core` >= 1.50.
 - `'role'` — Uses Playwright's `ariaSnapshot()` + `getByRole()`. Supports `selector` and `frameSelector` for scoped snapshots.
 
 > **Security:** All snapshot results include `untrusted: true` to signal that the content originates from an external web page. AI agents consuming snapshots should treat this content as potentially adversarial (e.g. prompt injection via page text).

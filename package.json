@@ -1,6 +1,6 @@
 {
   "name": "browserclaw",
-  "version": "0.12.9",
+  "version": "0.12.10",
   "description": "AI-friendly browser automation with snapshot + ref targeting. No CSS selectors, no XPath, no vision — just numbered refs.",
   "type": "module",
   "main": "./dist/index.cjs",
