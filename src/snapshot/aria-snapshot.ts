@@ -15,7 +15,7 @@ import { buildRoleSnapshotFromAriaSnapshot, buildRoleSnapshotFromAiSnapshot, get
  * Take a role-based snapshot using Playwright's ariaSnapshot().
  * This produces a tree with ref IDs that can be targeted by actions.
  *
- * When `refsMode === 'aria'`, uses Playwright's `_snapshotForAI()` instead
+ * When `refsMode === 'aria'`, uses Playwright's AI-mode snapshot API instead
  * and stores refs in aria mode (resolved via aria-ref locators).
  */
 export async function snapshotRole(opts: {
@@ -47,7 +47,7 @@ export async function snapshotRole(opts: {
 
   const sourceUrl = page.url();
 
-  // refs=aria sub-path: use _snapshotForAI instead of ariaSnapshot
+  // refs=aria sub-path: use the AI-mode snapshot instead of role-based ariaSnapshot
   if (opts.refsMode === 'aria') {
     if (
       (opts.selector !== undefined && opts.selector.trim() !== '') ||

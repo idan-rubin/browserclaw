@@ -212,7 +212,7 @@ export interface SnapshotOptions {
   frameSelector?: string;
   /**
    * Snapshot strategy:
-   * - `'aria'` (default) — uses Playwright's `_snapshotForAI()`, produces refs like `e1`
+   * - `'aria'` (default) — uses Playwright's AI-mode snapshot, produces refs like `e1`
    * - `'role'` — uses Playwright's `ariaSnapshot()` + `getByRole()` resolution
    */
   mode?: 'role' | 'aria';
