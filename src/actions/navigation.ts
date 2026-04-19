@@ -457,7 +457,7 @@ async function gotoPageWithNavigationGuard(opts: {
   };
   await opts.page.route('**', handler);
   try {
-    const response = await opts.page.goto(opts.url, { timeout: opts.timeoutMs });
+    const response = await opts.page.goto(opts.url, { timeout: opts.timeoutMs, waitUntil: 'commit' });
     if (state.blocked !== null) throw state.blocked;
     return response;
   } catch (err) {
