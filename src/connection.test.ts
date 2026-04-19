@@ -1,7 +1,7 @@
 import http from 'node:http';
 import https from 'node:https';
 
-import type { Browser } from 'playwright-core';
+import type { Browser, Page } from 'playwright-core';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import {
@@ -14,6 +14,7 @@ import {
   clearBlockedTarget,
   withNoProxyForCdpUrl,
   getAllPages,
+  takeAiSnapshotText,
 } from './connection.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -380,5 +381,72 @@ describe('getAllPages', () => {
       contexts: () => [{ pages: () => [] }, { pages: () => [] }],
     } as unknown as Browser;
     expect(getAllPages(browser)).toHaveLength(0);
+  });
+});
+
+// Passing track to Playwright makes it return incremental diffs on repeat snapshots, which our parser can't handle.
+describe('takeAiSnapshotText', () => {
+  it('calls _snapshotForAI without a track option (Playwright <1.59)', async () => {
+    let capturedOpts: Record<string, unknown> | undefined;
+    const mockPage = {
+      _snapshotForAI: (opts: Record<string, unknown>) => {
+        capturedOpts = opts;
+        return Promise.resolve({ full: '- button "OK" [ref=e1]' });
+      },
+    } as unknown as Page;
+
+    await takeAiSnapshotText(mockPage, 5000);
+
+    expect(capturedOpts).toEqual({ timeout: 5000 });
+    expect(capturedOpts).not.toHaveProperty('track');
+    expect(capturedOpts).not.toHaveProperty('_track');
+  });
+
+  it('calls ariaSnapshot without a _track option (Playwright >=1.59)', async () => {
+    let capturedOpts: Record<string, unknown> | undefined;
+    const mockPage = {
+      ariaSnapshot: (opts: Record<string, unknown>) => {
+        capturedOpts = opts;
+        return Promise.resolve('- button "OK" [ref=e1]');
+      },
+    } as unknown as Page;
+
+    await takeAiSnapshotText(mockPage, 5000);
+
+    expect(capturedOpts).toEqual({ timeout: 5000, mode: 'ai' });
+    expect(capturedOpts).not.toHaveProperty('_track');
+    expect(capturedOpts).not.toHaveProperty('track');
+  });
+
+  it('prefers _snapshotForAI when both APIs are available', async () => {
+    let snapshotForAICalled = false;
+    let ariaSnapshotCalled = false;
+    const mockPage = {
+      _snapshotForAI: () => {
+        snapshotForAICalled = true;
+        return Promise.resolve({ full: '' });
+      },
+      ariaSnapshot: () => {
+        ariaSnapshotCalled = true;
+        return Promise.resolve('');
+      },
+    } as unknown as Page;
+
+    await takeAiSnapshotText(mockPage, 5000);
+
+    expect(snapshotForAICalled).toBe(true);
+    expect(ariaSnapshotCalled).toBe(false);
+  });
+
+  it('throws a descriptive error when neither API is available', async () => {
+    const mockPage = {} as unknown as Page;
+    await expect(takeAiSnapshotText(mockPage, 5000)).rejects.toThrow(/playwright-core/i);
+  });
+
+  it('returns empty string when _snapshotForAI resolves without full', async () => {
+    const mockPage = {
+      _snapshotForAI: () => Promise.resolve({}),
+    } as unknown as Page;
+    await expect(takeAiSnapshotText(mockPage, 5000)).resolves.toBe('');
   });
 });

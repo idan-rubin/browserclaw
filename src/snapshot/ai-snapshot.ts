@@ -11,7 +11,7 @@ import type { SnapshotResult, SnapshotOptions, SsrfPolicy } from '../types.js';
 import { buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
 
 /**
- * Take an AI-readable snapshot using Playwright's _snapshotForAI.
+ * Take an AI-readable snapshot using Playwright's AI-mode snapshot API.
  * This is the primary snapshot method — uses Playwright's built-in AI mode.
  */
 export async function snapshotAi(opts: {
