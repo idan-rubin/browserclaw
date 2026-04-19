@@ -1,6 +1,11 @@
 import { assertPageNavigationCompletedSafely } from '../actions/navigation.js';
-import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget, normalizeTimeoutMs } from '../connection.js';
-import type { PageWithAI } from '../connection.js';
+import {
+  getPageForTargetId,
+  ensurePageState,
+  storeRoleRefsForTarget,
+  normalizeTimeoutMs,
+  takeAiSnapshotText,
+} from '../connection.js';
 import type { SnapshotResult, SnapshotOptions, SsrfPolicy } from '../types.js';
 
 import { buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
@@ -30,19 +35,9 @@ export async function snapshotAi(opts: {
     });
   }
 
-  const maybe = page as PageWithAI;
-  if (!maybe._snapshotForAI) {
-    throw new Error('Playwright _snapshotForAI is not available. Upgrade playwright-core to >= 1.50.');
-  }
-
   const sourceUrl = page.url();
 
-  const result = await maybe._snapshotForAI({
-    timeout: normalizeTimeoutMs(opts.timeoutMs, 5000, 60000),
-    track: 'response',
-  });
-
-  let snapshot = String(result.full);
+  let snapshot = await takeAiSnapshotText(page, normalizeTimeoutMs(opts.timeoutMs, 5000, 60000));
   const maxChars = opts.maxChars;
   const limit =
     typeof maxChars === 'number' && Number.isFinite(maxChars) && maxChars > 0 ? Math.floor(maxChars) : undefined;
