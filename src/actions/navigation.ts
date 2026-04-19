@@ -403,26 +403,37 @@ async function gotoPageWithNavigationGuard(opts: {
 }): Promise<Awaited<ReturnType<Page['goto']>>> {
   const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy);
   const state: { blocked: Error | null } = { blocked: null };
+  const safeContinue = async (route: Route): Promise<void> => {
+    try {
+      await route.continue();
+    } catch (e) {
+      if (e instanceof Error && /already handled/i.test(e.message)) return;
+      console.warn('[browserclaw] route continue failed', e);
+    }
+  };
+  const safeAbort = async (route: Route): Promise<void> => {
+    try {
+      await route.abort();
+    } catch (e) {
+      if (e instanceof Error && /already handled/i.test(e.message)) return;
+      console.warn('[browserclaw] route abort failed', e);
+    }
+  };
   const handler = async (route: Route, request: Request) => {
     if (state.blocked !== null) {
-      await route.abort().catch((e: unknown) => {
-        console.warn('[browserclaw] route abort failed', e);
-      });
+      await safeAbort(route);
       return;
     }
     const isTopLevel = isTopLevelNavigationRequest(opts.page, request);
     const isSubframeDocument = !isTopLevel && isSubframeDocumentNavigationRequest(opts.page, request);
     if (!isTopLevel && !isSubframeDocument) {
-      await route.continue();
+      await safeContinue(route);
       return;
     }
     if (isTopLevel) {
-      // Only guard top-level navigations initiated by this call:
-      // - initial request must match our target URL
-      // - redirects (redirectedFrom !== null) are always checked since they may be part of our chain
       const isRedirect = request.redirectedFrom() !== null;
       if (!isRedirect && request.url() !== opts.url) {
-        await route.continue();
+        await safeContinue(route);
         return;
       }
     }
@@ -437,14 +448,12 @@ async function gotoPageWithNavigationGuard(opts: {
             `[browserclaw] blocked subframe navigation to ${request.url()}: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
-        await route.abort().catch((e: unknown) => {
-          console.warn('[browserclaw] route abort failed', e);
-        });
+        await safeAbort(route);
         return;
       }
       throw err;
     }
-    await route.continue();
+    await safeContinue(route);
   };
   await opts.page.route('**', handler);
   try {
