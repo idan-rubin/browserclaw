@@ -5,8 +5,8 @@ import {
   storeRoleRefsForTarget,
   normalizeTimeoutMs,
   withPlaywrightPageCdpSession,
+  takeAiSnapshotText,
 } from '../connection.js';
-import type { PageWithAI } from '../connection.js';
 import type { SnapshotResult, AriaSnapshotResult, AriaNode, SsrfPolicy } from '../types.js';
 
 import { buildRoleSnapshotFromAriaSnapshot, buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
@@ -55,12 +55,8 @@ export async function snapshotRole(opts: {
     ) {
       throw new Error('refs=aria does not support selector/frame snapshots yet.');
     }
-    const maybe = page as PageWithAI;
-    if (!maybe._snapshotForAI) {
-      throw new Error('refs=aria requires Playwright _snapshotForAI support.');
-    }
-    const result = await maybe._snapshotForAI({ timeout: normalizeTimeoutMs(opts.timeoutMs, 5000), track: 'response' });
-    const built = buildRoleSnapshotFromAiSnapshot(String(result.full), opts.options);
+    const snapshotText = await takeAiSnapshotText(page, normalizeTimeoutMs(opts.timeoutMs, 5000));
+    const built = buildRoleSnapshotFromAiSnapshot(snapshotText, opts.options);
 
     storeRoleRefsForTarget({
       page,
