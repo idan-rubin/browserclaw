@@ -232,8 +232,6 @@ async function main() {
         break;
       }
       if (action.tool === 'fill') {
-        // Log the ref only. The token name (`action.value`) may coincidentally
-        // match a real credential shape, so the safe default is to log neither.
         console.log(`[step ${step}] fill ${action.ref}`);
         await page.type(action.ref, resolveToken(action.value));
         continue;
