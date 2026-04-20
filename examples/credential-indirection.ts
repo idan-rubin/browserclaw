@@ -245,8 +245,6 @@ async function main() {
     }
 
     transcript.assertCredentialsNeverAppeared();
-    // Post-login pages often echo the signed-in email back — we therefore do
-    // NOT print the final snapshot. Success is proven by the transcript check.
     console.log('\n✓ Credentials never appeared in any message sent to or received from the model.');
   } finally {
     await browser.stop();
