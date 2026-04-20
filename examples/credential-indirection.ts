@@ -232,7 +232,9 @@ async function main() {
         break;
       }
       if (action.tool === 'fill') {
-        console.log(`[step ${step}] fill ${action.ref} with token "${action.value}"`);
+        // Log the ref only. The token name (`action.value`) may coincidentally
+        // match a real credential shape, so the safe default is to log neither.
+        console.log(`[step ${step}] fill ${action.ref}`);
         await page.type(action.ref, resolveToken(action.value));
         continue;
       }
@@ -243,11 +245,9 @@ async function main() {
     }
 
     transcript.assertCredentialsNeverAppeared();
+    // Post-login pages often echo the signed-in email back — we therefore do
+    // NOT print the final snapshot. Success is proven by the transcript check.
     console.log('\n✓ Credentials never appeared in any message sent to or received from the model.');
-
-    const final = await page.snapshot();
-    console.log('\nFinal page state:');
-    console.log(final.snapshot);
   } finally {
     await browser.stop();
   }
