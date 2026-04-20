@@ -164,10 +164,6 @@ export function refLocator(page: Page, ref: string) {
 
     const info = state?.roleRefs?.[normalized];
 
-    // DOM-enriched ref: resolved via the CSS selector stamped during discovery.
-    // These elements are absent from the accessibility tree, so neither aria-ref
-    // nor getByRole() can reach them. The selector targets the data-bc-ref
-    // attribute written to the DOM element during enrichSnapshotFromDom().
     if (info?.selector !== undefined && info.selector !== '') {
       const base =
         state?.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''
@@ -176,7 +172,6 @@ export function refLocator(page: Page, ref: string) {
       return base.locator(info.selector);
     }
 
-    // Aria mode: use Playwright's aria-ref locator
     if (state?.roleRefsMode === 'aria') {
       return (
         state.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''
@@ -185,7 +180,6 @@ export function refLocator(page: Page, ref: string) {
       ).locator(`aria-ref=${normalized}`);
     }
 
-    // Role mode: use getByRole
     if (!info) throw new Error(`Unknown ref "${normalized}". Run a new snapshot and use a ref from that snapshot.`);
 
     const locAny =

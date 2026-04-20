@@ -53,8 +53,6 @@ export async function snapshotAi(opts: {
 
   const built = buildRoleSnapshotFromAiSnapshot(snapshot, opts.options);
 
-  // DOM enrichment: peer scan that surfaces interactive elements the a11y tree
-  // silently drops (icon-only buttons, id/data-testid-identified components).
   const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs));
   const merged = mergeSnapshotWithEnrichment(built, enriched);
 
