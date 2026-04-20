@@ -178,3 +178,40 @@ Token indirection covers the LLM round-trip. It does **not** cover these channel
 - **Resolve in the narrowest possible scope.** Resolve immediately before the browser call, not earlier. This minimises the window during which the plaintext value exists in your process.
 - **Fail loudly on missing credentials.** `loadCredentials()` throws at startup rather than letting an unset env var silently resolve to an empty string — an agent that types nothing into a password field produces a confusing login failure, not a loud configuration error.
 - **The pattern generalises.** API keys, OTP codes, credit card numbers, SSNs — any secret an agent types into a form can be handled this way. The token is just a name; the real value lives in a secrets manager, environment variable, or vault and is fetched at the last possible moment.
+
+### Beyond env vars: secrets managers
+
+`process.env` is the simplest source of truth, but it's not the only one. `loadCredentials()` is a seam — swap the body to fetch from your secrets provider of choice:
+
+```typescript
+// AWS Secrets Manager
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+
+async function loadCredentials(): Promise<Record<string, string>> {
+  const sm = new SecretsManagerClient({});
+  const { SecretString } = await sm.send(new GetSecretValueCommand({ SecretId: 'agent/login-creds' }));
+  const parsed = JSON.parse(SecretString ?? '{}') as { email?: string; password?: string };
+  if (!parsed.email || !parsed.password) throw new Error('agent/login-creds is missing email or password');
+  return { EMAIL: parsed.email, PASSWORD: parsed.password };
+}
+```
+
+The same seam works for HashiCorp Vault, 1Password Connect, Doppler, GCP Secret Manager, or a sealed Kubernetes secret mount. The agent code above this function doesn't change.
+
+### Rotating credentials mid-session
+
+Long-running agents outlive any one credential value — an OTP expires in 30 seconds, an access token after an hour. Rotation fits the same pattern: resolve tokens through a function instead of a static map.
+
+```typescript
+async function resolveToken(value: string): Promise<string> {
+  const key = value.trim();
+  if (key === 'OTP') return await otpProvider.current(); // always fetch fresh
+  return CREDENTIALS[key] ?? value;
+}
+```
+
+The agent prompt is unchanged (`Use OTP for the one-time code field`) and the model still never sees a real OTP — the value is fetched at the moment of `page.type()` and thrown away immediately after.
+
+---
+
+_`PATTERNS.md` is meant to grow. If you've built an agent pattern worth generalising — handling navigation races, disambiguating ambiguous clicks, structuring memory across sessions — open a PR. New entries and improvements to existing ones are both welcome._
