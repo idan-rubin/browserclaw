@@ -126,6 +126,12 @@ const browser = await BrowserClaw.launch({ url: 'https://example.com/login' });
 const page = await browser.currentPage();
 const client = new Anthropic();
 
+// Resolution happens here — the model only ever sees the token name.
+// Do NOT log the resolved value; log the incoming token instead.
+async function handleFill(ref: string, rawValue: string): Promise<void> {
+  await page.type(ref, resolveToken(rawValue));
+}
+
 async function agentStep(history: Anthropic.MessageParam[]): Promise<void> {
   const { snapshot } = await page.snapshot();
 
@@ -142,9 +148,7 @@ async function agentStep(history: Anthropic.MessageParam[]): Promise<void> {
 
     if (block.name === 'fill') {
       const { ref, value } = block.input as { ref: string; value: string };
-      // Resolution happens here — the model only ever sees the token name.
-      // Do NOT log `resolved`; log `value` (the token) instead.
-      await page.type(ref, resolveToken(value));
+      await handleFill(ref, value);
     } else if (block.name === 'click') {
       const { ref } = block.input as { ref: string };
       await page.click(ref);
@@ -170,7 +174,19 @@ Token indirection covers the LLM round-trip. It does **not** cover these channel
 - **Your own logs.** Any `console.log(resolvedValue)` in the fill handler defeats the whole pattern. Log the token (pre-resolve), never the resolved value.
 - **Snapshots.** If the page renders a credential in plaintext (profile pages, confirmation screens, error messages like `"invalid password: hunter2"`), the next `page.snapshot()` captures it and ships it to the LLM. Redact or avoid snapshotting pages that display credentials.
 - **Screenshots.** Same issue as snapshots, worse — image OCR in observability tools will surface the value. Don't capture screenshots of authenticated profile pages without a redaction pass.
-- **Error messages.** Playwright errors that include the typed text will leak on exception. Wrap `page.type(ref, resolved)` in a handler that scrubs the resolved value from any re-thrown message.
+- **Error messages.** Playwright errors that include the typed text will leak on exception. Scrub the resolved value from any re-thrown message — for example:
+
+  ```typescript
+  async function handleFill(ref: string, rawValue: string): Promise<void> {
+    const resolved = resolveToken(rawValue);
+    try {
+      await page.type(ref, resolved);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(message.split(resolved).join('[REDACTED]'));
+    }
+  }
+  ```
 
 ### Design notes
 
