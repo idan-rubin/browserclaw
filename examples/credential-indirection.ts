@@ -232,12 +232,12 @@ async function main() {
         break;
       }
       if (action.tool === 'fill') {
-        console.log(`[step ${step}] fill ${action.ref}`);
+        console.log(`[step ${step}] fill`);
         await page.type(action.ref, resolveToken(action.value));
         continue;
       }
       if (action.tool === 'click') {
-        console.log(`[step ${step}] click ${action.ref}`);
+        console.log(`[step ${step}] click`);
         await page.click(action.ref);
       }
     }
@@ -249,7 +249,7 @@ async function main() {
   }
 }
 
-main().catch((err: unknown) => {
-  console.error(err);
+main().catch(() => {
+  console.error('Example failed.');
   process.exit(1);
 });
