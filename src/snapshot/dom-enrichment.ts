@@ -14,13 +14,16 @@
  * Inspired by Felix Mortas' email-cons-agent, which first demonstrated that a DOM-based
  * secondary scan can reliably surface elements the a11y tree silently drops.
  *
- * Known limitations:
- *  - Shadow DOM: querySelectorAll does not traverse shadow roots
- *  - Listener-only interactives (e.g. span[onclick]) without a role are not discovered
- *  - Only scans the main frame (not iframes)
+ * Traversal:
+ *  - Main document + any iframe named via `frameSelector`
+ *  - Recursively descends into open shadow roots
+ *  - Optional `rootSelector` scopes the scan to a subtree
+ *
+ * Not covered: closed shadow roots, and elements made interactive only by
+ * untyped listeners (`span[onclick]` without a role). Contributions welcome.
  */
 
-import type { Page } from 'playwright-core';
+import type { Page, Frame } from 'playwright-core';
 
 import type { RoleRefs } from '../types.js';
 
@@ -56,12 +59,16 @@ export interface DomEnrichedElement {
   dataAttrs: { name: string; value: string }[];
 }
 
+/** Scope options for the enrichment scan. */
+export interface EnrichmentScope {
+  /** CSS selector scoping the scan to a subtree of the document. Empty = whole document. */
+  rootSelector?: string;
+  /** CSS selector targeting an iframe whose document should be scanned. Empty = main frame. */
+  frameSelector?: string;
+}
+
 // ── Role mapping ──
 
-/**
- * Map a discovered DOM element to the ARIA role we'll report in the snapshot.
- * Explicit `role` attributes take precedence; otherwise we derive from the tag.
- */
 function resolveDisplayRole(el: DomEnrichedElement): string {
   if (el.explicitRole !== null && el.explicitRole !== '') return el.explicitRole;
 
@@ -138,7 +145,6 @@ export function buildDomEnrichedLines(elements: DomEnrichedElement[]): { lines: 
 
     refs[el.ref] = {
       role,
-      // Resolve via the data-bc-ref we stamped on the element during discovery
       selector: `[data-bc-ref="${el.ref}"]`,
     };
   }
@@ -167,26 +173,50 @@ const INTERACTIVE_SELECTOR = [
  * Scan the live DOM for interactive elements that the accessibility snapshot missed.
  *
  * **What it finds:** Elements matching standard interactive selectors that do *not*
- * already have an `aria-ref` attribute (Playwright sets `aria-ref` on every element
- * it includes in `_snapshotForAI()`). Elements with no identifying attributes (`id`
- * or `data-*`) are skipped.
+ * already have an `aria-ref` attribute. Shadow roots are traversed recursively so
+ * web-component-based UIs are discoverable too. Elements with no identifying
+ * attributes (`id` or `data-*`) are skipped.
  *
  * **What it does:** Stamps `data-bc-ref=eN` on each found element so that
  * `refLocator()` can later resolve the ref via `page.locator('[data-bc-ref="eN"]')`.
  * Any `data-bc-ref` attributes left over from a previous enrichment pass are
  * cleared at the start of the scan so stale stamps cannot collide with new refs.
  *
- * @param page       - Playwright page (must have completed its AI snapshot first)
- * @param startRef   - The next unused ref counter (continue from the a11y snapshot's max)
+ * @param page       Playwright page (must have completed its AI snapshot first)
+ * @param startRef   Next unused ref counter (continue from the a11y snapshot's max)
+ * @param scope      Optional rootSelector / frameSelector to scope the scan
  */
 export async function enrichSnapshotFromDom(
   page: Page,
   startRef: number,
+  scope?: EnrichmentScope,
 ): Promise<{ lines: string[]; refs: RoleRefs }> {
-  const elements = await page.evaluate(
-    (args: { selector: string; counter: number; maxElements: number; maxDataAttrs: number }): DomEnrichedElement[] => {
-      // Clear stale stamps from prior enrichment passes so a re-used ref number
-      // cannot match two elements in the DOM at once.
+  const rootSelector = scope?.rootSelector?.trim() ?? '';
+  const frameSelector = scope?.frameSelector?.trim() ?? '';
+
+  let context: Page | Frame = page;
+  if (frameSelector !== '') {
+    const handle = await page.$(frameSelector);
+    const frame = handle ? await handle.contentFrame() : null;
+    if (handle) await handle.dispose();
+    if (!frame) return { lines: [], refs: {} };
+    context = frame;
+  }
+
+  const elements = await context.evaluate(
+    (args: {
+      selector: string;
+      rootSelector: string;
+      counter: number;
+      maxElements: number;
+      maxDataAttrs: number;
+    }): DomEnrichedElement[] => {
+      const scanRoot: ParentNode | null =
+        args.rootSelector !== '' ? document.querySelector(args.rootSelector) : document;
+      if (!scanRoot) return [];
+
+      // Clear stale stamps document-wide so re-used ref numbers can't match
+      // elements left over outside the current scope.
       document.querySelectorAll('[data-bc-ref]').forEach((prev) => {
         prev.removeAttribute('data-bc-ref');
       });
@@ -194,8 +224,7 @@ export async function enrichSnapshotFromDom(
       const results: DomEnrichedElement[] = [];
       let counter = args.counter;
 
-      // forEach (not for-of) — tsconfig lib omits DOM.Iterable.
-      document.querySelectorAll(args.selector).forEach((el) => {
+      const processElement = (el: Element): void => {
         if (results.length >= args.maxElements) return;
         if (el.hasAttribute('aria-ref')) return;
 
@@ -228,12 +257,26 @@ export async function enrichSnapshotFromDom(
           inputType: el.getAttribute('type'),
           dataAttrs,
         });
-      });
+      };
 
+      // Recursive walk: matches at this level, then descends into every open
+      // shadow root on the page so web-component UIs are captured too.
+      const walk = (node: ParentNode): void => {
+        if (results.length >= args.maxElements) return;
+        node.querySelectorAll(args.selector).forEach(processElement);
+        node.querySelectorAll('*').forEach((el) => {
+          if (results.length >= args.maxElements) return;
+          const sr = (el as HTMLElement).shadowRoot;
+          if (sr) walk(sr);
+        });
+      };
+
+      walk(scanRoot);
       return results;
     },
     {
       selector: INTERACTIVE_SELECTOR,
+      rootSelector,
       counter: startRef,
       maxElements: MAX_ENRICHED_ELEMENTS,
       maxDataAttrs: MAX_DATA_ATTRS_PER_ELEMENT,
@@ -253,7 +296,6 @@ export async function enrichSnapshotFromDom(
 export function nextRefCounter(refs: RoleRefs): number {
   let max = 0;
   for (const key of Object.keys(refs)) {
-    // Only consider keys of the form `e<digits>` — ignore aria namespace etc.
     if (!/^e\d+$/.test(key)) continue;
     const n = Number.parseInt(key.slice(1), 10);
     if (!Number.isNaN(n) && n > max) max = n;

@@ -96,10 +96,10 @@ export async function snapshotRole(opts: {
   const ariaSnapshot = await locator.ariaSnapshot({ timeout: normalizeTimeoutMs(opts.timeoutMs, 5000) });
   const built = buildRoleSnapshotFromAriaSnapshot(ariaSnapshot, opts.options);
 
-  const enriched =
-    selector === '' && frameSelector === ''
-      ? await enrichSnapshotFromDom(page, nextRefCounter(built.refs))
-      : { lines: [], refs: {} };
+  const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs), {
+    rootSelector: selector,
+    frameSelector,
+  });
   const merged = mergeSnapshotWithEnrichment(built, enriched);
 
   storeRoleRefsForTarget({
