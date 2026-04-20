@@ -169,7 +169,11 @@ export function refLocator(page: Page, ref: string) {
     // nor getByRole() can reach them. The selector targets the data-bc-ref
     // attribute written to the DOM element during enrichSnapshotFromDom().
     if (info?.selector !== undefined && info.selector !== '') {
-      return page.locator(info.selector);
+      const base =
+        state?.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''
+          ? page.frameLocator(state.roleRefsFrameSelector)
+          : page;
+      return base.locator(info.selector);
     }
 
     // Aria mode: use Playwright's aria-ref locator

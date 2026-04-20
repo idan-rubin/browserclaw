@@ -9,7 +9,7 @@ import {
 } from '../connection.js';
 import type { SnapshotResult, AriaSnapshotResult, AriaNode, SsrfPolicy } from '../types.js';
 
-import { enrichSnapshotFromDom, nextRefCounter } from './dom-enrichment.js';
+import { enrichSnapshotFromDom, mergeSnapshotWithEnrichment, nextRefCounter } from './dom-enrichment.js';
 import { buildRoleSnapshotFromAriaSnapshot, buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
 
 /**
@@ -59,26 +59,21 @@ export async function snapshotRole(opts: {
     const snapshotText = await takeAiSnapshotText(page, normalizeTimeoutMs(opts.timeoutMs, 5000));
     const built = buildRoleSnapshotFromAiSnapshot(snapshotText, opts.options);
 
-    // DOM enrichment: peer scan to surface elements the a11y tree missed.
-    // Inspired by Felix Mortas' email-cons-agent approach.
     const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs));
-
-    const finalSnapshot =
-      enriched.lines.length > 0 ? `${built.snapshot}\n${enriched.lines.join('\n')}` : built.snapshot;
-    const finalRefs = enriched.lines.length > 0 ? { ...built.refs, ...enriched.refs } : built.refs;
+    const merged = mergeSnapshotWithEnrichment(built, enriched);
 
     storeRoleRefsForTarget({
       page,
       cdpUrl: opts.cdpUrl,
       targetId: opts.targetId,
-      refs: finalRefs,
+      refs: merged.refs,
       mode: 'aria',
     });
 
     return {
-      snapshot: finalSnapshot,
-      refs: finalRefs,
-      stats: getRoleSnapshotStats(finalSnapshot, finalRefs),
+      snapshot: merged.snapshot,
+      refs: merged.refs,
+      stats: getRoleSnapshotStats(merged.snapshot, merged.refs),
       untrusted: true,
       contentMeta: {
         sourceUrl,
@@ -101,19 +96,25 @@ export async function snapshotRole(opts: {
   const ariaSnapshot = await locator.ariaSnapshot({ timeout: normalizeTimeoutMs(opts.timeoutMs, 5000) });
   const built = buildRoleSnapshotFromAriaSnapshot(ariaSnapshot, opts.options);
 
+  const enriched =
+    selector === '' && frameSelector === ''
+      ? await enrichSnapshotFromDom(page, nextRefCounter(built.refs))
+      : { lines: [], refs: {} };
+  const merged = mergeSnapshotWithEnrichment(built, enriched);
+
   storeRoleRefsForTarget({
     page,
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
-    refs: built.refs,
+    refs: merged.refs,
     frameSelector: frameSelector !== '' ? frameSelector : undefined,
     mode: 'role',
   });
 
   return {
-    snapshot: built.snapshot,
-    refs: built.refs,
-    stats: getRoleSnapshotStats(built.snapshot, built.refs),
+    snapshot: merged.snapshot,
+    refs: merged.refs,
+    stats: getRoleSnapshotStats(merged.snapshot, merged.refs),
     untrusted: true,
     contentMeta: {
       sourceUrl,

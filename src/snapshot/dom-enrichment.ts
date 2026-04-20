@@ -13,11 +13,27 @@
  *
  * Inspired by Felix Mortas' email-cons-agent, which first demonstrated that a DOM-based
  * secondary scan can reliably surface elements the a11y tree silently drops.
+ *
+ * Known limitations:
+ *  - Shadow DOM: querySelectorAll does not traverse shadow roots
+ *  - Listener-only interactives (e.g. span[onclick]) without a role are not discovered
+ *  - Only scans the main frame (not iframes)
  */
 
 import type { Page } from 'playwright-core';
 
 import type { RoleRefs } from '../types.js';
+
+// ── Tunables ──
+
+/** Upper bound on enriched elements per snapshot. Prevents runaway growth on huge SPAs. */
+const MAX_ENRICHED_ELEMENTS = 200;
+
+/** Upper bound on data-* attributes collected per element. */
+const MAX_DATA_ATTRS_PER_ELEMENT = 5;
+
+/** Upper bound on the length of any single attribute value included in the snapshot. */
+const MAX_ATTR_VALUE_LEN = 120;
 
 // ── Types ──
 
@@ -47,7 +63,6 @@ export interface DomEnrichedElement {
  * Explicit `role` attributes take precedence; otherwise we derive from the tag.
  */
 function resolveDisplayRole(el: DomEnrichedElement): string {
-  // Explicit role attribute always wins
   if (el.explicitRole !== null && el.explicitRole !== '') return el.explicitRole;
 
   switch (el.tagName) {
@@ -65,8 +80,26 @@ function resolveDisplayRole(el: DomEnrichedElement): string {
       return 'textbox';
     }
     default:
-      return el.tagName; // 'button' → 'button', custom tag → tag name
+      return el.tagName;
   }
+}
+
+// ── Attribute-value sanitization ──
+
+/**
+ * Sanitize a raw attribute value before interpolating it into the snapshot text.
+ * Strips characters that could break out of the `[name="value"]` annotation or
+ * smuggle new lines into the snapshot — a prompt-injection surface for LLM
+ * consumers. Also caps the length so page-controlled data can't balloon the
+ * snapshot beyond its budget.
+ */
+function sanitizeAttrValue(value: string): string {
+  let v = value;
+  if (v.length > MAX_ATTR_VALUE_LEN) v = `${v.slice(0, MAX_ATTR_VALUE_LEN)}…`;
+  return v
+    .replace(/["[\]\r\n\t]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 // ── Pure snapshot builder ──
@@ -80,10 +113,6 @@ function resolveDisplayRole(el: DomEnrichedElement): string {
  *
  * Output line format:
  *   `- <role> [ref=eN] [id="..."] [type="..."] [data-*="..."]`
- *
- * The selector stored in each `RoleRefInfo` targets the `data-bc-ref` attribute
- * that was set on the element during discovery — this is stable for the lifetime
- * of the current DOM, same as Playwright's own `aria-ref` mechanism.
  */
 export function buildDomEnrichedLines(elements: DomEnrichedElement[]): { lines: string[]; refs: RoleRefs } {
   const lines: string[] = [];
@@ -92,11 +121,17 @@ export function buildDomEnrichedLines(elements: DomEnrichedElement[]): { lines: 
   for (const el of elements) {
     const role = resolveDisplayRole(el);
 
-    // Build attribute annotations for the snapshot text
     const attrs: string[] = [];
-    if (el.id) attrs.push(`[id="${el.id}"]`);
-    if (el.tagName === 'input' && el.inputType !== null && el.inputType !== '') attrs.push(`[type="${el.inputType}"]`);
-    for (const { name, value } of el.dataAttrs) attrs.push(`[${name}="${value}"]`);
+    const safeId = sanitizeAttrValue(el.id);
+    if (safeId) attrs.push(`[id="${safeId}"]`);
+    if (el.tagName === 'input' && el.inputType !== null && el.inputType !== '') {
+      attrs.push(`[type="${sanitizeAttrValue(el.inputType)}"]`);
+    }
+    for (const { name, value } of el.dataAttrs) {
+      const safeName = name.replace(/[^a-z0-9-]/gi, '');
+      if (!safeName.startsWith('data-')) continue;
+      attrs.push(`[${safeName}="${sanitizeAttrValue(value)}"]`);
+    }
 
     const attrStr = attrs.length > 0 ? ` ${attrs.join(' ')}` : '';
     lines.push(`- ${role} [ref=${el.ref}]${attrStr}`);
@@ -134,11 +169,12 @@ const INTERACTIVE_SELECTOR = [
  * **What it finds:** Elements matching standard interactive selectors that do *not*
  * already have an `aria-ref` attribute (Playwright sets `aria-ref` on every element
  * it includes in `_snapshotForAI()`). Elements with no identifying attributes (`id`
- * or `data-*`) are skipped — without at least one stable identifier the AI has
- * nothing useful to say about the element.
+ * or `data-*`) are skipped.
  *
  * **What it does:** Stamps `data-bc-ref=eN` on each found element so that
  * `refLocator()` can later resolve the ref via `page.locator('[data-bc-ref="eN"]')`.
+ * Any `data-bc-ref` attributes left over from a previous enrichment pass are
+ * cleared at the start of the scan so stale stamps cannot collide with new refs.
  *
  * @param page       - Playwright page (must have completed its AI snapshot first)
  * @param startRef   - The next unused ref counter (continue from the a11y snapshot's max)
@@ -148,33 +184,33 @@ export async function enrichSnapshotFromDom(
   startRef: number,
 ): Promise<{ lines: string[]; refs: RoleRefs }> {
   const elements = await page.evaluate(
-    (args: { selector: string; counter: number }): DomEnrichedElement[] => {
+    (args: { selector: string; counter: number; maxElements: number; maxDataAttrs: number }): DomEnrichedElement[] => {
+      // Clear stale stamps from prior enrichment passes so a re-used ref number
+      // cannot match two elements in the DOM at once.
+      document.querySelectorAll('[data-bc-ref]').forEach((prev) => {
+        prev.removeAttribute('data-bc-ref');
+      });
+
       const results: DomEnrichedElement[] = [];
       let counter = args.counter;
 
-      // Use querySelectorAll().forEach() rather than for-of to avoid the need
-      // for DOM.Iterable in the host project's tsconfig lib.
+      // forEach (not for-of) — tsconfig lib omits DOM.Iterable.
       document.querySelectorAll(args.selector).forEach((el) => {
-        // Already captured by Playwright's AI snapshot — skip it
+        if (results.length >= args.maxElements) return;
         if (el.hasAttribute('aria-ref')) return;
 
         const id = (el as HTMLElement).id;
 
-        // Collect data-* attributes without Array.from(NamedNodeMap) which also
-        // requires DOM.Iterable. A counted loop works at every tsconfig target.
         const dataAttrs: { name: string; value: string }[] = [];
-        for (let i = 0; i < el.attributes.length && dataAttrs.length < 5; i++) {
+        for (let i = 0; i < el.attributes.length && dataAttrs.length < args.maxDataAttrs; i++) {
           const attr = el.attributes.item(i);
-          // Skip data-bc-ref — it's our own stamp, not a meaningful identifier
           if (attr && attr.name.startsWith('data-') && attr.name !== 'data-bc-ref') {
             dataAttrs.push({ name: attr.name, value: attr.value });
           }
         }
 
-        // No stable identifier — the AI can't target it meaningfully
         if (id === '' && dataAttrs.length === 0) return;
 
-        // Skip visually hidden elements
         if (el.getAttribute('aria-hidden') === 'true') return;
         const style = window.getComputedStyle(el as HTMLElement);
         if (style.display === 'none' || style.visibility === 'hidden') return;
@@ -182,7 +218,6 @@ export async function enrichSnapshotFromDom(
         if (rect.width === 0 && rect.height === 0) return;
 
         const ref = `e${String(counter++)}`;
-        // Stamp the ref so refLocator() can find it
         el.setAttribute('data-bc-ref', ref);
 
         results.push({
@@ -197,7 +232,12 @@ export async function enrichSnapshotFromDom(
 
       return results;
     },
-    { selector: INTERACTIVE_SELECTOR, counter: startRef },
+    {
+      selector: INTERACTIVE_SELECTOR,
+      counter: startRef,
+      maxElements: MAX_ENRICHED_ELEMENTS,
+      maxDataAttrs: MAX_DATA_ATTRS_PER_ELEMENT,
+    },
   );
 
   return buildDomEnrichedLines(elements);
@@ -213,8 +253,27 @@ export async function enrichSnapshotFromDom(
 export function nextRefCounter(refs: RoleRefs): number {
   let max = 0;
   for (const key of Object.keys(refs)) {
+    // Only consider keys of the form `e<digits>` — ignore aria namespace etc.
+    if (!/^e\d+$/.test(key)) continue;
     const n = Number.parseInt(key.slice(1), 10);
     if (!Number.isNaN(n) && n > max) max = n;
   }
   return max + 1;
+}
+
+// ── Merge helper ──
+
+/**
+ * Merge the baseline a11y snapshot with the DOM-enriched addendum.
+ * No-op when the enrichment produced no new elements.
+ */
+export function mergeSnapshotWithEnrichment(
+  built: { snapshot: string; refs: RoleRefs },
+  enriched: { lines: string[]; refs: RoleRefs },
+): { snapshot: string; refs: RoleRefs } {
+  if (enriched.lines.length === 0) return built;
+  return {
+    snapshot: `${built.snapshot}\n${enriched.lines.join('\n')}`,
+    refs: { ...built.refs, ...enriched.refs },
+  };
 }
