@@ -6,9 +6,7 @@ Recurring patterns for building reliable agents on top of browserclaw.
 
 ## Credential Indirection
 
-_Inspired by [Felix Mortas](https://github.com/felixmortas)' email-cons-agent, which demonstrated
-that keeping secrets out of the LLM message history is both straightforward and essential for
-production deployments._
+_Inspired by [Felix Mortas](https://github.com/felixmortas)' [email-cons-agent](https://github.com/felixmortas/email-cons-agent), which demonstrated that keeping secrets out of the LLM message history is both straightforward and essential for production deployments._
 
 ### The problem
 
@@ -19,16 +17,11 @@ const { snapshot } = await page.snapshot();
 const reply = await llm.complete(`Log in with username "jane@example.com" and password "hunter2".\n\n${snapshot}`);
 ```
 
-This works, but it has a serious flaw: **the credentials are now in your LLM message history**.
-They will be sent to the LLM provider on every subsequent call in that conversation, logged in
-your observability stack, and potentially included in fine-tuning datasets. If you ever export
-or inspect a conversation, the secrets are plaintext in the transcript.
+This works, but it has a serious flaw: **the credentials are now in your LLM message history**. They will be sent to the LLM provider on every subsequent call in that conversation, logged in your observability stack, and potentially included in fine-tuning datasets. If you ever export or inspect a conversation, the secrets are plaintext in the transcript.
 
 ### The solution: identifier tokens
 
-Instead of embedding actual values, put **opaque identifier tokens** in the agent prompt and
-resolve them to real values in a custom action handler — after the LLM has already decided what
-to type and into which field.
+Instead of embedding actual values, put **opaque identifier tokens** in the agent prompt and resolve them to real values in a custom action handler — after the LLM has already decided what to type and into which field.
 
 ```typescript
 // ── 1. The agent prompt uses tokens, never real values ───────────────────────
@@ -42,75 +35,117 @@ When you need to fill in credentials, use these exact tokens:
 
 // ── 2. Resolve tokens to real values at execution time ───────────────────────
 
-const CREDENTIALS: Record<string, string> = {
-  EMAIL: process.env.USER_EMAIL ?? '',
-  PASSWORD: process.env.USER_PASSWORD ?? '',
-};
-
-function resolveToken(value: string): string {
-  return CREDENTIALS[value] ?? value;
+function loadCredentials(): Record<string, string> {
+  const required = ['USER_EMAIL', 'USER_PASSWORD'] as const;
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    throw new Error(`Missing required credentials: ${missing.join(', ')}`);
+  }
+  return {
+    EMAIL: process.env.USER_EMAIL!,
+    PASSWORD: process.env.USER_PASSWORD!,
+  };
 }
 
-// ── 3. Custom fill handler intercepts and resolves before the browser sees it ─
+const CREDENTIALS = loadCredentials();
+
+function resolveToken(value: string): string {
+  const key = value.trim();
+  return CREDENTIALS[key] ?? value;
+}
+
+// ── 3. Custom fill handler resolves before the browser sees the value ────────
 
 async function handleFill(ref: string, rawValue: string): Promise<void> {
-  const resolved = resolveToken(rawValue);
-  await page.type(ref, resolved);
+  await page.type(ref, resolveToken(rawValue));
 }
 ```
 
-Because `resolveToken` runs in your application code — not inside the LLM call — the actual
-credential value never appears in any message sent to or received from the model.
+Because `resolveToken` runs in your application code — not inside the LLM call — the actual credential value never appears in any message sent to or received from the model.
 
-### Full example
+### Runnable example
 
 ```typescript
 import { BrowserClaw } from 'browserclaw';
 import Anthropic from '@anthropic-ai/sdk';
 
-const CREDENTIALS: Record<string, string> = {
-  EMAIL: process.env.USER_EMAIL ?? '',
-  PASSWORD: process.env.USER_PASSWORD ?? '',
-};
+function loadCredentials(): Record<string, string> {
+  const required = ['USER_EMAIL', 'USER_PASSWORD'] as const;
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    throw new Error(`Missing required credentials: ${missing.join(', ')}`);
+  }
+  return {
+    EMAIL: process.env.USER_EMAIL!,
+    PASSWORD: process.env.USER_PASSWORD!,
+  };
+}
+
+const CREDENTIALS = loadCredentials();
 
 function resolveToken(value: string): string {
-  return CREDENTIALS[value] ?? value;
+  const key = value.trim();
+  return CREDENTIALS[key] ?? value;
 }
+
+// Tool definitions the model is allowed to call. Values are tokens, not secrets.
+const TOOLS: Anthropic.Tool[] = [
+  {
+    name: 'fill',
+    description: 'Type text into a form field. For credentials use the token names EMAIL or PASSWORD.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: 'Ref from the snapshot, e.g. "e3"' },
+        value: { type: 'string', description: 'Text or credential token to type' },
+      },
+      required: ['ref', 'value'],
+    },
+  },
+  {
+    name: 'click',
+    description: 'Click the element with the given ref.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string' },
+      },
+      required: ['ref'],
+    },
+  },
+];
+
+const SYSTEM = `
+You are a browser automation agent. Fill in credentials using these tokens exactly:
+  email    → EMAIL
+  password → PASSWORD
+Never use real values; always use the token names above.
+`.trim();
 
 const browser = await BrowserClaw.launch({ url: 'https://example.com/login' });
 const page = await browser.currentPage();
 const client = new Anthropic();
 
-// The system prompt tells the model which tokens to use — no actual secrets here
-const SYSTEM = `
-You are a browser automation agent. Fill in credentials using these tokens exactly:
-  email    → EMAIL
-  password → PASSWORD
-Never use the real values; always use the token names listed above.
-`.trim();
-
-async function agentStep(conversationHistory: Anthropic.MessageParam[]): Promise<void> {
+async function agentStep(history: Anthropic.MessageParam[]): Promise<void> {
   const { snapshot } = await page.snapshot();
 
   const response = await client.messages.create({
     model: 'claude-opus-4-7',
     max_tokens: 1024,
     system: SYSTEM,
-    messages: [...conversationHistory, { role: 'user', content: `Current page:\n\n${snapshot}\n\nLog in.` }],
+    tools: TOOLS,
+    messages: [...history, { role: 'user', content: `Current page:\n\n${snapshot}\n\nLog in.` }],
   });
 
-  // In a real agent you would use tool_use or structured output.
-  // This simplified example shows where credential resolution happens.
   for (const block of response.content) {
     if (block.type !== 'tool_use') continue;
 
     if (block.name === 'fill') {
-      const { ref, value: rawValue } = block.input as { ref: string; value: string };
-      // Resolution happens here — the model only ever sees the token name
-      await page.type(ref, resolveToken(rawValue));
-    }
-
-    if (block.name === 'click') {
+      const { ref, value } = block.input as { ref: string; value: string };
+      // Resolution happens here — the model only ever sees the token name.
+      // Do NOT log `resolved`; log `value` (the token) instead.
+      await page.type(ref, resolveToken(value));
+    } else if (block.name === 'click') {
       const { ref } = block.input as { ref: string };
       await page.click(ref);
     }
@@ -128,20 +163,18 @@ async function agentStep(conversationHistory: Anthropic.MessageParam[]): Promise
 | Credential rotation      | Change the environment variable; no prompt changes needed   |
 | Multiple environments    | Swap `CREDENTIALS` map; agent prompt stays identical        |
 
+### Places the pattern can still leak
+
+Token indirection covers the LLM round-trip. It does **not** cover these channels — plug them explicitly:
+
+- **Your own logs.** Any `console.log(resolvedValue)` in the fill handler defeats the whole pattern. Log the token (pre-resolve), never the resolved value.
+- **Snapshots.** If the page renders a credential in plaintext (profile pages, confirmation screens, error messages like `"invalid password: hunter2"`), the next `page.snapshot()` captures it and ships it to the LLM. Redact or avoid snapshotting pages that display credentials.
+- **Screenshots.** Same issue as snapshots, worse — image OCR in observability tools will surface the value. Don't capture screenshots of authenticated profile pages without a redaction pass.
+- **Error messages.** Playwright errors that include the typed text will leak on exception. Wrap `page.type(ref, resolved)` in a handler that scrubs the resolved value from any re-thrown message.
+
 ### Design notes
 
-- **Token names should be obvious but not guessable values.** `EMAIL` and `PASSWORD` work well.
-  Avoid tokens that look like real values (e.g. `USER@EXAMPLE.COM` as a token would confuse the
-  model into thinking it is a real address).
-
-- **Resolve in the narrowest possible scope.** Resolve immediately before the browser call, not
-  earlier. This minimises the window during which the plaintext value exists in your process.
-
-- **The same pattern generalises.** API keys, OTP codes, credit card numbers, SSNs — any secret
-  that an agent needs to type into a form can be handled this way. The token is just a name; the
-  real value lives in a secrets manager, environment variable, or vault and is fetched at the
-  last possible moment.
-
-- **Credit:** This pattern was first demonstrated by Felix Mortas in the email-cons-agent project,
-  which used it to automate email workflows without leaking credentials into the conversation
-  transcript. The generalised form described here follows the same core principle.
+- **Token names should be obvious but not guessable values.** `EMAIL` and `PASSWORD` work well. Avoid tokens that look like real values (e.g. `USER@EXAMPLE.COM` as a token would confuse the model into thinking it is a real address).
+- **Resolve in the narrowest possible scope.** Resolve immediately before the browser call, not earlier. This minimises the window during which the plaintext value exists in your process.
+- **Fail loudly on missing credentials.** `loadCredentials()` throws at startup rather than letting an unset env var silently resolve to an empty string — an agent that types nothing into a password field produces a confusing login failure, not a loud configuration error.
+- **The pattern generalises.** API keys, OTP codes, credit card numbers, SSNs — any secret an agent types into a form can be handled this way. The token is just a name; the real value lives in a secrets manager, environment variable, or vault and is fetched at the last possible moment.
