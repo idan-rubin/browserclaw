@@ -9,6 +9,7 @@ import {
 } from '../connection.js';
 import type { SnapshotResult, AriaSnapshotResult, AriaNode, SsrfPolicy } from '../types.js';
 
+import { enrichSnapshotFromDom, nextRefCounter } from './dom-enrichment.js';
 import { buildRoleSnapshotFromAriaSnapshot, buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
 
 /**
@@ -58,18 +59,26 @@ export async function snapshotRole(opts: {
     const snapshotText = await takeAiSnapshotText(page, normalizeTimeoutMs(opts.timeoutMs, 5000));
     const built = buildRoleSnapshotFromAiSnapshot(snapshotText, opts.options);
 
+    // DOM enrichment: peer scan to surface elements the a11y tree missed.
+    // Inspired by Felix Mortas' email-cons-agent approach.
+    const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs));
+
+    const finalSnapshot =
+      enriched.lines.length > 0 ? `${built.snapshot}\n${enriched.lines.join('\n')}` : built.snapshot;
+    const finalRefs = enriched.lines.length > 0 ? { ...built.refs, ...enriched.refs } : built.refs;
+
     storeRoleRefsForTarget({
       page,
       cdpUrl: opts.cdpUrl,
       targetId: opts.targetId,
-      refs: built.refs,
+      refs: finalRefs,
       mode: 'aria',
     });
 
     return {
-      snapshot: built.snapshot,
-      refs: built.refs,
-      stats: getRoleSnapshotStats(built.snapshot, built.refs),
+      snapshot: finalSnapshot,
+      refs: finalRefs,
+      stats: getRoleSnapshotStats(finalSnapshot, finalRefs),
       untrusted: true,
       contentMeta: {
         sourceUrl,

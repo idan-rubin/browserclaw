@@ -8,6 +8,7 @@ import {
 } from '../connection.js';
 import type { SnapshotResult, SnapshotOptions, SsrfPolicy } from '../types.js';
 
+import { enrichSnapshotFromDom, nextRefCounter } from './dom-enrichment.js';
 import { buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
 
 /**
@@ -51,18 +52,28 @@ export async function snapshotAi(opts: {
   }
 
   const built = buildRoleSnapshotFromAiSnapshot(snapshot, opts.options);
+
+  // DOM enrichment: find interactive elements the accessibility tree missed.
+  // The a11y tree and DOM scan are peers — together they surface elements
+  // that neither catches alone (e.g. icon-only buttons identified only by id
+  // or data-testid). Inspired by Felix Mortas' email-cons-agent approach.
+  const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs));
+
+  const finalSnapshot = enriched.lines.length > 0 ? `${built.snapshot}\n${enriched.lines.join('\n')}` : built.snapshot;
+  const finalRefs = enriched.lines.length > 0 ? { ...built.refs, ...enriched.refs } : built.refs;
+
   storeRoleRefsForTarget({
     page,
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
-    refs: built.refs,
+    refs: finalRefs,
     mode: 'aria',
   });
 
   return {
-    snapshot: built.snapshot,
-    refs: built.refs,
-    stats: getRoleSnapshotStats(built.snapshot, built.refs),
+    snapshot: finalSnapshot,
+    refs: finalRefs,
+    stats: getRoleSnapshotStats(finalSnapshot, finalRefs),
     ...(truncated ? { truncated } : {}),
     untrusted: true,
     contentMeta: {
