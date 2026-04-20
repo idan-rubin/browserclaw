@@ -8,25 +8,18 @@
  *
  *   MOCK  — default; no API key required. A scripted "LLM" returns the tokens
  *           the real model would return. Everything else (resolution, browser
- *           interaction, transcript capture) runs for real. Good for reading
- *           the code and verifying the pattern.
+ *           interaction, transcript capture) runs for real.
  *
  *   LIVE  — set ANTHROPIC_API_KEY and BROWSERCLAW_EXAMPLE_MODE=live. The
- *           Anthropic SDK drives the agent. Credentials still never leave
- *           your machine.
+ *           Anthropic SDK drives the agent.
  *
- * Required env (LIVE mode):
- *   USER_EMAIL, USER_PASSWORD, ANTHROPIC_API_KEY
- *
- * Required env (MOCK mode):
- *   USER_EMAIL, USER_PASSWORD
+ * Required env (LIVE): USER_EMAIL, USER_PASSWORD, ANTHROPIC_API_KEY
+ * Required env (MOCK): USER_EMAIL, USER_PASSWORD
  *
  * See PATTERNS.md § Credential Indirection for the full explanation.
  */
 
 import { BrowserClaw } from '../src/index.js';
-
-// ── Credential loading ───────────────────────────────────────────────────────
 
 function loadCredentials(): Record<string, string> {
   const required = ['USER_EMAIL', 'USER_PASSWORD'] as const;
@@ -46,8 +39,6 @@ function resolveToken(value: string): string {
   const key = value.trim();
   return CREDENTIALS[key] ?? value;
 }
-
-// ── Self-contained login page (no external site required) ────────────────────
 
 const LOGIN_FORM_HTML = [
   '<!doctype html>',
@@ -75,11 +66,7 @@ const LOGIN_FORM_HTML = [
 
 const LOGIN_PAGE = `data:text/html;base64,${Buffer.from(LOGIN_FORM_HTML).toString('base64')}`;
 
-// ── Agent wire format ────────────────────────────────────────────────────────
-
 type AgentAction = { tool: 'fill'; ref: string; value: string } | { tool: 'click'; ref: string } | { tool: 'done' };
-
-// ── LLM drivers (mock + live share one interface) ────────────────────────────
 
 interface Driver {
   nextAction(snapshot: string): Promise<AgentAction>;
@@ -92,7 +79,6 @@ class MockDriver implements Driver {
   private submitRef = '';
 
   async nextAction(snapshot: string): Promise<AgentAction> {
-    // Discover refs by reading the snapshot the same way a real LLM would.
     const idRef = (id: string) => {
       const m = new RegExp(`\\[ref=(e\\d+)\\][^\\n]*\\[id="${id}"\\]`).exec(snapshot);
       return m?.[1] ?? '';
@@ -191,8 +177,6 @@ async function makeLiveDriver(): Promise<Driver> {
   };
 }
 
-// ── Transcript inspector: proves credentials never entered LLM context ───────
-
 class Transcript {
   readonly entries: string[] = [];
   record(kind: string, payload: unknown): void {
@@ -206,8 +190,6 @@ class Transcript {
     if (body.includes(pass)) throw new Error('LEAK: real PASSWORD found in LLM-facing transcript');
   }
 }
-
-// ── Agent loop ───────────────────────────────────────────────────────────────
 
 async function main() {
   const mode = process.env.BROWSERCLAW_EXAMPLE_MODE === 'live' ? 'live' : 'mock';
