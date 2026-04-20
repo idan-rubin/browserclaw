@@ -37,7 +37,7 @@ export interface DomEnrichedElement {
   /** `type` attribute for `<input>` elements, otherwise `null` */
   inputType: string | null;
   /** Up to five `data-*` attributes, in source order */
-  dataAttrs: Array<{ name: string; value: string }>;
+  dataAttrs: { name: string; value: string }[];
 }
 
 // ── Role mapping ──
@@ -95,7 +95,7 @@ export function buildDomEnrichedLines(elements: DomEnrichedElement[]): { lines: 
     // Build attribute annotations for the snapshot text
     const attrs: string[] = [];
     if (el.id) attrs.push(`[id="${el.id}"]`);
-    if (el.tagName === 'input' && el.inputType) attrs.push(`[type="${el.inputType}"]`);
+    if (el.tagName === 'input' && el.inputType !== null && el.inputType !== '') attrs.push(`[type="${el.inputType}"]`);
     for (const { name, value } of el.dataAttrs) attrs.push(`[${name}="${value}"]`);
 
     const attrStr = attrs.length > 0 ? ` ${attrs.join(' ')}` : '';
@@ -158,14 +158,15 @@ export async function enrichSnapshotFromDom(
         // Already captured by Playwright's AI snapshot — skip it
         if (el.hasAttribute('aria-ref')) return;
 
-        const id = (el as HTMLElement).id ?? '';
+        const id = (el as HTMLElement).id;
 
         // Collect data-* attributes without Array.from(NamedNodeMap) which also
         // requires DOM.Iterable. A counted loop works at every tsconfig target.
-        const dataAttrs: Array<{ name: string; value: string }> = [];
+        const dataAttrs: { name: string; value: string }[] = [];
         for (let i = 0; i < el.attributes.length && dataAttrs.length < 5; i++) {
           const attr = el.attributes.item(i);
-          if (attr && attr.name.startsWith('data-')) {
+          // Skip data-bc-ref — it's our own stamp, not a meaningful identifier
+          if (attr && attr.name.startsWith('data-') && attr.name !== 'data-bc-ref') {
             dataAttrs.push({ name: attr.name, value: attr.value });
           }
         }
@@ -174,8 +175,11 @@ export async function enrichSnapshotFromDom(
         if (id === '' && dataAttrs.length === 0) return;
 
         // Skip visually hidden elements
+        if (el.getAttribute('aria-hidden') === 'true') return;
         const style = window.getComputedStyle(el as HTMLElement);
         if (style.display === 'none' || style.visibility === 'hidden') return;
+        const rect = (el as HTMLElement).getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) return;
 
         const ref = `e${String(counter++)}`;
         // Stamp the ref so refLocator() can find it
