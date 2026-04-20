@@ -260,8 +260,6 @@ export async function enrichSnapshotFromDom(
         });
       };
 
-      // Single-pass descent: walk every element once, process-if-matches and
-      // recurse into any open shadow root on that element.
       const walk = (root: ParentNode): void => {
         if (results.length >= args.maxElements) return;
         root.querySelectorAll('*').forEach((el) => {
