@@ -240,7 +240,8 @@ export async function enrichSnapshotFromDom(
 
         if (id === '' && dataAttrs.length === 0) return;
 
-        if (el.getAttribute('aria-hidden') === 'true') return;
+        const ariaHidden = el.getAttribute('aria-hidden');
+        if (ariaHidden !== null && ariaHidden !== 'false') return;
         const style = window.getComputedStyle(el as HTMLElement);
         if (style.display === 'none' || style.visibility === 'hidden') return;
         const rect = (el as HTMLElement).getBoundingClientRect();
@@ -259,13 +260,13 @@ export async function enrichSnapshotFromDom(
         });
       };
 
-      // Recursive walk: matches at this level, then descends into every open
-      // shadow root on the page so web-component UIs are captured too.
-      const walk = (node: ParentNode): void => {
+      // Single-pass descent: walk every element once, process-if-matches and
+      // recurse into any open shadow root on that element.
+      const walk = (root: ParentNode): void => {
         if (results.length >= args.maxElements) return;
-        node.querySelectorAll(args.selector).forEach(processElement);
-        node.querySelectorAll('*').forEach((el) => {
+        root.querySelectorAll('*').forEach((el) => {
           if (results.length >= args.maxElements) return;
+          if (el.matches(args.selector)) processElement(el);
           const sr = (el as HTMLElement).shadowRoot;
           if (sr) walk(sr);
         });

@@ -12,6 +12,8 @@
  * Skipped automatically if `playwright-core`'s Chromium binary is not installed.
  */
 
+import { existsSync } from 'node:fs';
+
 import type { Browser, Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -46,18 +48,15 @@ function dataUrl(html: string): string {
   return `data:text/html;base64,${Buffer.from(html).toString('base64')}`;
 }
 
-const chromiumAvailable = async (): Promise<boolean> => {
+const chromiumAvailable = ((): boolean => {
   try {
-    const b = await chromium.launch({ headless: true });
-    await b.close();
-    return true;
+    return existsSync(chromium.executablePath());
   } catch {
     return false;
   }
-};
+})();
 
-const enabled = await chromiumAvailable();
-const d = enabled ? describe : describe.skip;
+const d = chromiumAvailable ? describe : describe.skip;
 
 d('enrichSnapshotFromDom (integration)', () => {
   let browser: Browser;
