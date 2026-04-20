@@ -63,7 +63,7 @@ async function handleFill(ref: string, rawValue: string): Promise<void> {
 
 Because `resolveToken` runs in your application code — not inside the LLM call — the actual credential value never appears in any message sent to or received from the model.
 
-### Runnable example
+### Full example
 
 ```typescript
 import { BrowserClaw } from 'browserclaw';
@@ -200,13 +200,17 @@ The same seam works for HashiCorp Vault, 1Password Connect, Doppler, GCP Secret 
 
 ### Rotating credentials mid-session
 
-Long-running agents outlive any one credential value — an OTP expires in 30 seconds, an access token after an hour. Rotation fits the same pattern: resolve tokens through a function instead of a static map.
+Long-running agents outlive any one credential value — an OTP expires in 30 seconds, an access token after an hour. Rotation fits the same pattern, but `resolveToken` becomes async so the fill handler can await the current value:
 
 ```typescript
 async function resolveToken(value: string): Promise<string> {
   const key = value.trim();
-  if (key === 'OTP') return await otpProvider.current(); // always fetch fresh
+  if (key === 'OTP') return await otpProvider.current();
   return CREDENTIALS[key] ?? value;
+}
+
+async function handleFill(ref: string, rawValue: string): Promise<void> {
+  await page.type(ref, await resolveToken(rawValue));
 }
 ```
 
