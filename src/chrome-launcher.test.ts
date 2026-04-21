@@ -127,6 +127,24 @@ describe('normalizeCdpWsUrl', () => {
     expect(result.startsWith('wss://')).toBe(true);
   });
 
+  it('normalizes loopback aliases (ws localhost, cdp 127.0.0.1 → use cdp alias)', () => {
+    const result = normalizeCdpWsUrl('ws://localhost:9222/devtools/browser/abc', 'http://127.0.0.1:9222');
+    expect(result).toContain('127.0.0.1');
+    expect(result).not.toContain('localhost');
+  });
+
+  it('normalizes loopback aliases in reverse (ws 127.0.0.1, cdp localhost → use cdp alias)', () => {
+    const result = normalizeCdpWsUrl('ws://127.0.0.1:9222/devtools/browser/abc', 'http://localhost:9222');
+    expect(result).toContain('localhost');
+    expect(result).not.toContain('127.0.0.1');
+  });
+
+  it('normalizes IPv6 loopback to IPv4 loopback when cdp is IPv4 ([::1] → 127.0.0.1)', () => {
+    const result = normalizeCdpWsUrl('ws://[::1]:9222/devtools/browser/abc', 'http://127.0.0.1:9222');
+    expect(result).toContain('127.0.0.1');
+    expect(result).not.toContain('[::1]');
+  });
+
   it('inherits URL credentials from CDP URL', () => {
     const result = normalizeCdpWsUrl('ws://localhost:9222/path', 'http://user:pass@localhost:9222');
     const parsed = new URL(result);

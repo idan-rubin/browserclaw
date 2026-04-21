@@ -585,6 +585,8 @@ export function normalizeCdpWsUrl(wsUrl: string, cdpUrl: string): string {
     const cdpPort = cdp.port || (cdp.protocol === 'https:' ? '443' : '80');
     if (cdpPort) ws.port = cdpPort;
     ws.protocol = cdp.protocol === 'https:' ? 'wss:' : 'ws:';
+  } else if (isLoopbackHost(ws.hostname) && isLoopbackHost(cdp.hostname)) {
+    ws.hostname = cdp.hostname;
   }
   if (cdp.protocol === 'https:' && ws.protocol === 'ws:') ws.protocol = 'wss:';
   if (!ws.username && !ws.password && (cdp.username || cdp.password)) {
