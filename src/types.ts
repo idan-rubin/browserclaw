@@ -145,6 +145,12 @@ export interface RoleRefInfo {
   disabled?: boolean;
   /** Whether a checkbox/radio/switch is checked */
   checked?: boolean | 'mixed';
+  /**
+   * CSS selector for DOM-enriched refs — elements found by the DOM scan that
+   * are not present in the accessibility tree. When set, ref resolution uses
+   * this selector directly instead of `aria-ref` or `getByRole()`.
+   */
+  selector?: string;
 }
 
 /** Map of ref IDs (e.g. `'e1'`, `'e2'`) to their element information. */

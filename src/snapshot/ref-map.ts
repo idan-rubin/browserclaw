@@ -258,6 +258,11 @@ export function buildRoleSnapshotFromAriaSnapshot(
 /**
  * Build a role snapshot from Playwright's AI snapshot output.
  * Preserves Playwright's own aria-ref ids (e.g. ref=e13).
+ *
+ * Does not parse the `selector` field used by DOM-enriched refs — enriched
+ * refs must be merged in by the caller (see `mergeSnapshotWithEnrichment`).
+ * Feeding an already-enriched snapshot string back through this parser will
+ * silently drop those selectors.
  */
 export function buildRoleSnapshotFromAiSnapshot(
   aiSnapshot: string,
