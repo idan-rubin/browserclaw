@@ -1733,8 +1733,14 @@ describe('security.ts', () => {
       await expect(assertCdpEndpointAllowed('http://localhost:9222', undefined)).resolves.toBeUndefined();
     });
 
-    it('blocks loopback hostnames under a strict policy', async () => {
-      await expect(assertCdpEndpointAllowed('http://localhost:9222', {})).rejects.toThrow(
+    it('allows loopback hostnames even under a strict policy', async () => {
+      await expect(assertCdpEndpointAllowed('http://localhost:9222', {})).resolves.toBeUndefined();
+      await expect(assertCdpEndpointAllowed('http://127.0.0.1:9222', {})).resolves.toBeUndefined();
+      await expect(assertCdpEndpointAllowed('ws://[::1]:9222/devtools/browser/abc', {})).resolves.toBeUndefined();
+    });
+
+    it('blocks non-loopback private IPs under a strict policy', async () => {
+      await expect(assertCdpEndpointAllowed('http://192.168.1.100:9222', {})).rejects.toThrow(
         BrowserCdpEndpointBlockedError,
       );
     });
@@ -1769,7 +1775,7 @@ describe('security.ts', () => {
 
     it('error message points users at the dangerouslyAllowPrivateNetwork fix', async () => {
       try {
-        await assertCdpEndpointAllowed('http://localhost:9222', {});
+        await assertCdpEndpointAllowed('http://192.168.1.100:9222', {});
         expect.fail('expected throw');
       } catch (err) {
         expect(err).toBeInstanceOf(BrowserCdpEndpointBlockedError);
@@ -1779,7 +1785,7 @@ describe('security.ts', () => {
 
     it('preserves the underlying error as cause', async () => {
       try {
-        await assertCdpEndpointAllowed('http://localhost:9222', {});
+        await assertCdpEndpointAllowed('http://192.168.1.100:9222', {});
         expect.fail('expected throw');
       } catch (err) {
         expect(err).toBeInstanceOf(BrowserCdpEndpointBlockedError);

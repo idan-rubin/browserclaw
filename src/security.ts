@@ -79,8 +79,16 @@ export async function assertCdpEndpointAllowed(cdpUrl: string, ssrfPolicy?: Ssrf
       `CDP endpoint blocked: protocol "${parsed.protocol.replace(':', '')}" is not allowed (use http/https/ws/wss)`,
     );
   }
+  const h = parsed.hostname.replace(/\.+$/, '');
+  const isLoopback = h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+  const effectivePolicy = isLoopback
+    ? {
+        ...ssrfPolicy,
+        allowedHostnames: Array.from(new Set([...(ssrfPolicy.allowedHostnames ?? []), parsed.hostname])),
+      }
+    : ssrfPolicy;
   try {
-    await resolvePinnedHostnameWithPolicy(parsed.hostname, { policy: ssrfPolicy });
+    await resolvePinnedHostnameWithPolicy(parsed.hostname, { policy: effectivePolicy });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new BrowserCdpEndpointBlockedError(
