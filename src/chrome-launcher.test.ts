@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   isLoopbackHost,
+  isDirectCdpWebSocketEndpoint,
   hasProxyEnvConfigured,
   normalizeCdpWsUrl,
   normalizeCdpHttpBaseForJsonEndpoints,
@@ -47,6 +48,41 @@ describe('isLoopbackHost', () => {
   it('is case sensitive (hostnames are typically lowercase)', () => {
     expect(isLoopbackHost('LOCALHOST')).toBe(false);
     expect(isLoopbackHost('Localhost')).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// isDirectCdpWebSocketEndpoint
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('isDirectCdpWebSocketEndpoint', () => {
+  it('recognizes /devtools/browser/<id>', () => {
+    expect(isDirectCdpWebSocketEndpoint('ws://localhost:9222/devtools/browser/abc-123')).toBe(true);
+    expect(isDirectCdpWebSocketEndpoint('wss://remote:443/devtools/browser/abc-123')).toBe(true);
+  });
+
+  it('recognizes /devtools/page/<id>, /devtools/worker/<id>, /devtools/shared_worker/<id>, /devtools/service_worker/<id>', () => {
+    expect(isDirectCdpWebSocketEndpoint('ws://host/devtools/page/abc')).toBe(true);
+    expect(isDirectCdpWebSocketEndpoint('ws://host/devtools/worker/abc')).toBe(true);
+    expect(isDirectCdpWebSocketEndpoint('ws://host/devtools/shared_worker/abc')).toBe(true);
+    expect(isDirectCdpWebSocketEndpoint('ws://host/devtools/service_worker/abc')).toBe(true);
+  });
+
+  it('rejects non-WS protocols', () => {
+    expect(isDirectCdpWebSocketEndpoint('http://localhost:9222/devtools/browser/abc')).toBe(false);
+    expect(isDirectCdpWebSocketEndpoint('https://localhost:9222/devtools/browser/abc')).toBe(false);
+  });
+
+  it('rejects WS URLs without a /devtools/<type>/<id> path', () => {
+    expect(isDirectCdpWebSocketEndpoint('ws://proxy/cdp')).toBe(false);
+    expect(isDirectCdpWebSocketEndpoint('ws://localhost:9222/')).toBe(false);
+    expect(isDirectCdpWebSocketEndpoint('ws://localhost:9222/devtools/browser/')).toBe(false);
+    expect(isDirectCdpWebSocketEndpoint('ws://localhost:9222/devtools/unknown/abc')).toBe(false);
+  });
+
+  it('rejects invalid URLs', () => {
+    expect(isDirectCdpWebSocketEndpoint('')).toBe(false);
+    expect(isDirectCdpWebSocketEndpoint('not a url')).toBe(false);
   });
 });
 

@@ -3,6 +3,7 @@ export {
   isChromeCdpReady,
   isChromeReachable,
   getChromeWebSocketUrl,
+  isDirectCdpWebSocketEndpoint,
   normalizeCdpHttpBaseForJsonEndpoints,
 } from './chrome-launcher.js';
 export {

@@ -63,7 +63,10 @@ export class BrowserCdpEndpointBlockedError extends Error {
 
 /**
  * Validate a CDP endpoint URL against an SSRF policy. No-op without a policy.
- * Connecting to local Chrome with a strict policy requires `dangerouslyAllowPrivateNetwork: true`.
+ * Loopback hostnames (`localhost`, `127.0.0.1`, `[::1]`) are allowed by default
+ * when no explicit `allowedHostnames` or `hostnameAllowlist` is provided.
+ * To reach a non-loopback private/internal endpoint, add its hostname to
+ * `ssrfPolicy.allowedHostnames` or set `dangerouslyAllowPrivateNetwork: true`.
  */
 export async function assertCdpEndpointAllowed(cdpUrl: string, ssrfPolicy?: SsrfPolicy): Promise<void> {
   if (!ssrfPolicy) return;
@@ -79,13 +82,26 @@ export async function assertCdpEndpointAllowed(cdpUrl: string, ssrfPolicy?: Ssrf
       `CDP endpoint blocked: protocol "${parsed.protocol.replace(':', '')}" is not allowed (use http/https/ws/wss)`,
     );
   }
+  const h = parsed.hostname.replace(/\.+$/, '');
+  const isLoopback = h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+  const hasExplicitAllowlist =
+    (Array.isArray(ssrfPolicy.allowedHostnames) && ssrfPolicy.allowedHostnames.length > 0) ||
+    (Array.isArray(ssrfPolicy.hostnameAllowlist) && ssrfPolicy.hostnameAllowlist.length > 0);
+  const effectivePolicy =
+    isLoopback && !hasExplicitAllowlist
+      ? {
+          ...ssrfPolicy,
+          allowedHostnames: Array.from(new Set([...(ssrfPolicy.allowedHostnames ?? []), parsed.hostname])),
+        }
+      : ssrfPolicy;
   try {
-    await resolvePinnedHostnameWithPolicy(parsed.hostname, { policy: ssrfPolicy });
+    await resolvePinnedHostnameWithPolicy(parsed.hostname, { policy: effectivePolicy });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new BrowserCdpEndpointBlockedError(
       `CDP endpoint "${parsed.hostname}" blocked by SSRF policy: ${reason}. ` +
-        `If connecting to local Chrome, set ssrfPolicy.dangerouslyAllowPrivateNetwork = true.`,
+        `If connecting to a private/internal CDP endpoint, set ssrfPolicy.dangerouslyAllowPrivateNetwork = true ` +
+        `or add the hostname to ssrfPolicy.allowedHostnames.`,
       { cause: error },
     );
   }
