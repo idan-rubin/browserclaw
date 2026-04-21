@@ -556,6 +556,16 @@ function isWebSocketUrl(url: string): boolean {
   }
 }
 
+export function isDirectCdpWebSocketEndpoint(url: string): boolean {
+  if (!isWebSocketUrl(url)) return false;
+  try {
+    const parsed = new URL(url);
+    return /\/devtools\/(?:browser|page|worker|shared_worker|service_worker)\/[^/]/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
 export function isLoopbackHost(hostname: string): boolean {
   const h = hostname.replace(/\.+$/, '');
   return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
@@ -642,7 +652,7 @@ async function canOpenWebSocket(url: string, timeoutMs: number): Promise<boolean
       () => {
         finish(false);
       },
-      Math.max(50, timeoutMs + 25),
+      Math.max(1, timeoutMs + Math.min(25, timeoutMs)),
     );
     let ws: WebSocket;
     try {
@@ -714,9 +724,12 @@ export async function isChromeReachable(
   } catch {
     return false;
   }
+  if (isDirectCdpWebSocketEndpoint(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs);
+  const discoveryUrl = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
+  const version = await fetchChromeVersion(discoveryUrl, timeoutMs, authToken, ssrfPolicy);
+  if (version !== null) return true;
   if (isWebSocketUrl(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs);
-  const version = await fetchChromeVersion(cdpUrl, timeoutMs, authToken, ssrfPolicy);
-  return version !== null;
+  return false;
 }
 
 export async function getChromeWebSocketUrl(
@@ -726,12 +739,16 @@ export async function getChromeWebSocketUrl(
   ssrfPolicy?: SsrfPolicy,
 ): Promise<string | null> {
   await assertCdpEndpointAllowed(cdpUrl, ssrfPolicy);
-  if (isWebSocketUrl(cdpUrl)) return cdpUrl;
-  const version = await fetchChromeVersion(cdpUrl, timeoutMs, authToken, ssrfPolicy);
+  if (isDirectCdpWebSocketEndpoint(cdpUrl)) return cdpUrl;
+  const discoveryUrl = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
+  const version = await fetchChromeVersion(discoveryUrl, timeoutMs, authToken, ssrfPolicy);
   const rawWsUrl = version?.webSocketDebuggerUrl;
   const wsUrl = typeof rawWsUrl === 'string' ? rawWsUrl.trim() : '';
-  if (wsUrl === '') return null;
-  const normalized = normalizeCdpWsUrl(wsUrl, cdpUrl);
+  if (wsUrl === '') {
+    if (isWebSocketUrl(cdpUrl)) return cdpUrl;
+    return null;
+  }
+  const normalized = normalizeCdpWsUrl(wsUrl, discoveryUrl);
   await assertCdpEndpointAllowed(normalized, ssrfPolicy);
   return normalized;
 }
@@ -764,7 +781,7 @@ async function canRunCdpHealthCommand(wsUrl: string, timeoutMs = 800): Promise<b
       () => {
         finish(false);
       },
-      Math.max(50, timeoutMs + 25),
+      Math.max(1, timeoutMs + Math.min(25, timeoutMs)),
     );
 
     let ws: WebSocket;
@@ -944,7 +961,8 @@ export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Prom
   while (Date.now() - start < timeoutMs) {
     // exitCode changes asynchronously after SIGTERM; re-read from proc
     if ((proc as { exitCode: number | null }).exitCode !== null) return;
-    await new Promise((r) => setTimeout(r, 100));
+    const remainingMs = timeoutMs - (Date.now() - start);
+    await new Promise((r) => setTimeout(r, Math.max(1, Math.min(100, remainingMs))));
   }
   killProcessTree(proc, 'SIGKILL');
 }
