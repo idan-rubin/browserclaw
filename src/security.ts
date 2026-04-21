@@ -81,12 +81,16 @@ export async function assertCdpEndpointAllowed(cdpUrl: string, ssrfPolicy?: Ssrf
   }
   const h = parsed.hostname.replace(/\.+$/, '');
   const isLoopback = h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
-  const effectivePolicy = isLoopback
-    ? {
-        ...ssrfPolicy,
-        allowedHostnames: Array.from(new Set([...(ssrfPolicy.allowedHostnames ?? []), parsed.hostname])),
-      }
-    : ssrfPolicy;
+  const hasExplicitAllowlist =
+    (Array.isArray(ssrfPolicy.allowedHostnames) && ssrfPolicy.allowedHostnames.length > 0) ||
+    (Array.isArray(ssrfPolicy.hostnameAllowlist) && ssrfPolicy.hostnameAllowlist.length > 0);
+  const effectivePolicy =
+    isLoopback && !hasExplicitAllowlist
+      ? {
+          ...ssrfPolicy,
+          allowedHostnames: Array.from(new Set([...(ssrfPolicy.allowedHostnames ?? []), parsed.hostname])),
+        }
+      : ssrfPolicy;
   try {
     await resolvePinnedHostnameWithPolicy(parsed.hostname, { policy: effectivePolicy });
   } catch (error) {

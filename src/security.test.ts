@@ -1792,5 +1792,33 @@ describe('security.ts', () => {
         expect((err as { cause?: unknown }).cause).toBeDefined();
       }
     });
+
+    // The loopback carve-out under a strict policy must respect an explicit user
+    // allowlist — otherwise a user who sets `allowedHostnames: ['gateway']` or
+    // `hostnameAllowlist: ['gateway']` expecting "only this host" would find
+    // localhost silently reachable.
+    it('respects explicit allowedHostnames: does not auto-allow loopback', async () => {
+      await expect(
+        assertCdpEndpointAllowed('http://localhost:9222', { allowedHostnames: ['cdp-gateway.internal'] }),
+      ).rejects.toThrow(BrowserCdpEndpointBlockedError);
+      await expect(
+        assertCdpEndpointAllowed('http://127.0.0.1:9222', { allowedHostnames: ['cdp-gateway.internal'] }),
+      ).rejects.toThrow(BrowserCdpEndpointBlockedError);
+    });
+
+    it('respects explicit hostnameAllowlist: loopback rejected when not in the allowlist', async () => {
+      await expect(
+        assertCdpEndpointAllowed('http://localhost:9222', { hostnameAllowlist: ['cdp-gateway.internal'] }),
+      ).rejects.toThrow(BrowserCdpEndpointBlockedError);
+    });
+
+    it('treats empty allowlist arrays as "no explicit allowlist" (loopback allowed)', async () => {
+      await expect(
+        assertCdpEndpointAllowed('http://localhost:9222', { allowedHostnames: [] }),
+      ).resolves.toBeUndefined();
+      await expect(
+        assertCdpEndpointAllowed('http://localhost:9222', { hostnameAllowlist: [] }),
+      ).resolves.toBeUndefined();
+    });
   });
 });
