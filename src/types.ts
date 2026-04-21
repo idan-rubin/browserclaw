@@ -19,9 +19,22 @@ export interface SsrfPolicy {
    * @deprecated Use `dangerouslyAllowPrivateNetwork` instead.
    */
   allowPrivateNetwork?: boolean;
-  /** Hostnames explicitly allowed even if they resolve to private addresses */
+  /**
+   * Hostnames that bypass the private/internal-address check (permissive
+   * carve-out). Use this to connect to a named host that happens to resolve
+   * to a private IP (e.g. a corporate bastion) without fully disabling the
+   * private-network block.
+   */
   allowedHostnames?: string[];
-  /** Alias for allowedHostnames */
+  /**
+   * Restrictive hostname filter: when non-empty, navigation is blocked unless
+   * the hostname matches an entry (supports `*.example.com` patterns).
+   *
+   * Note: this is a *filter*, not a carve-out. Passing the filter does not
+   * also bypass the private-network check — to reach a loopback/private host
+   * via `hostnameAllowlist`, also include it in `allowedHostnames` or set
+   * `dangerouslyAllowPrivateNetwork: true`.
+   */
   hostnameAllowlist?: string[];
   /**
    * Allow navigation to the RFC 2544 benchmark testing range (198.18.0.0/15).

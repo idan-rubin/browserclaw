@@ -1820,5 +1820,32 @@ describe('security.ts', () => {
         assertCdpEndpointAllowed('http://localhost:9222', { hostnameAllowlist: [] }),
       ).resolves.toBeUndefined();
     });
+
+    // hostnameAllowlist is a restrictive *filter*, not a private-network carve-out.
+    // Passing the filter does not bypass the loopback/private-address block — users
+    // must pair it with `allowedHostnames` or `dangerouslyAllowPrivateNetwork`.
+    it('hostnameAllowlist alone does not bypass the loopback block (regression)', async () => {
+      await expect(
+        assertCdpEndpointAllowed('http://localhost:9222', { hostnameAllowlist: ['localhost'] }),
+      ).rejects.toThrow(BrowserCdpEndpointBlockedError);
+    });
+
+    it('hostnameAllowlist + allowedHostnames both listing loopback reaches it', async () => {
+      await expect(
+        assertCdpEndpointAllowed('http://localhost:9222', {
+          hostnameAllowlist: ['localhost'],
+          allowedHostnames: ['localhost'],
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('hostnameAllowlist + dangerouslyAllowPrivateNetwork reaches loopback', async () => {
+      await expect(
+        assertCdpEndpointAllowed('http://localhost:9222', {
+          hostnameAllowlist: ['localhost'],
+          dangerouslyAllowPrivateNetwork: true,
+        }),
+      ).resolves.toBeUndefined();
+    });
   });
 });
