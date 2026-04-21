@@ -9,6 +9,7 @@ import {
 } from '../connection.js';
 import type { SnapshotResult, AriaSnapshotResult, AriaNode, SsrfPolicy } from '../types.js';
 
+import { enrichSnapshotFromDom, mergeSnapshotWithEnrichment, nextRefCounter } from './dom-enrichment.js';
 import { buildRoleSnapshotFromAriaSnapshot, buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
 
 /**
@@ -58,18 +59,21 @@ export async function snapshotRole(opts: {
     const snapshotText = await takeAiSnapshotText(page, normalizeTimeoutMs(opts.timeoutMs, 5000));
     const built = buildRoleSnapshotFromAiSnapshot(snapshotText, opts.options);
 
+    const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs));
+    const merged = mergeSnapshotWithEnrichment(built, enriched);
+
     storeRoleRefsForTarget({
       page,
       cdpUrl: opts.cdpUrl,
       targetId: opts.targetId,
-      refs: built.refs,
+      refs: merged.refs,
       mode: 'aria',
     });
 
     return {
-      snapshot: built.snapshot,
-      refs: built.refs,
-      stats: getRoleSnapshotStats(built.snapshot, built.refs),
+      snapshot: merged.snapshot,
+      refs: merged.refs,
+      stats: getRoleSnapshotStats(merged.snapshot, merged.refs),
       untrusted: true,
       contentMeta: {
         sourceUrl,
@@ -92,19 +96,25 @@ export async function snapshotRole(opts: {
   const ariaSnapshot = await locator.ariaSnapshot({ timeout: normalizeTimeoutMs(opts.timeoutMs, 5000) });
   const built = buildRoleSnapshotFromAriaSnapshot(ariaSnapshot, opts.options);
 
+  const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs), {
+    rootSelector: selector,
+    frameSelector,
+  });
+  const merged = mergeSnapshotWithEnrichment(built, enriched);
+
   storeRoleRefsForTarget({
     page,
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
-    refs: built.refs,
+    refs: merged.refs,
     frameSelector: frameSelector !== '' ? frameSelector : undefined,
     mode: 'role',
   });
 
   return {
-    snapshot: built.snapshot,
-    refs: built.refs,
-    stats: getRoleSnapshotStats(built.snapshot, built.refs),
+    snapshot: merged.snapshot,
+    refs: merged.refs,
+    stats: getRoleSnapshotStats(merged.snapshot, merged.refs),
     untrusted: true,
     contentMeta: {
       sourceUrl,

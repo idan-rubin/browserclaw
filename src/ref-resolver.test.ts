@@ -502,4 +502,25 @@ describe('refLocator', () => {
     expect(loc._frameSel).toBe('iframe#nav');
     expect(loc._role).toBe('link');
   });
+
+  it('resolves DOM-enriched selector refs directly via page.locator', () => {
+    const page = mockPage();
+    const state = ensurePageState(page);
+    state.roleRefsMode = 'aria';
+    state.roleRefs = { e5: { role: 'button', selector: '[data-bc-ref="e5"]' } };
+    const loc = refLocator(page, 'e5') as unknown as { _selector: string; _frameSel?: string };
+    expect(loc._selector).toBe('[data-bc-ref="e5"]');
+    expect(loc._frameSel).toBeUndefined();
+  });
+
+  it('routes DOM-enriched selector refs through frameLocator when a frame is set', () => {
+    const page = mockPage();
+    const state = ensurePageState(page);
+    state.roleRefsMode = 'aria';
+    state.roleRefs = { e5: { role: 'button', selector: '[data-bc-ref="e5"]' } };
+    state.roleRefsFrameSelector = 'iframe#content';
+    const loc = refLocator(page, 'e5') as unknown as { _frameSel: string; _selector: string };
+    expect(loc._frameSel).toBe('iframe#content');
+    expect(loc._selector).toBe('[data-bc-ref="e5"]');
+  });
 });

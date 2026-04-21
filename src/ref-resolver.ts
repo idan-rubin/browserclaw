@@ -162,7 +162,16 @@ export function refLocator(page: Page, ref: string) {
       }
     }
 
-    // Aria mode: use aria-ref locator
+    const info = state?.roleRefs?.[normalized];
+
+    if (info?.selector !== undefined && info.selector !== '') {
+      const base =
+        state?.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''
+          ? page.frameLocator(state.roleRefsFrameSelector)
+          : page;
+      return base.locator(info.selector);
+    }
+
     if (state?.roleRefsMode === 'aria') {
       return (
         state.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''
@@ -171,8 +180,6 @@ export function refLocator(page: Page, ref: string) {
       ).locator(`aria-ref=${normalized}`);
     }
 
-    // Role mode: use getByRole
-    const info = state?.roleRefs?.[normalized];
     if (!info) throw new Error(`Unknown ref "${normalized}". Run a new snapshot and use a ref from that snapshot.`);
 
     const locAny =

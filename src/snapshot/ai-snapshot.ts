@@ -8,6 +8,7 @@ import {
 } from '../connection.js';
 import type { SnapshotResult, SnapshotOptions, SsrfPolicy } from '../types.js';
 
+import { enrichSnapshotFromDom, mergeSnapshotWithEnrichment, nextRefCounter } from './dom-enrichment.js';
 import { buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
 
 /**
@@ -51,18 +52,22 @@ export async function snapshotAi(opts: {
   }
 
   const built = buildRoleSnapshotFromAiSnapshot(snapshot, opts.options);
+
+  const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs));
+  const merged = mergeSnapshotWithEnrichment(built, enriched);
+
   storeRoleRefsForTarget({
     page,
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
-    refs: built.refs,
+    refs: merged.refs,
     mode: 'aria',
   });
 
   return {
-    snapshot: built.snapshot,
-    refs: built.refs,
-    stats: getRoleSnapshotStats(built.snapshot, built.refs),
+    snapshot: merged.snapshot,
+    refs: merged.refs,
+    stats: getRoleSnapshotStats(merged.snapshot, merged.refs),
     ...(truncated ? { truncated } : {}),
     untrusted: true,
     contentMeta: {
