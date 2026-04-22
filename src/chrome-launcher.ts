@@ -831,7 +831,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   const userDataDir = opts.userDataDir ?? resolveUserDataDir(profileName);
   fs.mkdirSync(userDataDir, { recursive: true });
 
-  const spawnChrome = (spawnOpts?: { detached?: boolean }) => {
+  const spawnChrome = (spawnOpts?: { detached?: boolean }, runOpts?: { forceHeadless?: boolean }) => {
     const args = [
       `--remote-debugging-port=${String(cdpPort)}`,
       '--remote-debugging-address=127.0.0.1',
@@ -847,7 +847,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
       '--hide-crash-restore-bubble',
       '--password-store=basic',
     ];
-    if (opts.headless === true) {
+    if (opts.headless === true || runOpts?.forceHeadless === true) {
       args.push('--headless=new', '--disable-gpu');
     }
     if (opts.noSandbox === true) {
@@ -873,10 +873,13 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   const localStatePath = path.join(userDataDir, 'Local State');
   const preferencesPath = path.join(userDataDir, 'Default', 'Preferences');
 
-  // Bootstrap run if profile doesn't exist yet
+  // Bootstrap run if profile doesn't exist yet — forced headless so the user
+  // does not see a throwaway window flashing open and closed before the real
+  // session. Chrome still initializes the profile databases (Cookies, History,
+  // Web Data, etc.) during this headless run.
   if (!fileExists(localStatePath) || !fileExists(preferencesPath)) {
     const useDetached = process.platform !== 'win32';
-    const bootstrap = spawnChrome(useDetached ? { detached: true } : undefined);
+    const bootstrap = spawnChrome(useDetached ? { detached: true } : undefined, { forceHeadless: true });
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
       if (fileExists(localStatePath) && fileExists(preferencesPath)) break;
