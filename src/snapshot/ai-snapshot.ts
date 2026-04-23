@@ -91,6 +91,18 @@ export async function snapshotAi(opts: {
     const built = buildRoleSnapshotFromAiSnapshot(snapshot, opts.options);
     const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs));
     const merged = mergeSnapshotWithEnrichment(built, enriched);
+
+    // The AI snapshot (above) and the DOM enrichment (just now) each read from
+    // whatever document was loaded at the moment they ran. If the page
+    // navigated during the enrichment await, `merged` mixes refs from the
+    // pre-nav document with DOM-enrichment data from the post-nav document —
+    // inconsistent garbage. Re-check the URL before we stamp the ref cache
+    // so we don't return/store a split-document result.
+    const postEnrichUrl = page.url();
+    if (hydrationBudgetMs > 0 && postEnrichUrl !== snapshotUrl) {
+      throw new NavigationRaceError({ fromUrl: snapshotUrl, toUrl: postEnrichUrl });
+    }
+
     const stats = getRoleSnapshotStats(merged.snapshot, merged.refs);
 
     const result: SnapshotResult = {

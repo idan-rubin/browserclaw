@@ -83,9 +83,14 @@ describe('snapshotAi hydration retry', () => {
     ).rejects.toBeInstanceOf(SnapshotHydrationError);
   });
 
-  it('throws NavigationRaceError when URL changes during hydration retry', async () => {
-    // initialUrl=A, snapshotUrl=A (same doc), then waitUrl=B after the sleep.
-    mockGetPageForTargetId.mockResolvedValue(makeMockPage(['https://a.test/', 'https://a.test/', 'https://b.test/']));
+  it('throws NavigationRaceError when URL changes between retries during hydration', async () => {
+    // page.url() is called at: entry (initial), post-snapshot (snapshotUrl),
+    // post-enrichment (postEnrichUrl), post-sleep (waitUrl). We keep the
+    // first three aligned so the check fires on the post-sleep waitUrl,
+    // exercising the between-retries race path.
+    mockGetPageForTargetId.mockResolvedValue(
+      makeMockPage(['https://a.test/', 'https://a.test/', 'https://a.test/', 'https://b.test/']),
+    );
     mockTakeAiSnapshotText.mockResolvedValue('');
 
     await expect(
@@ -110,6 +115,26 @@ describe('snapshotAi hydration retry', () => {
         options: { waitForHydration: 2000 },
       }),
     ).rejects.toBeInstanceOf(NavigationRaceError);
+  });
+
+  it('throws NavigationRaceError when URL drifts during DOM enrichment', async () => {
+    // initialUrl=A, snapshotUrl=A (no drift during takeAiSnapshotText), then
+    // postEnrichUrl=B — the page navigated while enrichSnapshotFromDom ran.
+    // Without this check, we'd merge AI-snapshot refs (from A) with
+    // DOM-enrichment data (from B) and return/store the inconsistent result.
+    mockGetPageForTargetId.mockResolvedValue(makeMockPage(['https://a.test/', 'https://a.test/', 'https://b.test/']));
+    mockTakeAiSnapshotText.mockResolvedValue('- button "OK" [ref=e1]');
+
+    await expect(
+      snapshotAi({
+        cdpUrl: 'http://localhost:9222',
+        targetId: 't1',
+        options: { waitForHydration: 2000 },
+      }),
+    ).rejects.toBeInstanceOf(NavigationRaceError);
+
+    // And the ref cache must not have been stamped.
+    expect(mockStoreRoleRefsForTarget).not.toHaveBeenCalled();
   });
 
   it('threads ssrfPolicy into getPageForTargetId', async () => {
