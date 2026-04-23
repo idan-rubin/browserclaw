@@ -29,7 +29,7 @@ const MAX_CLICK_DELAY_MS = 5000;
 const DEFAULT_SCROLL_TIMEOUT_MS = 20_000;
 const CHECKABLE_ROLES = new Set(['menuitemcheckbox', 'menuitemradio', 'checkbox', 'radio', 'switch']);
 
-async function awaitActionWithAbort<T>(actionPromise: Promise<T>, abortPromise?: Promise<never>): Promise<T> {
+export async function awaitActionWithAbort<T>(actionPromise: Promise<T>, abortPromise?: Promise<never>): Promise<T> {
   if (!abortPromise) return await actionPromise;
   try {
     return await Promise.race([actionPromise, abortPromise]);
@@ -246,13 +246,17 @@ export async function clickViaPlaywright(opts: {
     };
     if (signal.aborted) {
       disconnect();
-      throw (signal.reason as Error | undefined) ?? new Error('aborted');
+      throw signal.reason ?? new Error('aborted');
     }
     abortListener = () => {
       disconnect();
-      abortReject?.((signal.reason as Error | undefined) ?? new Error('aborted'));
+      abortReject?.(signal.reason ?? new Error('aborted'));
     };
     signal.addEventListener('abort', abortListener, { once: true });
+    if (signal.aborted) {
+      abortListener();
+      throw signal.reason ?? new Error('aborted');
+    }
   }
 
   // Determine if this is a checkable role element so we can verify the click worked.
@@ -272,7 +276,7 @@ export async function clickViaPlaywright(opts: {
         const delayMs = resolveBoundedDelayMs(opts.delayMs, 'click delayMs', MAX_CLICK_DELAY_MS);
         if (delayMs > 0) {
           await awaitActionWithAbort(locator.hover({ timeout, force: opts.force }), abortPromise);
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          await awaitActionWithAbort(new Promise<void>((resolve) => setTimeout(resolve, delayMs)), abortPromise);
         }
 
         // For checkable roles, capture aria-checked before the click.
@@ -332,6 +336,8 @@ export async function clickViaPlaywright(opts: {
     throw toAIFriendlyError(err, label);
   } finally {
     if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+    abortReject = undefined;
+    abortListener = undefined;
   }
 }
 
