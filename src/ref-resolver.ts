@@ -145,9 +145,17 @@ export function resolveBoundedDelayMs(value: number | undefined, label: string, 
 
 // ── Ref Locator ──
 
+const AX_REF_PATTERN = /^ax\d+$/;
+
 export function refLocator(page: Page, ref: string) {
   const normalized = ref.startsWith('@') ? ref.slice(1) : ref.startsWith('ref=') ? ref.slice(4) : ref;
   if (normalized.trim() === '') throw new Error('ref is required');
+
+  if (AX_REF_PATTERN.test(normalized)) {
+    throw new Error(
+      `Ref "${normalized}" comes from a snapshotAria() result and cannot be used with actions. Call page.snapshot() and use the eN refs from that snapshot instead.`,
+    );
+  }
 
   if (/^e\d+$/.test(normalized)) {
     const state = getPageState(page);

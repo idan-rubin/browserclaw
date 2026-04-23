@@ -426,6 +426,12 @@ describe('refLocator', () => {
     expect(() => refLocator(page, 'e999')).toThrow('Unknown ref "e999"');
   });
 
+  it('rejects axN refs from snapshotAria with a helpful error', () => {
+    const page = mockPage();
+    expect(() => refLocator(page, 'ax1')).toThrow(/snapshotAria/);
+    expect(() => refLocator(page, 'ax42')).toThrow(/eN refs/);
+  });
+
   it('returns getByRole locator for known role ref', () => {
     const page = mockPage();
     storeRoleRefsForTarget({
