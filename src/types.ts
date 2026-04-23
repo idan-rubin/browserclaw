@@ -342,6 +342,8 @@ export interface ClickOptions {
   timeoutMs?: number;
   /** Force click even if element is hidden or covered. Dispatches the event regardless of visibility. */
   force?: boolean;
+  /** AbortSignal to cancel the click mid-flight. Aborts tear down the Playwright connection to unblock the in-flight action. */
+  signal?: AbortSignal;
 }
 
 /** Options for type actions. */
