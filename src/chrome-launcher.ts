@@ -873,10 +873,6 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   const localStatePath = path.join(userDataDir, 'Local State');
   const preferencesPath = path.join(userDataDir, 'Default', 'Preferences');
 
-  // Bootstrap run if profile doesn't exist yet — forced headless so the user
-  // does not see a throwaway window flashing open and closed before the real
-  // session. Chrome still initializes the profile databases (Cookies, History,
-  // Web Data, etc.) during this headless run.
   if (!fileExists(localStatePath) || !fileExists(preferencesPath)) {
     const useDetached = process.platform !== 'win32';
     const bootstrap = spawnChrome(useDetached ? { detached: true } : undefined, { forceHeadless: true });
