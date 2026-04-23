@@ -1,5 +1,6 @@
 import type { Page } from 'playwright-core';
 
+import { StaleRefError } from './errors.js';
 import { ensurePageState, getPageState } from './page-utils.js';
 import type { RoleRefs } from './types.js';
 
@@ -188,7 +189,7 @@ export function refLocator(page: Page, ref: string) {
       ).locator(`aria-ref=${normalized}`);
     }
 
-    if (!info) throw new Error(`Unknown ref "${normalized}". Run a new snapshot and use a ref from that snapshot.`);
+    if (!info) throw new StaleRefError(normalized);
 
     const locAny =
       state.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''

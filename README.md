@@ -145,6 +145,7 @@ const browser = await BrowserClaw.launch({
   profileName: 'browserclaw', // profile name in Chrome title bar
   profileColor: '#FF4500', // profile accent color (hex)
   chromeArgs: ['--start-maximized'], // additional Chrome flags
+  isolated: true, // fresh per-run profile, auto-cleaned on stop()
 });
 
 // Connect to an already-running Chrome instance
@@ -194,6 +195,41 @@ await page.title(); // current page title
 browser.url; // CDP endpoint URL
 ```
 
+#### Recovering tab handles
+
+Tab handles can get out of sync if the app rewrites its URL aggressively or replaces the top-level target. Use the recovery primitives to re-bind a `CrawlPage` without having to restart the session:
+
+```typescript
+// Attempts to refresh the cached targetId, optionally falling back to the
+// currently active tab if the original target is gone.
+await page.refreshTargetId();
+await page.refreshTargetId({ fallback: 'active' });
+
+// Rebind the handle to the browser's best-guess active page (prefers
+// non-blank tabs, then the old URL, then the first tab).
+await page.reacquire();
+```
+
+BrowserClaw exports structured errors so workflow code can tell apart the common failure modes:
+
+```typescript
+import {
+  BrowserTabNotFoundError,   // targetId no longer resolves to an open tab
+  StaleRefError,              // ref is not in the current snapshot
+  SnapshotHydrationError,     // snapshot returned without interactive refs
+  NavigationRaceError,        // the page navigated during an operation
+} from 'browserclaw';
+
+try {
+  await page.click('e7');
+} catch (err) {
+  if (err instanceof StaleRefError) {
+    await page.snapshot({ waitForHydration: true });
+    // retry with a fresh ref
+  } else throw err;
+}
+```
+
 Every tab returns a `targetId` — this is the handle you use everywhere:
 
 ```typescript
@@ -224,6 +260,8 @@ const result = await page.snapshot({
   maxDepth: 6, // Limit tree depth
   maxChars: 80000, // Truncate if snapshot exceeds this size
   mode: 'aria', // 'aria' (default) or 'role'
+  waitForHydration: 5000, // retry until refs appear (or ms budget); throws SnapshotHydrationError if empty
+  minInteractiveRefs: 1, // minimum refs required when waitForHydration is set
 });
 
 // Raw ARIA accessibility tree (structured data, not text)

@@ -73,6 +73,11 @@ export interface RunningChrome {
   launchMs: number;
   /** The child process handle */
   proc: ChildProcess;
+  /**
+   * Whether this profile was launched as isolated — set when `LaunchOptions.isolated`
+   * is truthy. `stopChrome()` removes isolated profiles' user-data directories on exit.
+   */
+  isolated?: boolean;
 }
 
 /** Options for launching a new browser instance. */
@@ -97,6 +102,20 @@ export interface LaunchOptions {
   chromeArgs?: string[];
   /** Ignore HTTPS certificate errors (e.g. expired local dev certs). Default: `false` */
   ignoreHTTPSErrors?: boolean;
+  /**
+   * Launch in a fully isolated profile: uses a fresh per-run profile name,
+   * a dedicated user-data directory, and does not share state with other
+   * BrowserClaw sessions. Useful when running multiple concurrent browsers
+   * or when you need to guarantee no login state, cookies, or extensions
+   * leak between runs.
+   *
+   * When `true`, `profileName` and `userDataDir` (if provided) are ignored
+   * in favour of per-run names — pass a string to use a fixed isolated
+   * profile name (still gets its own data dir root under `isolated/`).
+   *
+   * Default: `false` (shares the default `browserclaw` profile).
+   */
+  isolated?: boolean | string;
   /**
    * SSRF policy controlling which URLs navigation is allowed to reach.
    * Defaults to trusted-network mode (private/internal addresses allowed).
@@ -244,6 +263,23 @@ export interface SnapshotOptions {
    * Only applies when `mode: 'role'`.
    */
   refsMode?: 'role' | 'aria';
+  /**
+   * Retry the snapshot until at least one interactive ref is present. Useful
+   * for SPAs where the first snapshot can land on an unhydrated shell.
+   *
+   * When a number is provided it's treated as the maximum wait time in ms.
+   * `true` uses a default budget of 5000ms. Defaults to off (no retries).
+   *
+   * Throws `SnapshotHydrationError` if the budget is exhausted without
+   * producing interactive refs. The final (possibly still-empty) snapshot
+   * is attached as `cause.snapshot` for inspection.
+   */
+  waitForHydration?: boolean | number;
+  /**
+   * Minimum number of interactive refs required to consider the snapshot
+   * hydrated when `waitForHydration` is enabled. Default: 1.
+   */
+  minInteractiveRefs?: number;
 }
 
 /** A node in the raw ARIA accessibility tree. */

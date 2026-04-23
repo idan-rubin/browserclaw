@@ -34,6 +34,7 @@ export {
   withPlaywrightPageCdpSession,
   withPageScopedCdpClient,
   resolvePageByTargetIdOrThrow,
+  resolveActiveTargetId,
   requireRef,
   requireRefOrSelector,
   resolveInteractionTimeoutMs,
@@ -43,6 +44,9 @@ export {
   parseRoleRef,
   BrowserTabNotFoundError,
   BlockedBrowserTargetError,
+  StaleRefError,
+  SnapshotHydrationError,
+  NavigationRaceError,
 } from './connection.js';
 export { pressAndHoldViaCdp } from './actions/interaction.js';
 export type { FrameEvalResult } from './actions/evaluate.js';

@@ -11,6 +11,7 @@ import {
   isLoopbackHost,
   hasProxyEnvConfigured,
 } from './chrome-launcher.js';
+import { BrowserTabNotFoundError } from './errors.js';
 import { ensurePageState, observeBrowser, setDialogHandlerOnPage } from './page-utils.js';
 import { clearRoleRefsForCdpUrl, normalizeCdpUrl } from './ref-resolver.js';
 import { assertCdpEndpointAllowed } from './security.js';
@@ -45,12 +46,7 @@ export {
 
 // ── Errors ──
 
-export class BrowserTabNotFoundError extends Error {
-  constructor(message = 'Tab not found') {
-    super(message);
-    this.name = 'BrowserTabNotFoundError';
-  }
-}
+export { BrowserTabNotFoundError, StaleRefError, SnapshotHydrationError, NavigationRaceError } from './errors.js';
 
 /**
  * Page extended with Playwright's AI-snapshot APIs.
@@ -861,4 +857,59 @@ export async function getRestoredPageForTarget(opts: {
   const page = await getPageForTargetId(opts);
   ensurePageState(page);
   return page;
+}
+
+function isBlankUrl(url: string): boolean {
+  return url === '' || url === 'about:blank' || url.startsWith('chrome://new-tab-page') || url === 'chrome://newtab/';
+}
+
+/**
+ * Best-effort resolution of the currently active (visible) page's targetId.
+ *
+ * Preference order:
+ *  1. The page matching `preferTargetId` when still accessible.
+ *  2. A page whose URL matches `preferUrl` exactly (helpful after reloads).
+ *  3. The first non-blank accessible page.
+ *  4. The first accessible page (even if blank).
+ *
+ * Returns null when no accessible pages remain.
+ */
+export async function resolveActiveTargetId(
+  cdpUrl: string,
+  opts?: { preferTargetId?: string; preferUrl?: string; ssrfPolicy?: SsrfPolicy },
+): Promise<string | null> {
+  const { browser } = await connectBrowser(cdpUrl, undefined, opts?.ssrfPolicy);
+  const pages = getAllPages(browser);
+  if (!pages.length) return null;
+  const { accessible } = await partitionAccessiblePages({ cdpUrl, pages });
+  if (!accessible.length) return null;
+
+  const preferTargetId = opts?.preferTargetId?.trim() ?? '';
+  const preferUrl = opts?.preferUrl?.trim() ?? '';
+
+  if (preferTargetId !== '') {
+    for (const page of accessible) {
+      const tid = await pageTargetId(page).catch(() => null);
+      if (tid === preferTargetId) return tid;
+    }
+  }
+
+  if (preferUrl !== '') {
+    for (const page of accessible) {
+      if (page.url() === preferUrl) {
+        const tid = await pageTargetId(page).catch(() => null);
+        if (tid !== null && tid !== '') return tid;
+      }
+    }
+  }
+
+  for (const page of accessible) {
+    if (!isBlankUrl(page.url())) {
+      const tid = await pageTargetId(page).catch(() => null);
+      if (tid !== null && tid !== '') return tid;
+    }
+  }
+
+  const tid = await pageTargetId(accessible[0]).catch(() => null);
+  return tid !== null && tid !== '' ? tid : null;
 }

@@ -60,10 +60,11 @@ import {
   getPageForTargetId,
   ensurePageState,
   pageTargetId,
-  getAllPages,
   normalizeTimeoutMs,
   setDialogHandler,
   getRestoredPageForTarget,
+  BrowserTabNotFoundError,
+  resolveActiveTargetId,
 } from './connection.js';
 import { assertCdpEndpointAllowed } from './security.js';
 import { snapshotAi } from './snapshot/ai-snapshot.js';
@@ -151,11 +152,44 @@ export class CrawlPage {
   /**
    * Refresh the target ID by re-resolving the page from the browser.
    * Useful after reconnection when the old target ID may be stale.
+   *
+   * If the current target is gone (tab closed or replaced after a hard
+   * redesign), falls back to the browser's best guess for the active page
+   * when `fallback: 'active'` is set. By default, throws
+   * `BrowserTabNotFoundError` if the old target is gone.
    */
-  async refreshTargetId(): Promise<string> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
-    const newId = await pageTargetId(page);
-    if (newId !== null && newId !== '') this._targetId = newId;
+  async refreshTargetId(opts?: { fallback?: 'active' }): Promise<string> {
+    try {
+      const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+      const newId = await pageTargetId(page);
+      if (newId !== null && newId !== '') this._targetId = newId;
+      return this._targetId;
+    } catch (err) {
+      if (opts?.fallback !== 'active' || !(err instanceof BrowserTabNotFoundError)) throw err;
+      const recovered = await resolveActiveTargetId(this.cdpUrl);
+      if (recovered === null)
+        throw new BrowserTabNotFoundError(
+          `Tab ${this._targetId} is gone and no fallback page is available. Call browser.tabs() or browser.open(url).`,
+        );
+      this._targetId = recovered;
+      return this._targetId;
+    }
+  }
+
+  /**
+   * Re-bind this handle to the browser's currently active page.
+   *
+   * Primitive for recovering from lost tab handles after navigation or
+   * aggressive re-renders. Prefers non-blank pages, then pages matching
+   * the old URL, finally falls back to the first accessible tab.
+   *
+   * @returns The (possibly new) target ID
+   */
+  async reacquire(): Promise<string> {
+    const recovered = await resolveActiveTargetId(this.cdpUrl, { preferTargetId: this._targetId });
+    if (recovered === null)
+      throw new BrowserTabNotFoundError('No pages available to reacquire. Use browser.open(url) to create a tab.');
+    this._targetId = recovered;
     return this._targetId;
   }
 
@@ -211,10 +245,13 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       maxChars: opts?.maxChars,
+      timeoutMs: opts?.timeoutMs,
       options: {
         interactive: opts?.interactive,
         compact: opts?.compact,
         maxDepth: opts?.maxDepth,
+        waitForHydration: opts?.waitForHydration,
+        minInteractiveRefs: opts?.minInteractiveRefs,
       },
       ssrfPolicy: this.ssrfPolicy,
     });
@@ -1805,19 +1842,19 @@ export class BrowserClaw {
   /**
    * Get a CrawlPage handle for the currently active tab.
    *
-   * @returns CrawlPage for the first/active page
+   * Prefers tabs with real content over `about:blank` when multiple exist.
+   *
+   * @returns CrawlPage for the active page
    */
   async currentPage(): Promise<CrawlPage> {
     const connectT0 = Date.now();
-    const { browser } = await connectBrowser(this.cdpUrl);
+    await connectBrowser(this.cdpUrl);
     if (this._telemetry.connectMs === undefined) {
       this._telemetry.connectMs = Date.now() - connectT0;
       this._telemetry.timestamps.connectedAt = new Date().toISOString();
     }
-    const pages = getAllPages(browser);
-    if (!pages.length) throw new Error('No pages available. Use browser.open(url) to create a tab.');
-    const tid = await pageTargetId(pages[0]).catch(() => null);
-    if (tid === null || tid === '') throw new Error('Failed to get targetId for the current page.');
+    const tid = await resolveActiveTargetId(this.cdpUrl, { ssrfPolicy: this.ssrfPolicy });
+    if (tid === null) throw new BrowserTabNotFoundError('No pages available. Use browser.open(url) to create a tab.');
     return new CrawlPage(this.cdpUrl, tid, this.ssrfPolicy);
   }
 
