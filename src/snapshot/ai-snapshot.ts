@@ -78,20 +78,22 @@ export async function snapshotAi(opts: {
       truncated = true;
     }
 
+    // When the caller asked for hydration and the document changed between
+    // the initial resolution and the snapshot we just took, the snapshot is
+    // bound to a different document than the one they asked about. Surface
+    // that as NavigationRaceError and do NOT stamp the per-target ref cache
+    // — the caller's expected recovery is re-snapshot, and leaving refs
+    // bound to the discarded document would poison a naive retry.
+    if (hydrationBudgetMs > 0 && snapshotUrl !== initialUrl) {
+      throw new NavigationRaceError({ fromUrl: initialUrl, toUrl: snapshotUrl });
+    }
+
     const built = buildRoleSnapshotFromAiSnapshot(snapshot, opts.options);
     const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs));
     const merged = mergeSnapshotWithEnrichment(built, enriched);
-
-    storeRoleRefsForTarget({
-      page,
-      cdpUrl: opts.cdpUrl,
-      targetId: opts.targetId,
-      refs: merged.refs,
-      mode: 'aria',
-    });
-
     const stats = getRoleSnapshotStats(merged.snapshot, merged.refs);
-    lastResult = {
+
+    const result: SnapshotResult = {
       snapshot: merged.snapshot,
       refs: merged.refs,
       stats,
@@ -103,20 +105,25 @@ export async function snapshotAi(opts: {
         capturedAt: new Date().toISOString(),
       },
     };
+    lastResult = result;
 
     const ready = stats.interactive >= minInteractive;
+    const finished = hydrationBudgetMs === 0 || ready;
 
-    // When the caller asked for hydration and the document changed between
-    // the initial resolution and the snapshot we just took, the snapshot is
-    // bound to a different document than the one they asked about. Surface
-    // that as NavigationRaceError instead of silently returning refs for
-    // the post-navigation page with stale metadata.
-    if (hydrationBudgetMs > 0 && snapshotUrl !== initialUrl) {
-      throw new NavigationRaceError({ fromUrl: initialUrl, toUrl: snapshotUrl });
+    if (finished) {
+      // Only stamp the per-target ref cache when we're actually returning
+      // this result. On retry iterations we leave the previous cache in
+      // place so a racing caller doesn't see intermediate empty snapshots.
+      storeRoleRefsForTarget({
+        page,
+        cdpUrl: opts.cdpUrl,
+        targetId: opts.targetId,
+        refs: merged.refs,
+        mode: 'aria',
+      });
+      return result;
     }
 
-    if (hydrationBudgetMs === 0) return lastResult;
-    if (ready) return lastResult;
     if (Date.now() >= deadline) break;
 
     const remaining = deadline - Date.now();

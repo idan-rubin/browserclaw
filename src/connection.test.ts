@@ -15,6 +15,7 @@ import {
   withNoProxyForCdpUrl,
   getAllPages,
   takeAiSnapshotText,
+  pickActiveTargetId,
 } from './connection.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -448,5 +449,98 @@ describe('takeAiSnapshotText', () => {
       _snapshotForAI: () => Promise.resolve({}),
     } as unknown as Page;
     await expect(takeAiSnapshotText(mockPage, 5000)).resolves.toBe('');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// pickActiveTargetId
+// ─────────────────────────────────────────────────────────────────────────────
+
+function pageWithUrl(url: string): Page {
+  return { url: () => url } as unknown as Page;
+}
+
+describe('pickActiveTargetId', () => {
+  it('returns the page matching preferTargetId', async () => {
+    const accessible = [pageWithUrl('https://a.test/'), pageWithUrl('https://b.test/')];
+    const tids = new Map<Page, string>([
+      [accessible[0], 't-a'],
+      [accessible[1], 't-b'],
+    ]);
+    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: 't-b', preferUrl: '', tidOf });
+    expect(result).toBe('t-b');
+  });
+
+  it('returns the page matching preferUrl when no targetId matches', async () => {
+    const accessible = [pageWithUrl('https://a.test/'), pageWithUrl('https://b.test/')];
+    const tids = new Map<Page, string>([
+      [accessible[0], 't-a'],
+      [accessible[1], 't-b'],
+    ]);
+    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
+
+    const result = await pickActiveTargetId({
+      accessible,
+      preferTargetId: 't-gone',
+      preferUrl: 'https://b.test/',
+      tidOf,
+    });
+    expect(result).toBe('t-b');
+  });
+
+  it('prefers non-blank pages over about:blank when no prefer-hints match', async () => {
+    const accessible = [pageWithUrl('about:blank'), pageWithUrl('https://real.test/')];
+    const tids = new Map<Page, string>([
+      [accessible[0], 't-blank'],
+      [accessible[1], 't-real'],
+    ]);
+    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBe('t-real');
+  });
+
+  it('iterates the final fallback when the first accessible page has no targetId', async () => {
+    // All pages blank, first one's pageTargetId returns null (transient CDP
+    // failure) — we must still return the second page's tid instead of bailing.
+    const accessible = [pageWithUrl('about:blank'), pageWithUrl('about:blank')];
+    const tids = new Map<Page, string | null>([
+      [accessible[0], null],
+      [accessible[1], 't-recovered'],
+    ]);
+    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBe('t-recovered');
+  });
+
+  it('iterates the non-blank branch when the first non-blank page has no targetId', async () => {
+    const accessible = [pageWithUrl('https://a.test/'), pageWithUrl('https://b.test/')];
+    const tids = new Map<Page, string | null>([
+      [accessible[0], null],
+      [accessible[1], 't-b'],
+    ]);
+    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBe('t-b');
+  });
+
+  it('returns null only when no accessible page has a usable targetId', async () => {
+    const accessible = [pageWithUrl('about:blank'), pageWithUrl('about:blank')];
+    const tidOf = () => Promise.resolve(null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBeNull();
+  });
+
+  it('skips pages whose tidOf rejects without failing the whole resolve', async () => {
+    const accessible = [pageWithUrl('https://a.test/'), pageWithUrl('https://b.test/')];
+    const tidOf = (page: Page) => (page === accessible[0] ? Promise.resolve(null) : Promise.resolve('t-b'));
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBe('t-b');
   });
 });

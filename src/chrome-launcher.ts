@@ -547,17 +547,26 @@ function resolveUserDataDir(profileName: string): string {
 
 /**
  * Build a per-run isolated profile name + user-data directory. Isolated
- * profiles live under `isolated/<name>` so they are easy to identify and
- * clean up, and never collide with the shared default profile.
+ * profiles live under `isolated/<label>-<suffix>` so they are easy to
+ * identify and clean up, and never collide with each other or with the
+ * shared default profile.
+ *
+ * A run-scoped random suffix is always appended — even when the caller
+ * passes a label string — so that concurrent launches cannot share the
+ * same user-data directory (which would fail on Chrome's SingletonLock).
+ *
+ * @internal Exported for testing.
  */
-function resolveIsolatedProfile(value: boolean | string): { profileName: string; userDataDir: string } {
-  const namePart =
+export function resolveIsolatedProfile(value: boolean | string): { profileName: string; userDataDir: string } {
+  const label =
     typeof value === 'string' && value.trim() !== ''
       ? value
           .trim()
           .replace(/[^A-Za-z0-9_-]/g, '_')
-          .slice(0, 48)
-      : `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          .slice(0, 32)
+      : 'run';
+  const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const namePart = `${label}-${suffix}`;
   const profileName = `browserclaw-${namePart}`;
   const root = os.tmpdir();
   const userDataDir = path.join(root, 'browserclaw', 'isolated', namePart);

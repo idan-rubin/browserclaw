@@ -897,12 +897,31 @@ export async function resolveActiveTargetId(
   const { accessible } = await partitionAccessiblePages({ cdpUrl, pages });
   if (!accessible.length) return null;
 
-  const preferTargetId = opts?.preferTargetId?.trim() ?? '';
-  const preferUrl = opts?.preferUrl?.trim() ?? '';
+  return pickActiveTargetId({
+    accessible,
+    preferTargetId: opts?.preferTargetId?.trim() ?? '',
+    preferUrl: opts?.preferUrl?.trim() ?? '',
+    tidOf: (page) => pageTargetId(page).catch(() => null),
+  });
+}
+
+/**
+ * Pure selection logic for `resolveActiveTargetId`. Extracted so it can be
+ * unit-tested without a live CDP connection.
+ *
+ * @internal Exported for testing.
+ */
+export async function pickActiveTargetId(opts: {
+  accessible: Page[];
+  preferTargetId: string;
+  preferUrl: string;
+  tidOf: (page: Page) => Promise<string | null>;
+}): Promise<string | null> {
+  const { accessible, preferTargetId, preferUrl, tidOf } = opts;
 
   if (preferTargetId !== '') {
     for (const page of accessible) {
-      const tid = await pageTargetId(page).catch(() => null);
+      const tid = await tidOf(page);
       if (tid === preferTargetId) return tid;
     }
   }
@@ -910,7 +929,7 @@ export async function resolveActiveTargetId(
   if (preferUrl !== '') {
     for (const page of accessible) {
       if (page.url() === preferUrl) {
-        const tid = await pageTargetId(page).catch(() => null);
+        const tid = await tidOf(page);
         if (tid !== null && tid !== '') return tid;
       }
     }
@@ -918,11 +937,18 @@ export async function resolveActiveTargetId(
 
   for (const page of accessible) {
     if (!isBlankUrl(page.url())) {
-      const tid = await pageTargetId(page).catch(() => null);
+      const tid = await tidOf(page);
       if (tid !== null && tid !== '') return tid;
     }
   }
 
-  const tid = await pageTargetId(accessible[0]).catch(() => null);
-  return tid !== null && tid !== '' ? tid : null;
+  // Final fallback: any accessible page whose targetId resolves. We iterate
+  // rather than only asking `accessible[0]` because a transient pageTargetId
+  // failure on the first page must not mask a usable later page.
+  for (const page of accessible) {
+    const tid = await tidOf(page);
+    if (tid !== null && tid !== '') return tid;
+  }
+
+  return null;
 }

@@ -136,4 +136,40 @@ describe('snapshotAi hydration retry', () => {
 
     expect(result.contentMeta?.sourceUrl).toBe('https://b.test/');
   });
+
+  it('does not poison the per-target ref cache when NavigationRaceError is thrown', async () => {
+    // If we threw a race error but still called storeRoleRefsForTarget, a caller
+    // that caught and retried without re-snapshotting could target refs bound
+    // to a discarded document. The store must only happen on success.
+    mockGetPageForTargetId.mockResolvedValue(makeMockPage(['https://a.test/', 'https://b.test/']));
+    mockTakeAiSnapshotText.mockResolvedValue('- button "OK" [ref=e1]');
+
+    await expect(
+      snapshotAi({
+        cdpUrl: 'http://localhost:9222',
+        targetId: 't1',
+        options: { waitForHydration: 2000 },
+      }),
+    ).rejects.toBeInstanceOf(NavigationRaceError);
+
+    expect(mockStoreRoleRefsForTarget).not.toHaveBeenCalled();
+  });
+
+  it('does not store refs on retry iterations, only on the returned snapshot', async () => {
+    // Two empty iterations then a ready one. Previously we'd call store 3 times
+    // (once per iteration); now we only call it on the final success.
+    mockGetPageForTargetId.mockResolvedValue(makeMockPage(['https://a.test/']));
+    mockTakeAiSnapshotText
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('- button "OK" [ref=e1]');
+
+    await snapshotAi({
+      cdpUrl: 'http://localhost:9222',
+      targetId: 't1',
+      options: { waitForHydration: 2000 },
+    });
+
+    expect(mockStoreRoleRefsForTarget).toHaveBeenCalledTimes(1);
+  });
 });

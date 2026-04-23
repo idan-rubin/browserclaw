@@ -103,15 +103,18 @@ export interface LaunchOptions {
   /** Ignore HTTPS certificate errors (e.g. expired local dev certs). Default: `false` */
   ignoreHTTPSErrors?: boolean;
   /**
-   * Launch in a fully isolated profile: uses a fresh per-run profile name,
+   * Launch in a fully isolated profile: uses a unique per-run profile name,
    * a dedicated user-data directory, and does not share state with other
    * BrowserClaw sessions. Useful when running multiple concurrent browsers
    * or when you need to guarantee no login state, cookies, or extensions
    * leak between runs.
    *
-   * When `true`, `profileName` and `userDataDir` (if provided) are ignored
-   * in favour of per-run names — pass a string to use a fixed isolated
-   * profile name (still gets its own data dir root under `isolated/`).
+   * A run-scoped random suffix is always appended to guarantee that two
+   * concurrent launches never share a user-data directory. Passing a string
+   * acts as a label prefix for easier identification in
+   * `$TMPDIR/browserclaw/isolated/` — it does NOT make the profile stable
+   * across runs. `profileName` and `userDataDir` are ignored when this is
+   * set.
    *
    * Default: `false` (shares the default `browserclaw` profile).
    */
