@@ -188,6 +188,7 @@ export async function executeSingleAction(
         targetId: effectiveTargetId,
         width: action.width,
         height: action.height,
+        ssrfPolicy,
       });
       break;
     case 'wait':
@@ -222,6 +223,7 @@ export async function executeSingleAction(
       await closePageViaPlaywright({
         cdpUrl,
         targetId: effectiveTargetId,
+        ssrfPolicy,
       });
       break;
     case 'batch':

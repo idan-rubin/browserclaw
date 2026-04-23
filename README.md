@@ -181,7 +181,7 @@ Under strict mode browserclaw resolves DNS up front, pins the result, validates 
 
 ```typescript
 const page = await browser.open('https://demo.playwright.dev/todomvc');
-const current = await browser.currentPage(); // get active tab
+const current = await browser.currentPage(); // get first usable (non-blank) tab
 const tabs = await browser.tabs(); // list all tabs
 const handle = browser.page(tabs[0].targetId); // wrap existing tab
 const appPage = await browser.waitForTab({ urlContains: 'app-web' });

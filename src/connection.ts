@@ -407,8 +407,13 @@ export async function setDialogHandler(opts: {
   cdpUrl: string;
   targetId?: string;
   handler?: DialogHandler;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   setDialogHandlerOnPage(page, opts.handler);
 }
 

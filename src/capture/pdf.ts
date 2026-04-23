@@ -7,7 +7,11 @@ export async function pdfViaPlaywright(opts: {
   targetId?: string;
   ssrfPolicy?: SsrfPolicy;
 }): Promise<{ buffer: Buffer }> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   ensurePageState(page);
 
   if (opts.ssrfPolicy) {

@@ -154,9 +154,11 @@ export class CrawlPage {
    * Useful after reconnection when the old target ID may be stale.
    *
    * If the current target is gone (tab closed or replaced after a hard
-   * redesign), falls back to the browser's best guess for the active page
-   * when `fallback: 'active'` is set. By default, throws
-   * `BrowserTabNotFoundError` if the old target is gone.
+   * redesign), falls back to the best-effort page resolver (first non-blank
+   * accessible tab, then any accessible tab) when `fallback: 'active'` is
+   * set. By default, throws `BrowserTabNotFoundError` if the old target is
+   * gone. The `'active'` name is historical — it does NOT query Chrome's
+   * real focused-tab state.
    */
   async refreshTargetId(opts?: { fallback?: 'active' }): Promise<string> {
     try {
@@ -715,6 +717,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       handler: handler ?? undefined,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -797,7 +800,11 @@ export class CrawlPage {
    * Get the current URL of the page.
    */
   async url(): Promise<string> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const page = await getPageForTargetId({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     return page.url();
   }
 
@@ -805,7 +812,11 @@ export class CrawlPage {
    * Get the page title.
    */
   async title(): Promise<string> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const page = await getPageForTargetId({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     return page.title();
   }
 
@@ -832,7 +843,11 @@ export class CrawlPage {
    * @param opts - Timeout options
    */
   async reload(opts?: { timeoutMs?: number }): Promise<void> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const page = await getPageForTargetId({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     ensurePageState(page);
     await page.reload({ timeout: normalizeTimeoutMs(opts?.timeoutMs, 20000) });
   }
@@ -843,7 +858,11 @@ export class CrawlPage {
    * @param opts - Timeout options
    */
   async goBack(opts?: { timeoutMs?: number }): Promise<void> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const page = await getPageForTargetId({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     ensurePageState(page);
     await page.goBack({ timeout: normalizeTimeoutMs(opts?.timeoutMs, 20000) });
   }
@@ -854,7 +873,11 @@ export class CrawlPage {
    * @param opts - Timeout options
    */
   async goForward(opts?: { timeoutMs?: number }): Promise<void> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const page = await getPageForTargetId({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     ensurePageState(page);
     await page.goForward({ timeout: normalizeTimeoutMs(opts?.timeoutMs, 20000) });
   }
@@ -1176,6 +1199,7 @@ export class CrawlPage {
       targetId: this._targetId,
       width,
       height,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1531,7 +1555,11 @@ export class CrawlPage {
   async isAuthenticated(rules: AuthCheckRule[]): Promise<AuthCheckResult> {
     if (!rules.length) return { authenticated: true, checks: [] };
 
-    const page = await getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const page = await getRestoredPageForTarget({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     const checks: AuthCheckDetail[] = [];
 
     // Pre-fetch body text once if any rule needs it, to avoid redundant evaluations
@@ -1672,7 +1700,11 @@ export class CrawlPage {
    * ```
    */
   async playwrightPage(): Promise<Page> {
-    return getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    return getRestoredPageForTarget({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
   }
 
   /**
@@ -1696,7 +1728,11 @@ export class CrawlPage {
    * ```
    */
   async locator(selector: string): Promise<Locator> {
-    const pwPage = await getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const pwPage = await getRestoredPageForTarget({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     return pwPage.locator(selector);
   }
 }

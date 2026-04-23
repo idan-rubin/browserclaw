@@ -33,7 +33,11 @@ export async function snapshotRole(opts: {
   };
   ssrfPolicy?: SsrfPolicy;
 }): Promise<SnapshotResult> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   ensurePageState(page);
 
   if (opts.ssrfPolicy) {
@@ -145,7 +149,11 @@ export async function snapshotAria(opts: {
   ssrfPolicy?: SsrfPolicy;
 }): Promise<AriaSnapshotResult> {
   const limit = Math.max(1, Math.min(2000, Math.floor(opts.limit ?? 500)));
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   ensurePageState(page);
 
   if (opts.ssrfPolicy) {
