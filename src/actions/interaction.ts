@@ -235,6 +235,10 @@ export async function clickViaPlaywright(opts: {
     abortPromise.catch(() => {
       /* consumed via awaitActionWithAbort */
     });
+    // Unlike JS evaluation (where Runtime.terminateExecution can kill a stuck eval
+    // without closing the browser), Playwright click/hover is orchestrated through
+    // the Playwright protocol and cannot be cancelled via a targeted CDP command.
+    // Tearing down the full connection is the only way to unblock the in-flight action.
     const disconnect = () => {
       forceDisconnectPlaywrightConnection({
         cdpUrl: opts.cdpUrl,
@@ -282,7 +286,10 @@ export async function clickViaPlaywright(opts: {
         // For checkable roles, capture aria-checked before the click.
         let ariaCheckedBefore: string | null | undefined;
         if (checkableRole && opts.doubleClick !== true) {
-          ariaCheckedBefore = await locator.getAttribute('aria-checked', { timeout }).catch(() => undefined);
+          ariaCheckedBefore = await awaitActionWithAbort(
+            locator.getAttribute('aria-checked', { timeout }).catch(() => undefined),
+            abortPromise,
+          );
         }
 
         if (opts.doubleClick === true) {
