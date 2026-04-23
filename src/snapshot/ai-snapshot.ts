@@ -6,7 +6,7 @@ import {
   normalizeTimeoutMs,
   takeAiSnapshotText,
 } from '../connection.js';
-import { SnapshotHydrationError } from '../errors.js';
+import { NavigationRaceError, SnapshotHydrationError } from '../errors.js';
 import type { SnapshotResult, SnapshotOptions, SsrfPolicy } from '../types.js';
 
 import { enrichSnapshotFromDom, mergeSnapshotWithEnrichment, nextRefCounter } from './dom-enrichment.js';
@@ -103,6 +103,14 @@ export async function snapshotAi(opts: {
 
     const remaining = deadline - Date.now();
     await new Promise((r) => setTimeout(r, Math.min(HYDRATION_POLL_INTERVAL_MS, Math.max(50, remaining))));
+
+    // Detect a navigation race: if the page URL changed between attempts the
+    // refs we collected are bound to the old document, and continuing to wait
+    // for hydration would mask a real workflow problem.
+    const currentUrl = page.url();
+    if (currentUrl !== sourceUrl) {
+      throw new NavigationRaceError({ fromUrl: sourceUrl, toUrl: currentUrl });
+    }
   }
 
   throw Object.assign(new SnapshotHydrationError({ attempts, elapsedMs: Date.now() - started }), {

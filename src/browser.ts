@@ -160,13 +160,17 @@ export class CrawlPage {
    */
   async refreshTargetId(opts?: { fallback?: 'active' }): Promise<string> {
     try {
-      const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+      const page = await getPageForTargetId({
+        cdpUrl: this.cdpUrl,
+        targetId: this._targetId,
+        ssrfPolicy: this.ssrfPolicy,
+      });
       const newId = await pageTargetId(page);
       if (newId !== null && newId !== '') this._targetId = newId;
       return this._targetId;
     } catch (err) {
       if (opts?.fallback !== 'active' || !(err instanceof BrowserTabNotFoundError)) throw err;
-      const recovered = await resolveActiveTargetId(this.cdpUrl);
+      const recovered = await resolveActiveTargetId(this.cdpUrl, { ssrfPolicy: this.ssrfPolicy });
       if (recovered === null)
         throw new BrowserTabNotFoundError(
           `Tab ${this._targetId} is gone and no fallback page is available. Call browser.tabs() or browser.open(url).`,
@@ -180,13 +184,32 @@ export class CrawlPage {
    * Re-bind this handle to the browser's currently active page.
    *
    * Primitive for recovering from lost tab handles after navigation or
-   * aggressive re-renders. Prefers non-blank pages, then pages matching
-   * the old URL, finally falls back to the first accessible tab.
+   * aggressive re-renders. Captures the page's current URL (when still
+   * reachable) so the resolver can prefer the same page after a reload,
+   * then falls back to the original targetId, then a non-blank tab,
+   * then the first accessible tab.
    *
    * @returns The (possibly new) target ID
    */
   async reacquire(): Promise<string> {
-    const recovered = await resolveActiveTargetId(this.cdpUrl, { preferTargetId: this._targetId });
+    let preferUrl: string | undefined;
+    try {
+      const page = await getPageForTargetId({
+        cdpUrl: this.cdpUrl,
+        targetId: this._targetId,
+        ssrfPolicy: this.ssrfPolicy,
+      });
+      const url = page.url();
+      if (url !== '' && url !== 'about:blank') preferUrl = url;
+    } catch (err) {
+      if (!(err instanceof BrowserTabNotFoundError)) throw err;
+      // Old target is gone — recovery proceeds with whatever the resolver finds.
+    }
+    const recovered = await resolveActiveTargetId(this.cdpUrl, {
+      preferTargetId: this._targetId,
+      preferUrl,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     if (recovered === null)
       throw new BrowserTabNotFoundError('No pages available to reacquire. Use browser.open(url) to create a tab.');
     this._targetId = recovered;
