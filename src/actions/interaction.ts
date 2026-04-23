@@ -15,6 +15,7 @@ import {
   getRestoredPageForTarget,
   parseRoleRef,
   withPageScopedCdpClient,
+  forceDisconnectPlaywrightConnection,
 } from '../connection.js';
 import { resolveStrictExistingPathsWithinRoot, DEFAULT_UPLOAD_DIR } from '../security.js';
 import type { FormField, SsrfPolicy } from '../types.js';
@@ -27,6 +28,18 @@ type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
 const MAX_CLICK_DELAY_MS = 5000;
 const DEFAULT_SCROLL_TIMEOUT_MS = 20_000;
 const CHECKABLE_ROLES = new Set(['menuitemcheckbox', 'menuitemradio', 'checkbox', 'radio', 'switch']);
+
+async function awaitActionWithAbort<T>(actionPromise: Promise<T>, abortPromise?: Promise<never>): Promise<T> {
+  if (!abortPromise) return await actionPromise;
+  try {
+    return await Promise.race([actionPromise, abortPromise]);
+  } catch (err) {
+    actionPromise.catch(() => {
+      /* swallow — surface the abort cause */
+    });
+    throw err;
+  }
+}
 
 /**
  * Fallback for setChecked on hidden styled inputs (opacity:0, position:absolute).
@@ -202,6 +215,7 @@ export async function clickViaPlaywright(opts: {
   timeoutMs?: number;
   force?: boolean;
   ssrfPolicy?: SsrfPolicy;
+  signal?: AbortSignal;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   const page = await getRestoredPageForTarget(opts);
@@ -209,6 +223,37 @@ export async function clickViaPlaywright(opts: {
   const locator = resolveLocator(page, resolved);
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
   const previousUrl = page.url();
+
+  const signal = opts.signal;
+  let abortListener: (() => void) | undefined;
+  let abortReject: ((reason: unknown) => void) | undefined;
+  let abortPromise: Promise<never> | undefined;
+  if (signal) {
+    abortPromise = new Promise<never>((_, reject) => {
+      abortReject = reject;
+    });
+    abortPromise.catch(() => {
+      /* consumed via awaitActionWithAbort */
+    });
+    const disconnect = () => {
+      forceDisconnectPlaywrightConnection({
+        cdpUrl: opts.cdpUrl,
+        targetId: opts.targetId,
+        reason: 'click aborted',
+      }).catch(() => {
+        /* best-effort disconnect */
+      });
+    };
+    if (signal.aborted) {
+      disconnect();
+      throw (signal.reason as Error | undefined) ?? new Error('aborted');
+    }
+    abortListener = () => {
+      disconnect();
+      abortReject?.((signal.reason as Error | undefined) ?? new Error('aborted'));
+    };
+    signal.addEventListener('abort', abortListener, { once: true });
+  }
 
   // Determine if this is a checkable role element so we can verify the click worked.
   let checkableRole = false;
@@ -226,7 +271,7 @@ export async function clickViaPlaywright(opts: {
       action: async () => {
         const delayMs = resolveBoundedDelayMs(opts.delayMs, 'click delayMs', MAX_CLICK_DELAY_MS);
         if (delayMs > 0) {
-          await locator.hover({ timeout, force: opts.force });
+          await awaitActionWithAbort(locator.hover({ timeout, force: opts.force }), abortPromise);
           await new Promise((resolve) => setTimeout(resolve, delayMs));
         }
 
@@ -237,9 +282,15 @@ export async function clickViaPlaywright(opts: {
         }
 
         if (opts.doubleClick === true) {
-          await locator.dblclick({ timeout, button: opts.button, modifiers: opts.modifiers, force: opts.force });
+          await awaitActionWithAbort(
+            locator.dblclick({ timeout, button: opts.button, modifiers: opts.modifiers, force: opts.force }),
+            abortPromise,
+          );
         } else {
-          await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers, force: opts.force });
+          await awaitActionWithAbort(
+            locator.click({ timeout, button: opts.button, modifiers: opts.modifiers, force: opts.force }),
+            abortPromise,
+          );
         }
 
         // If this is a checkable role and aria-checked didn't change, fall back to JS click.
@@ -279,6 +330,8 @@ export async function clickViaPlaywright(opts: {
     });
   } catch (err) {
     throw toAIFriendlyError(err, label);
+  } finally {
+    if (signal && abortListener) signal.removeEventListener('abort', abortListener);
   }
 }
 
