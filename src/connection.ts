@@ -11,6 +11,7 @@ import {
   isLoopbackHost,
   hasProxyEnvConfigured,
 } from './chrome-launcher.js';
+import { BrowserTabNotFoundError } from './errors.js';
 import { ensurePageState, observeBrowser, setDialogHandlerOnPage } from './page-utils.js';
 import { clearRoleRefsForCdpUrl, normalizeCdpUrl } from './ref-resolver.js';
 import { assertCdpEndpointAllowed } from './security.js';
@@ -45,12 +46,7 @@ export {
 
 // ── Errors ──
 
-export class BrowserTabNotFoundError extends Error {
-  constructor(message = 'Tab not found') {
-    super(message);
-    this.name = 'BrowserTabNotFoundError';
-  }
-}
+export { BrowserTabNotFoundError, StaleRefError, SnapshotHydrationError, NavigationRaceError } from './errors.js';
 
 /**
  * Page extended with Playwright's AI-snapshot APIs.
@@ -411,8 +407,13 @@ export async function setDialogHandler(opts: {
   cdpUrl: string;
   targetId?: string;
   handler?: DialogHandler;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   setDialogHandlerOnPage(page, opts.handler);
 }
 
@@ -861,4 +862,93 @@ export async function getRestoredPageForTarget(opts: {
   const page = await getPageForTargetId(opts);
   ensurePageState(page);
   return page;
+}
+
+function isBlankUrl(url: string): boolean {
+  return url === '' || url === 'about:blank' || url.startsWith('chrome://new-tab-page') || url === 'chrome://newtab/';
+}
+
+/**
+ * Best-effort heuristic resolver for a usable page targetId.
+ *
+ * This does NOT query Chrome's actual focused/visible tab — CDP does not
+ * expose a simple "which tab is foregrounded" signal, so the resolver
+ * picks the most plausible candidate by this preference order:
+ *
+ *  1. The page matching `preferTargetId` when still accessible.
+ *  2. A page whose URL matches `preferUrl` exactly (helpful after reloads).
+ *  3. The first non-blank accessible page (skips `about:blank` placeholders).
+ *  4. The first accessible page (even if blank).
+ *
+ * In multi-tab sessions without any prefer-hints, the first non-blank tab
+ * "wins" regardless of which tab the user is actually looking at. Callers
+ * that need true active-tab semantics should track `targetId` explicitly
+ * via `browser.open()` / `browser.waitForTab()` instead.
+ *
+ * Returns null when no accessible pages remain.
+ */
+export async function resolveActiveTargetId(
+  cdpUrl: string,
+  opts?: { preferTargetId?: string; preferUrl?: string; ssrfPolicy?: SsrfPolicy },
+): Promise<string | null> {
+  const { browser } = await connectBrowser(cdpUrl, undefined, opts?.ssrfPolicy);
+  const pages = getAllPages(browser);
+  if (!pages.length) return null;
+  const { accessible } = await partitionAccessiblePages({ cdpUrl, pages });
+  if (!accessible.length) return null;
+
+  return pickActiveTargetId({
+    accessible,
+    preferTargetId: opts?.preferTargetId?.trim() ?? '',
+    preferUrl: opts?.preferUrl?.trim() ?? '',
+    tidOf: (page) => pageTargetId(page).catch(() => null),
+  });
+}
+
+/**
+ * Pure selection logic for `resolveActiveTargetId`. Extracted so it can be
+ * unit-tested without a live CDP connection.
+ *
+ * @internal Exported for testing.
+ */
+export async function pickActiveTargetId(opts: {
+  accessible: Page[];
+  preferTargetId: string;
+  preferUrl: string;
+  tidOf: (page: Page) => Promise<string | null>;
+}): Promise<string | null> {
+  const { accessible, preferTargetId, preferUrl, tidOf } = opts;
+
+  if (preferTargetId !== '') {
+    for (const page of accessible) {
+      const tid = await tidOf(page);
+      if (tid === preferTargetId) return tid;
+    }
+  }
+
+  if (preferUrl !== '') {
+    for (const page of accessible) {
+      if (page.url() === preferUrl) {
+        const tid = await tidOf(page);
+        if (tid !== null && tid !== '') return tid;
+      }
+    }
+  }
+
+  for (const page of accessible) {
+    if (!isBlankUrl(page.url())) {
+      const tid = await tidOf(page);
+      if (tid !== null && tid !== '') return tid;
+    }
+  }
+
+  // Final fallback: any accessible page whose targetId resolves. We iterate
+  // rather than only asking `accessible[0]` because a transient pageTargetId
+  // failure on the first page must not mask a usable later page.
+  for (const page of accessible) {
+    const tid = await tidOf(page);
+    if (tid !== null && tid !== '') return tid;
+  }
+
+  return null;
 }

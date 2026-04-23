@@ -490,7 +490,7 @@ export async function navigateViaPlaywright(opts: {
   await assertBrowserNavigationAllowed({ url, ...withBrowserNavigationPolicy(policy) });
 
   const timeout = Math.max(1000, Math.min(120000, opts.timeoutMs ?? 20000));
-  let page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  let page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: policy });
   ensurePageState(page);
 
   const navigate = async () =>
@@ -517,7 +517,7 @@ export async function navigateViaPlaywright(opts: {
     }).catch(() => {
       /* intentional no-op */
     });
-    page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+    page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: policy });
     ensurePageState(page);
     response = await navigate();
   }
@@ -610,8 +610,16 @@ export async function createPageViaPlaywright(opts: {
   };
 }
 
-export async function closePageViaPlaywright(opts: { cdpUrl: string; targetId?: string }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+export async function closePageViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId?: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<void> {
+  const page = await getPageForTargetId({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   ensurePageState(page);
   await page.close();
 }
@@ -680,8 +688,13 @@ export async function resizeViewportViaPlaywright(opts: {
   targetId?: string;
   width: number;
   height: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   ensurePageState(page);
   await page.setViewportSize({
     width: Math.max(1, Math.floor(opts.width)),

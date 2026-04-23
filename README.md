@@ -145,6 +145,7 @@ const browser = await BrowserClaw.launch({
   profileName: 'browserclaw', // profile name in Chrome title bar
   profileColor: '#FF4500', // profile accent color (hex)
   chromeArgs: ['--start-maximized'], // additional Chrome flags
+  isolated: true, // fresh per-run profile, auto-cleaned on stop()
 });
 
 // Connect to an already-running Chrome instance
@@ -157,6 +158,17 @@ const browser = await BrowserClaw.connect();
 `connect()` checks that Chrome is reachable, then the internal CDP connection retries 3 times with increasing timeouts (5 s, 7 s, 9 s) — safe for Docker/CI where Chrome starts slowly.
 
 **Anti-detection:** browserclaw automatically hides `navigator.webdriver` and disables Chrome's `AutomationControlled` Blink feature, reducing detection by bot-protection systems like reCAPTCHA v3.
+
+#### Isolated profiles (per-run, per-process)
+
+Pass `isolated: true` (or `isolated: 'some-label'`) to launch in a dedicated per-run profile under `$TMPDIR/browserclaw/isolated/`:
+
+- A run-scoped random suffix is **always** appended — including when you pass a label string. Two concurrent launches with the same label (`isolated: 'my-run'`) each get a unique directory and never collide on Chrome's SingletonLock. The label is for identification only; it does not produce a stable profile across runs.
+- `stop()` removes the isolated user-data directory on exit (best-effort; silent on failure). If the process crashes before `stop()`, leftover directories remain under `$TMPDIR/browserclaw/isolated/` and can be deleted safely when no Chrome process is using them.
+- When `isolated` is set, `profileName` and `userDataDir` options are ignored.
+- Any cookies, logins, extensions, or localStorage from prior runs are not available — by design.
+
+For a stable, shared profile across runs (persistent login state, preserved history), omit `isolated` and use `profileName` / `userDataDir` instead.
 
 #### SSRF policy (navigating agent-supplied URLs)
 
@@ -180,7 +192,7 @@ Under strict mode browserclaw resolves DNS up front, pins the result, validates 
 
 ```typescript
 const page = await browser.open('https://demo.playwright.dev/todomvc');
-const current = await browser.currentPage(); // get active tab
+const current = await browser.currentPage(); // get first usable (non-blank) tab
 const tabs = await browser.tabs(); // list all tabs
 const handle = browser.page(tabs[0].targetId); // wrap existing tab
 const appPage = await browser.waitForTab({ urlContains: 'app-web' });
@@ -192,6 +204,43 @@ page.id; // CDP target ID (use with focus/close/page)
 await page.url(); // current page URL
 await page.title(); // current page title
 browser.url; // CDP endpoint URL
+```
+
+#### Recovering tab handles
+
+Tab handles can get out of sync if the app rewrites its URL aggressively or replaces the top-level target. Use the recovery primitives to re-bind a `CrawlPage` without having to restart the session:
+
+```typescript
+// Attempts to refresh the cached targetId, optionally falling back to the
+// best-effort resolver if the original target is gone.
+await page.refreshTargetId();
+await page.refreshTargetId({ fallback: 'active' });
+
+// Rebind the handle using the best-effort resolver: prefers the old
+// targetId, then the old URL, then a non-blank tab, then any tab.
+await page.reacquire();
+```
+
+> **Contract — heuristic by design:** These resolvers do not query Chrome's focused tab; CDP doesn't expose that cleanly over connect-over-CDP. They apply a fixed preference order — old targetId → old URL → first non-blank accessible tab → any accessible tab — and that order is the contract. Use them for recovery after a target has been lost; don't use them to "ask which tab the human is looking at." When you need deterministic tab selection, capture the `targetId` up front via `browser.open()` / `browser.waitForTab()` / `browser.tabs()` and keep using that handle.
+
+BrowserClaw exports structured errors so workflow code can tell apart the common failure modes:
+
+```typescript
+import {
+  BrowserTabNotFoundError,   // targetId no longer resolves to an open tab
+  StaleRefError,              // ref is not in the current snapshot
+  SnapshotHydrationError,     // snapshot returned without interactive refs
+  NavigationRaceError,        // the page navigated during an operation
+} from 'browserclaw';
+
+try {
+  await page.click('e7');
+} catch (err) {
+  if (err instanceof StaleRefError) {
+    await page.snapshot({ waitForHydration: true });
+    // retry with a fresh ref
+  } else throw err;
+}
 ```
 
 Every tab returns a `targetId` — this is the handle you use everywhere:
@@ -224,6 +273,8 @@ const result = await page.snapshot({
   maxDepth: 6, // Limit tree depth
   maxChars: 80000, // Truncate if snapshot exceeds this size
   mode: 'aria', // 'aria' (default) or 'role'
+  waitForHydration: 5000, // retry until refs appear (or ms budget); throws SnapshotHydrationError if empty
+  minInteractiveRefs: 1, // minimum refs required when waitForHydration is set
 });
 
 // Raw ARIA accessibility tree (structured data, not text)

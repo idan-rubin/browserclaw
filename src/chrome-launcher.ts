@@ -545,6 +545,34 @@ function resolveUserDataDir(profileName: string): string {
   return path.join(configDir, 'browserclaw', 'profiles', profileName, 'user-data');
 }
 
+/**
+ * Build a per-run isolated profile name + user-data directory. Isolated
+ * profiles live under `isolated/<label>-<suffix>` so they are easy to
+ * identify and clean up, and never collide with each other or with the
+ * shared default profile.
+ *
+ * A run-scoped random suffix is always appended — even when the caller
+ * passes a label string — so that concurrent launches cannot share the
+ * same user-data directory (which would fail on Chrome's SingletonLock).
+ *
+ * @internal Exported for testing.
+ */
+export function resolveIsolatedProfile(value: boolean | string): { profileName: string; userDataDir: string } {
+  const label =
+    typeof value === 'string' && value.trim() !== ''
+      ? value
+          .trim()
+          .replace(/[^A-Za-z0-9_-]/g, '_')
+          .slice(0, 32)
+      : 'run';
+  const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const namePart = `${label}-${suffix}`;
+  const profileName = `browserclaw-${namePart}`;
+  const root = os.tmpdir();
+  const userDataDir = path.join(root, 'browserclaw', 'isolated', namePart);
+  return { profileName, userDataDir };
+}
+
 // ── WebSocket / CDP URL Helpers ──
 
 function isWebSocketUrl(url: string): boolean {
@@ -827,8 +855,10 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   if (!exe)
     throw new Error('No supported browser found (Chrome/Brave/Edge/Chromium). Install one or provide executablePath.');
 
-  const profileName = opts.profileName ?? DEFAULT_PROFILE_NAME;
-  const userDataDir = opts.userDataDir ?? resolveUserDataDir(profileName);
+  const isolated = opts.isolated;
+  const isolatedResolved = isolated === undefined || isolated === false ? null : resolveIsolatedProfile(isolated);
+  const profileName = isolatedResolved?.profileName ?? opts.profileName ?? DEFAULT_PROFILE_NAME;
+  const userDataDir = isolatedResolved?.userDataDir ?? opts.userDataDir ?? resolveUserDataDir(profileName);
   fs.mkdirSync(userDataDir, { recursive: true });
 
   const spawnChrome = (spawnOpts?: { detached?: boolean }, runOpts?: { forceHeadless?: boolean }) => {
@@ -949,19 +979,35 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
     startedAt,
     launchMs: Date.now() - startedAt,
     proc,
+    ...(isolatedResolved !== null ? { isolated: true } : {}),
   };
 }
 
 export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Promise<void> {
   const proc = running.proc;
-  if (proc.exitCode !== null) return;
+  const cleanupIsolated = () => {
+    if (running.isolated !== true) return;
+    try {
+      fs.rmSync(running.userDataDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort cleanup of isolated profile directory */
+    }
+  };
+  if (proc.exitCode !== null) {
+    cleanupIsolated();
+    return;
+  }
   killProcessTree(proc, 'SIGTERM');
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     // exitCode changes asynchronously after SIGTERM; re-read from proc
-    if ((proc as { exitCode: number | null }).exitCode !== null) return;
+    if ((proc as { exitCode: number | null }).exitCode !== null) {
+      cleanupIsolated();
+      return;
+    }
     const remainingMs = timeoutMs - (Date.now() - start);
     await new Promise((r) => setTimeout(r, Math.max(1, Math.min(100, remainingMs))));
   }
   killProcessTree(proc, 'SIGKILL');
+  cleanupIsolated();
 }

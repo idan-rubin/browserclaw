@@ -1,3 +1,6 @@
+import os from 'node:os';
+import path from 'node:path';
+
 import { describe, it, expect } from 'vitest';
 
 import {
@@ -6,6 +9,7 @@ import {
   hasProxyEnvConfigured,
   normalizeCdpWsUrl,
   normalizeCdpHttpBaseForJsonEndpoints,
+  resolveIsolatedProfile,
 } from './chrome-launcher.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -247,5 +251,60 @@ describe('normalizeCdpHttpBaseForJsonEndpoints', () => {
   it('preserves custom paths that are not CDP-specific', () => {
     const result = normalizeCdpHttpBaseForJsonEndpoints('ws://localhost:9222/custom/path');
     expect(result).toContain('/custom/path');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveIsolatedProfile
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('resolveIsolatedProfile', () => {
+  const isolatedRoot = path.join(os.tmpdir(), 'browserclaw', 'isolated');
+
+  it('produces a unique directory for isolated: true across calls', () => {
+    const a = resolveIsolatedProfile(true);
+    const b = resolveIsolatedProfile(true);
+    expect(a.userDataDir).not.toBe(b.userDataDir);
+    expect(a.profileName).not.toBe(b.profileName);
+  });
+
+  it('produces a unique directory when the same string label is reused', () => {
+    // Guards the concurrent-launch case: two runs with isolated: "myname"
+    // must not end up on the same user-data-dir (Chrome SingletonLock).
+    const a = resolveIsolatedProfile('myname');
+    const b = resolveIsolatedProfile('myname');
+    expect(a.userDataDir).not.toBe(b.userDataDir);
+    expect(a.profileName).not.toBe(b.profileName);
+  });
+
+  it('prefixes the directory with the sanitized label for easy identification', () => {
+    const { userDataDir } = resolveIsolatedProfile('my/weird name!');
+    const namePart = path.basename(userDataDir);
+    expect(namePart.startsWith('my_weird_name_-')).toBe(true);
+    expect(path.dirname(userDataDir)).toBe(isolatedRoot);
+  });
+
+  it('falls back to "run" label when no string is provided', () => {
+    const { userDataDir, profileName } = resolveIsolatedProfile(true);
+    const namePart = path.basename(userDataDir);
+    expect(namePart.startsWith('run-')).toBe(true);
+    expect(profileName.startsWith('browserclaw-run-')).toBe(true);
+  });
+
+  it('treats empty / whitespace strings as an unlabelled run', () => {
+    const { userDataDir } = resolveIsolatedProfile('   ');
+    expect(path.basename(userDataDir).startsWith('run-')).toBe(true);
+  });
+
+  it('places isolated profiles under $TMPDIR/browserclaw/isolated/', () => {
+    const { userDataDir } = resolveIsolatedProfile(true);
+    expect(userDataDir.startsWith(isolatedRoot + path.sep)).toBe(true);
+  });
+
+  it('caps the label portion at 32 chars before appending the suffix', () => {
+    const { userDataDir } = resolveIsolatedProfile('a'.repeat(100));
+    const namePart = path.basename(userDataDir);
+    const label = namePart.split('-')[0];
+    expect(label.length).toBe(32);
   });
 });

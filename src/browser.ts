@@ -60,10 +60,11 @@ import {
   getPageForTargetId,
   ensurePageState,
   pageTargetId,
-  getAllPages,
   normalizeTimeoutMs,
   setDialogHandler,
   getRestoredPageForTarget,
+  BrowserTabNotFoundError,
+  resolveActiveTargetId,
 } from './connection.js';
 import { assertCdpEndpointAllowed } from './security.js';
 import { snapshotAi } from './snapshot/ai-snapshot.js';
@@ -151,11 +152,73 @@ export class CrawlPage {
   /**
    * Refresh the target ID by re-resolving the page from the browser.
    * Useful after reconnection when the old target ID may be stale.
+   *
+   * If the current target is gone (tab closed or replaced after a hard
+   * redesign), falls back to the best-effort page resolver (first non-blank
+   * accessible tab, then any accessible tab) when `fallback: 'active'` is
+   * set. By default, throws `BrowserTabNotFoundError` if the old target is
+   * gone. The `'active'` name is historical — it does NOT query Chrome's
+   * real focused-tab state.
    */
-  async refreshTargetId(): Promise<string> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
-    const newId = await pageTargetId(page);
-    if (newId !== null && newId !== '') this._targetId = newId;
+  async refreshTargetId(opts?: { fallback?: 'active' }): Promise<string> {
+    try {
+      const page = await getPageForTargetId({
+        cdpUrl: this.cdpUrl,
+        targetId: this._targetId,
+        ssrfPolicy: this.ssrfPolicy,
+      });
+      const newId = await pageTargetId(page);
+      if (newId !== null && newId !== '') this._targetId = newId;
+      return this._targetId;
+    } catch (err) {
+      if (opts?.fallback !== 'active' || !(err instanceof BrowserTabNotFoundError)) throw err;
+      const recovered = await resolveActiveTargetId(this.cdpUrl, { ssrfPolicy: this.ssrfPolicy });
+      if (recovered === null)
+        throw new BrowserTabNotFoundError(
+          `Tab ${this._targetId} is gone and no fallback page is available. Call browser.tabs() or browser.open(url).`,
+        );
+      this._targetId = recovered;
+      return this._targetId;
+    }
+  }
+
+  /**
+   * Re-bind this handle using the best-effort page resolver.
+   *
+   * Primitive for recovering from lost tab handles after navigation or
+   * aggressive re-renders. Captures the page's current URL (when still
+   * reachable) so the resolver can prefer the same page after a reload,
+   * then falls back to the original targetId, then the first non-blank
+   * accessible tab, then any accessible tab.
+   *
+   * NOTE: This does not query Chrome's actual focused tab. See
+   * `BrowserClaw.currentPage()` for the same caveat — track `targetId`
+   * explicitly when you need deterministic tab selection.
+   *
+   * @returns The (possibly new) target ID
+   */
+  async reacquire(): Promise<string> {
+    let preferUrl: string | undefined;
+    try {
+      const page = await getPageForTargetId({
+        cdpUrl: this.cdpUrl,
+        targetId: this._targetId,
+        ssrfPolicy: this.ssrfPolicy,
+      });
+      const url = page.url();
+      if (url !== '' && url !== 'about:blank') preferUrl = url;
+    } catch (err) {
+      if (!(err instanceof BrowserTabNotFoundError)) throw err;
+      // Old target is gone — recovery proceeds with whatever the resolver finds.
+    }
+    const recovered = await resolveActiveTargetId(this.cdpUrl, {
+      preferTargetId: this._targetId,
+      preferUrl,
+      ssrfPolicy: this.ssrfPolicy,
+    });
+    if (recovered === null)
+      throw new BrowserTabNotFoundError('No pages available to reacquire. Use browser.open(url) to create a tab.');
+    this._targetId = recovered;
     return this._targetId;
   }
 
@@ -211,10 +274,13 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       maxChars: opts?.maxChars,
+      timeoutMs: opts?.timeoutMs,
       options: {
         interactive: opts?.interactive,
         compact: opts?.compact,
         maxDepth: opts?.maxDepth,
+        waitForHydration: opts?.waitForHydration,
+        minInteractiveRefs: opts?.minInteractiveRefs,
       },
       ssrfPolicy: this.ssrfPolicy,
     });
@@ -651,6 +717,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       handler: handler ?? undefined,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -733,7 +800,11 @@ export class CrawlPage {
    * Get the current URL of the page.
    */
   async url(): Promise<string> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const page = await getPageForTargetId({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     return page.url();
   }
 
@@ -741,7 +812,11 @@ export class CrawlPage {
    * Get the page title.
    */
   async title(): Promise<string> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const page = await getPageForTargetId({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     return page.title();
   }
 
@@ -768,7 +843,11 @@ export class CrawlPage {
    * @param opts - Timeout options
    */
   async reload(opts?: { timeoutMs?: number }): Promise<void> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const page = await getPageForTargetId({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     ensurePageState(page);
     await page.reload({ timeout: normalizeTimeoutMs(opts?.timeoutMs, 20000) });
   }
@@ -779,7 +858,11 @@ export class CrawlPage {
    * @param opts - Timeout options
    */
   async goBack(opts?: { timeoutMs?: number }): Promise<void> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const page = await getPageForTargetId({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     ensurePageState(page);
     await page.goBack({ timeout: normalizeTimeoutMs(opts?.timeoutMs, 20000) });
   }
@@ -790,7 +873,11 @@ export class CrawlPage {
    * @param opts - Timeout options
    */
   async goForward(opts?: { timeoutMs?: number }): Promise<void> {
-    const page = await getPageForTargetId({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const page = await getPageForTargetId({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     ensurePageState(page);
     await page.goForward({ timeout: normalizeTimeoutMs(opts?.timeoutMs, 20000) });
   }
@@ -1112,6 +1199,7 @@ export class CrawlPage {
       targetId: this._targetId,
       width,
       height,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1467,7 +1555,11 @@ export class CrawlPage {
   async isAuthenticated(rules: AuthCheckRule[]): Promise<AuthCheckResult> {
     if (!rules.length) return { authenticated: true, checks: [] };
 
-    const page = await getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const page = await getRestoredPageForTarget({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     const checks: AuthCheckDetail[] = [];
 
     // Pre-fetch body text once if any rule needs it, to avoid redundant evaluations
@@ -1608,7 +1700,11 @@ export class CrawlPage {
    * ```
    */
   async playwrightPage(): Promise<Page> {
-    return getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    return getRestoredPageForTarget({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
   }
 
   /**
@@ -1632,7 +1728,11 @@ export class CrawlPage {
    * ```
    */
   async locator(selector: string): Promise<Locator> {
-    const pwPage = await getRestoredPageForTarget({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const pwPage = await getRestoredPageForTarget({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     return pwPage.locator(selector);
   }
 }
@@ -1803,21 +1903,26 @@ export class BrowserClaw {
   }
 
   /**
-   * Get a CrawlPage handle for the currently active tab.
+   * Get a CrawlPage handle for the first usable tab.
    *
-   * @returns CrawlPage for the first/active page
+   * This is a best-effort heuristic — it prefers non-blank tabs over
+   * `about:blank` placeholders but does NOT query Chrome's real
+   * focused-tab state. In a multi-tab session with several real tabs,
+   * `currentPage()` may return a tab other than the one the user is
+   * looking at. Track `targetId` explicitly (via `browser.open()` or
+   * `browser.waitForTab()`) when you need deterministic tab selection.
+   *
+   * @returns CrawlPage for the first usable (non-blank, if possible) page
    */
   async currentPage(): Promise<CrawlPage> {
     const connectT0 = Date.now();
-    const { browser } = await connectBrowser(this.cdpUrl);
+    await connectBrowser(this.cdpUrl);
     if (this._telemetry.connectMs === undefined) {
       this._telemetry.connectMs = Date.now() - connectT0;
       this._telemetry.timestamps.connectedAt = new Date().toISOString();
     }
-    const pages = getAllPages(browser);
-    if (!pages.length) throw new Error('No pages available. Use browser.open(url) to create a tab.');
-    const tid = await pageTargetId(pages[0]).catch(() => null);
-    if (tid === null || tid === '') throw new Error('Failed to get targetId for the current page.');
+    const tid = await resolveActiveTargetId(this.cdpUrl, { ssrfPolicy: this.ssrfPolicy });
+    if (tid === null) throw new BrowserTabNotFoundError('No pages available. Use browser.open(url) to create a tab.');
     return new CrawlPage(this.cdpUrl, tid, this.ssrfPolicy);
   }
 
