@@ -34,7 +34,11 @@ export async function snapshotAi(opts: {
   options?: SnapshotOptions;
   ssrfPolicy?: SsrfPolicy;
 }): Promise<SnapshotResult> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   ensurePageState(page);
 
   if (opts.ssrfPolicy) {
@@ -47,7 +51,7 @@ export async function snapshotAi(opts: {
     });
   }
 
-  const sourceUrl = page.url();
+  const initialUrl = page.url();
   const hydrationBudgetMs = resolveHydrationBudgetMs(opts.options?.waitForHydration);
   const minInteractive = Math.max(1, Math.floor(opts.options?.minInteractiveRefs ?? 1));
   const started = Date.now();
@@ -62,6 +66,9 @@ export async function snapshotAi(opts: {
   for (;;) {
     attempts += 1;
     let snapshot = await takeAiSnapshotText(page, normalizeTimeoutMs(opts.timeoutMs, 5000, 60000));
+    // Capture the URL the refs were built against. Used for contentMeta and
+    // for race detection before we return.
+    const snapshotUrl = page.url();
 
     let truncated = false;
     if (limit !== undefined && snapshot.length > limit) {
@@ -91,25 +98,35 @@ export async function snapshotAi(opts: {
       ...(truncated ? { truncated } : {}),
       untrusted: true,
       contentMeta: {
-        sourceUrl,
+        sourceUrl: snapshotUrl,
         contentType: 'browser-snapshot',
         capturedAt: new Date().toISOString(),
       },
     };
 
+    const ready = stats.interactive >= minInteractive;
+
+    // When the caller asked for hydration and the document changed between
+    // the initial resolution and the snapshot we just took, the snapshot is
+    // bound to a different document than the one they asked about. Surface
+    // that as NavigationRaceError instead of silently returning refs for
+    // the post-navigation page with stale metadata.
+    if (hydrationBudgetMs > 0 && snapshotUrl !== initialUrl) {
+      throw new NavigationRaceError({ fromUrl: initialUrl, toUrl: snapshotUrl });
+    }
+
     if (hydrationBudgetMs === 0) return lastResult;
-    if (stats.interactive >= minInteractive) return lastResult;
+    if (ready) return lastResult;
     if (Date.now() >= deadline) break;
 
     const remaining = deadline - Date.now();
     await new Promise((r) => setTimeout(r, Math.min(HYDRATION_POLL_INTERVAL_MS, Math.max(50, remaining))));
 
-    // Detect a navigation race: if the page URL changed between attempts the
-    // refs we collected are bound to the old document, and continuing to wait
-    // for hydration would mask a real workflow problem.
-    const currentUrl = page.url();
-    if (currentUrl !== sourceUrl) {
-      throw new NavigationRaceError({ fromUrl: sourceUrl, toUrl: currentUrl });
+    // Catch races that happen during the hydration wait as well, so we don't
+    // spin on the old URL waiting for refs that will never come.
+    const waitUrl = page.url();
+    if (waitUrl !== initialUrl) {
+      throw new NavigationRaceError({ fromUrl: initialUrl, toUrl: waitUrl });
     }
   }
 

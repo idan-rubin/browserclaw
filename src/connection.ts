@@ -864,13 +864,21 @@ function isBlankUrl(url: string): boolean {
 }
 
 /**
- * Best-effort resolution of the currently active (visible) page's targetId.
+ * Best-effort heuristic resolver for a usable page targetId.
  *
- * Preference order:
+ * This does NOT query Chrome's actual focused/visible tab — CDP does not
+ * expose a simple "which tab is foregrounded" signal, so the resolver
+ * picks the most plausible candidate by this preference order:
+ *
  *  1. The page matching `preferTargetId` when still accessible.
  *  2. A page whose URL matches `preferUrl` exactly (helpful after reloads).
- *  3. The first non-blank accessible page.
+ *  3. The first non-blank accessible page (skips `about:blank` placeholders).
  *  4. The first accessible page (even if blank).
+ *
+ * In multi-tab sessions without any prefer-hints, the first non-blank tab
+ * "wins" regardless of which tab the user is actually looking at. Callers
+ * that need true active-tab semantics should track `targetId` explicitly
+ * via `browser.open()` / `browser.waitForTab()` instead.
  *
  * Returns null when no accessible pages remain.
  */

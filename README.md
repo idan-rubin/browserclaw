@@ -201,14 +201,16 @@ Tab handles can get out of sync if the app rewrites its URL aggressively or repl
 
 ```typescript
 // Attempts to refresh the cached targetId, optionally falling back to the
-// currently active tab if the original target is gone.
+// best-effort resolver if the original target is gone.
 await page.refreshTargetId();
 await page.refreshTargetId({ fallback: 'active' });
 
-// Rebind the handle to the browser's best-guess active page (prefers
-// non-blank tabs, then the old URL, then the first tab).
+// Rebind the handle using the best-effort resolver: prefers the old
+// targetId, then the old URL, then a non-blank tab, then any tab.
 await page.reacquire();
 ```
+
+> **Caveat:** These resolvers do NOT query Chrome's focused tab — CDP doesn't expose that cleanly. They apply a heuristic (old target → old URL → non-blank → first). In multi-tab sessions without a URL hint, they may pick a different tab than the one the user is looking at. Track `targetId` explicitly via `browser.open()` / `browser.waitForTab()` when you need deterministic tab selection.
 
 BrowserClaw exports structured errors so workflow code can tell apart the common failure modes:
 

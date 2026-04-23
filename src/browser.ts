@@ -181,13 +181,17 @@ export class CrawlPage {
   }
 
   /**
-   * Re-bind this handle to the browser's currently active page.
+   * Re-bind this handle using the best-effort page resolver.
    *
    * Primitive for recovering from lost tab handles after navigation or
    * aggressive re-renders. Captures the page's current URL (when still
    * reachable) so the resolver can prefer the same page after a reload,
-   * then falls back to the original targetId, then a non-blank tab,
-   * then the first accessible tab.
+   * then falls back to the original targetId, then the first non-blank
+   * accessible tab, then any accessible tab.
+   *
+   * NOTE: This does not query Chrome's actual focused tab. See
+   * `BrowserClaw.currentPage()` for the same caveat — track `targetId`
+   * explicitly when you need deterministic tab selection.
    *
    * @returns The (possibly new) target ID
    */
@@ -1863,11 +1867,16 @@ export class BrowserClaw {
   }
 
   /**
-   * Get a CrawlPage handle for the currently active tab.
+   * Get a CrawlPage handle for the first usable tab.
    *
-   * Prefers tabs with real content over `about:blank` when multiple exist.
+   * This is a best-effort heuristic — it prefers non-blank tabs over
+   * `about:blank` placeholders but does NOT query Chrome's real
+   * focused-tab state. In a multi-tab session with several real tabs,
+   * `currentPage()` may return a tab other than the one the user is
+   * looking at. Track `targetId` explicitly (via `browser.open()` or
+   * `browser.waitForTab()`) when you need deterministic tab selection.
    *
-   * @returns CrawlPage for the active page
+   * @returns CrawlPage for the first usable (non-blank, if possible) page
    */
   async currentPage(): Promise<CrawlPage> {
     const connectT0 = Date.now();

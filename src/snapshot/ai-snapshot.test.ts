@@ -84,7 +84,7 @@ describe('snapshotAi hydration retry', () => {
   });
 
   it('throws NavigationRaceError when URL changes during hydration retry', async () => {
-    // First call captures sourceUrl=A, then page.url() returns B on the next read.
+    // initialUrl=A, snapshotUrl=A (same doc), then waitUrl=B after the sleep.
     mockGetPageForTargetId.mockResolvedValue(makeMockPage(['https://a.test/', 'https://a.test/', 'https://b.test/']));
     mockTakeAiSnapshotText.mockResolvedValue('');
 
@@ -95,5 +95,45 @@ describe('snapshotAi hydration retry', () => {
         options: { waitForHydration: 2000 },
       }),
     ).rejects.toBeInstanceOf(NavigationRaceError);
+  });
+
+  it('throws NavigationRaceError before returning when URL drifted during the snapshot itself', async () => {
+    // initialUrl=A, then snapshotUrl=B — the page navigated while takeAiSnapshotText ran.
+    // Even though the snapshot has interactive refs, we must not return stale sourceUrl.
+    mockGetPageForTargetId.mockResolvedValue(makeMockPage(['https://a.test/', 'https://b.test/']));
+    mockTakeAiSnapshotText.mockResolvedValue('- button "OK" [ref=e1]');
+
+    await expect(
+      snapshotAi({
+        cdpUrl: 'http://localhost:9222',
+        targetId: 't1',
+        options: { waitForHydration: 2000 },
+      }),
+    ).rejects.toBeInstanceOf(NavigationRaceError);
+  });
+
+  it('threads ssrfPolicy into getPageForTargetId', async () => {
+    const policy = { dangerouslyAllowPrivateNetwork: false };
+    mockGetPageForTargetId.mockResolvedValue(makeMockPage(['https://example.test/']));
+    mockTakeAiSnapshotText.mockResolvedValue('');
+
+    await snapshotAi({ cdpUrl: 'http://localhost:9222', targetId: 't1', ssrfPolicy: policy });
+
+    expect(mockGetPageForTargetId).toHaveBeenCalledWith({
+      cdpUrl: 'http://localhost:9222',
+      targetId: 't1',
+      ssrfPolicy: policy,
+    });
+  });
+
+  it('records the snapshot-time URL in contentMeta, not the initial URL', async () => {
+    // Without hydration, a mid-snapshot redirect is not a race — but the metadata
+    // should still reflect the document the refs were actually built against.
+    mockGetPageForTargetId.mockResolvedValue(makeMockPage(['https://a.test/', 'https://b.test/']));
+    mockTakeAiSnapshotText.mockResolvedValue('- button "OK" [ref=e1]');
+
+    const result = await snapshotAi({ cdpUrl: 'http://localhost:9222', targetId: 't1' });
+
+    expect(result.contentMeta?.sourceUrl).toBe('https://b.test/');
   });
 });
