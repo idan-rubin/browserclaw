@@ -159,6 +159,17 @@ const browser = await BrowserClaw.connect();
 
 **Anti-detection:** browserclaw automatically hides `navigator.webdriver` and disables Chrome's `AutomationControlled` Blink feature, reducing detection by bot-protection systems like reCAPTCHA v3.
 
+#### Isolated profiles (per-run, per-process)
+
+Pass `isolated: true` (or `isolated: 'some-label'`) to launch in a dedicated per-run profile under `$TMPDIR/browserclaw/isolated/`:
+
+- A run-scoped random suffix is **always** appended — including when you pass a label string. Two concurrent launches with the same label (`isolated: 'my-run'`) each get a unique directory and never collide on Chrome's SingletonLock. The label is for identification only; it does not produce a stable profile across runs.
+- `stop()` removes the isolated user-data directory on exit (best-effort; silent on failure). If the process crashes before `stop()`, leftover directories remain under `$TMPDIR/browserclaw/isolated/` and can be deleted safely when no Chrome process is using them.
+- When `isolated` is set, `profileName` and `userDataDir` options are ignored.
+- Any cookies, logins, extensions, or localStorage from prior runs are not available — by design.
+
+For a stable, shared profile across runs (persistent login state, preserved history), omit `isolated` and use `profileName` / `userDataDir` instead.
+
 #### SSRF policy (navigating agent-supplied URLs)
 
 By default, browserclaw permits navigation to **any** address — including private/loopback ranges such as `127.0.0.1`, `10.0.0.0/8`, and cloud metadata endpoints like `169.254.169.254`. This "trusted-network" default is convenient for local development and dev-tunnel workflows.
@@ -210,7 +221,7 @@ await page.refreshTargetId({ fallback: 'active' });
 await page.reacquire();
 ```
 
-> **Caveat:** These resolvers do NOT query Chrome's focused tab — CDP doesn't expose that cleanly. They apply a heuristic (old target → old URL → non-blank → first). In multi-tab sessions without a URL hint, they may pick a different tab than the one the user is looking at. Track `targetId` explicitly via `browser.open()` / `browser.waitForTab()` when you need deterministic tab selection.
+> **Contract — heuristic by design:** These resolvers do not query Chrome's focused tab; CDP doesn't expose that cleanly over connect-over-CDP. They apply a fixed preference order — old targetId → old URL → first non-blank accessible tab → any accessible tab — and that order is the contract. Use them for recovery after a target has been lost; don't use them to "ask which tab the human is looking at." When you need deterministic tab selection, capture the `targetId` up front via `browser.open()` / `browser.waitForTab()` / `browser.tabs()` and keep using that handle.
 
 BrowserClaw exports structured errors so workflow code can tell apart the common failure modes:
 
