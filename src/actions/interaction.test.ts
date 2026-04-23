@@ -46,7 +46,11 @@ describe('awaitActionWithAbort', () => {
       /* suppress */
     });
 
-    const slowAction = new Promise<string>((resolve) => setTimeout(() => resolve('done'), 100));
+    const slowAction = new Promise<string>((resolve) =>
+      setTimeout(() => {
+        resolve('done');
+      }, 100),
+    );
     const racePromise = awaitActionWithAbort(slowAction, abortPromise);
     abortReject(abortError);
 

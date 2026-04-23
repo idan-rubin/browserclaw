@@ -257,10 +257,6 @@ export async function clickViaPlaywright(opts: {
       abortReject?.(signal.reason ?? new Error('aborted'));
     };
     signal.addEventListener('abort', abortListener, { once: true });
-    if (signal.aborted) {
-      abortListener();
-      throw signal.reason ?? new Error('aborted');
-    }
   }
 
   // Determine if this is a checkable role element so we can verify the click worked.
