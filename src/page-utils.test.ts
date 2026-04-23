@@ -98,12 +98,6 @@ describe('toAIFriendlyError', () => {
     expect(result.message).toContain('.btn');
   });
 
-  it('transforms timeout with "waiting for locator(" as not-found', () => {
-    const err = new Error('Timeout 8000ms exceeded waiting for locator(".btn")');
-    const result = toAIFriendlyError(err, '.btn');
-    expect(result.message).toContain('not found or not visible');
-  });
-
   it('transforms not visible error', () => {
     const err = new Error('element is not visible');
     const result = toAIFriendlyError(err, 'e3');

@@ -259,7 +259,7 @@ export function toAIFriendlyError(error: unknown, selector: string): Error {
   }
   if (
     (message.includes('Timeout') || message.includes('waiting for')) &&
-    (message.includes('to be visible') || message.includes('not visible') || message.includes('waiting for locator('))
+    (message.includes('to be visible') || message.includes('not visible'))
   ) {
     return new Error(
       `Element "${selector}" not found or not visible. Run a new snapshot to see current page elements.`,
