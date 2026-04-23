@@ -331,6 +331,7 @@ export class CrawlPage {
       delayMs: opts?.delayMs,
       timeoutMs: opts?.timeoutMs,
       force: opts?.force,
+      signal: opts?.signal,
       ssrfPolicy: this.ssrfPolicy,
     });
   }
@@ -360,6 +361,7 @@ export class CrawlPage {
       delayMs: opts?.delayMs,
       timeoutMs: opts?.timeoutMs,
       force: opts?.force,
+      signal: opts?.signal,
       ssrfPolicy: this.ssrfPolicy,
     });
   }

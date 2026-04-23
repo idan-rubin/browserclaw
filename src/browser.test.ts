@@ -1,20 +1,25 @@
 import type { Page } from 'playwright-core';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+import type * as InteractionModule from './actions/interaction.js';
 import type * as ConnectionModule from './connection.js';
 import { BrowserTabNotFoundError } from './errors.js';
 
-const { mockGetPageForTargetId, mockResolveActiveTargetId, mockPageTargetId } = vi.hoisted(() => ({
-  mockGetPageForTargetId: vi.fn<(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: unknown }) => Promise<Page>>(),
-  mockResolveActiveTargetId:
-    vi.fn<
-      (
-        cdpUrl: string,
-        opts?: { preferTargetId?: string; preferUrl?: string; ssrfPolicy?: unknown },
-      ) => Promise<string | null>
-    >(),
-  mockPageTargetId: vi.fn<(page: Page) => Promise<string | null>>(),
-}));
+const { mockGetPageForTargetId, mockResolveActiveTargetId, mockPageTargetId, mockClickViaPlaywright } = vi.hoisted(
+  () => ({
+    mockGetPageForTargetId:
+      vi.fn<(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: unknown }) => Promise<Page>>(),
+    mockResolveActiveTargetId:
+      vi.fn<
+        (
+          cdpUrl: string,
+          opts?: { preferTargetId?: string; preferUrl?: string; ssrfPolicy?: unknown },
+        ) => Promise<string | null>
+      >(),
+    mockPageTargetId: vi.fn<(page: Page) => Promise<string | null>>(),
+    mockClickViaPlaywright: vi.fn<(opts: Record<string, unknown>) => Promise<void>>(),
+  }),
+);
 
 vi.mock('./connection.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ConnectionModule>();
@@ -24,6 +29,14 @@ vi.mock('./connection.js', async (importOriginal) => {
     resolveActiveTargetId: mockResolveActiveTargetId,
     pageTargetId: mockPageTargetId,
     connectBrowser: () => Promise.resolve({ browser: {}, cdpUrl: 'http://localhost:9222' }),
+  };
+});
+
+vi.mock('./actions/interaction.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof InteractionModule>();
+  return {
+    ...actual,
+    clickViaPlaywright: mockClickViaPlaywright,
   };
 });
 
@@ -137,5 +150,47 @@ describe('CrawlPage.refreshTargetId', () => {
 
     const page = new CrawlPage('http://localhost:9222', 't-old');
     await expect(page.refreshTargetId()).rejects.toBeInstanceOf(BrowserTabNotFoundError);
+  });
+});
+
+describe('CrawlPage click — AbortSignal forwarding', () => {
+  beforeEach(() => {
+    mockClickViaPlaywright.mockReset();
+    mockClickViaPlaywright.mockResolvedValue(undefined);
+  });
+
+  it('forwards the signal from click(ref, { signal }) to clickViaPlaywright', async () => {
+    const controller = new AbortController();
+    const page = new CrawlPage('http://localhost:9222', 't-1');
+
+    await page.click('e4', { signal: controller.signal });
+
+    expect(mockClickViaPlaywright).toHaveBeenCalledTimes(1);
+    expect(mockClickViaPlaywright.mock.calls[0]?.[0]).toMatchObject({
+      ref: 'e4',
+      signal: controller.signal,
+    });
+  });
+
+  it('forwards the signal from clickBySelector(selector, { signal }) to clickViaPlaywright', async () => {
+    const controller = new AbortController();
+    const page = new CrawlPage('http://localhost:9222', 't-1');
+
+    await page.clickBySelector('button.submit', { signal: controller.signal });
+
+    expect(mockClickViaPlaywright).toHaveBeenCalledTimes(1);
+    expect(mockClickViaPlaywright.mock.calls[0]?.[0]).toMatchObject({
+      selector: 'button.submit',
+      signal: controller.signal,
+    });
+  });
+
+  it('passes signal: undefined when omitted', async () => {
+    const page = new CrawlPage('http://localhost:9222', 't-1');
+
+    await page.click('e4');
+
+    expect(mockClickViaPlaywright).toHaveBeenCalledTimes(1);
+    expect(mockClickViaPlaywright.mock.calls[0]?.[0]).toMatchObject({ signal: undefined });
   });
 });
