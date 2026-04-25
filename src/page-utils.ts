@@ -205,7 +205,14 @@ export function setDialogHandlerOnPage(page: Page, handler?: DialogHandler): voi
 
 // ── Stealth ──
 
+let stealthEnabled = false;
+
+export function setStealthEnabled(enabled: boolean): void {
+  stealthEnabled = enabled;
+}
+
 async function applyStealthToPage(page: Page): Promise<void> {
+  if (!stealthEnabled) return;
   try {
     await page.evaluate(STEALTH_SCRIPT);
   } catch (e: unknown) {
@@ -219,11 +226,13 @@ export async function observeContext(context: BrowserContext): Promise<void> {
   observedContexts.add(context);
   ensureContextState(context);
 
-  try {
-    await context.addInitScript(STEALTH_SCRIPT);
-  } catch (e: unknown) {
-    if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
-      console.warn('[browserclaw] stealth initScript failed:', e instanceof Error ? e.message : String(e));
+  if (stealthEnabled) {
+    try {
+      await context.addInitScript(STEALTH_SCRIPT);
+    } catch (e: unknown) {
+      if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
+        console.warn('[browserclaw] stealth initScript failed:', e instanceof Error ? e.message : String(e));
+    }
   }
 
   for (const page of context.pages()) {
