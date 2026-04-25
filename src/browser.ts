@@ -66,6 +66,7 @@ import {
   BrowserTabNotFoundError,
   resolveActiveTargetId,
 } from './connection.js';
+import { setStealthEnabled } from './page-utils.js';
 import { assertCdpEndpointAllowed } from './security.js';
 import { snapshotAi } from './snapshot/ai-snapshot.js';
 import { snapshotRole, snapshotAria } from './snapshot/aria-snapshot.js';
@@ -1807,6 +1808,7 @@ export class BrowserClaw {
    */
   static async launch(opts: LaunchOptions = {}): Promise<BrowserClaw> {
     const startedAt = new Date().toISOString();
+    setStealthEnabled(opts.stealth === true);
     const chrome = await launchChrome(opts);
     try {
       const cdpUrl = `http://127.0.0.1:${String(chrome.cdpPort)}`;
@@ -1853,6 +1855,7 @@ export class BrowserClaw {
    */
   static async connect(cdpUrl?: string, opts?: ConnectOptions): Promise<BrowserClaw> {
     const startedAt = new Date().toISOString();
+    setStealthEnabled(opts?.stealth === true);
     const connectT0 = Date.now();
     let resolvedUrl = cdpUrl;
     if (resolvedUrl === undefined || resolvedUrl === '') {

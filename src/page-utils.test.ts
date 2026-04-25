@@ -10,6 +10,8 @@ import {
   findNetworkRequestById,
   ensurePageState,
   ensureContextState,
+  observeContext,
+  setStealthEnabled,
 } from './page-utils.js';
 import type { PageState, NetworkRequest } from './types.js';
 
@@ -295,5 +297,58 @@ describe('ensureContextState', () => {
     const state1 = ensureContextState(ctx);
     const state2 = ensureContextState(ctx);
     expect(state1).toBe(state2);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stealth gating
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('observeContext stealth gating', () => {
+  it('does NOT inject stealth when disabled (default)', async () => {
+    setStealthEnabled(false);
+    let calls = 0;
+    const ctx = {
+      addInitScript: () => {
+        calls++;
+        return Promise.resolve();
+      },
+      pages: () => [],
+      on: () => {
+        /* noop */
+      },
+      off: () => {
+        /* noop */
+      },
+      once: () => {
+        /* noop */
+      },
+    } as unknown as BrowserContext;
+    await observeContext(ctx);
+    expect(calls).toBe(0);
+  });
+
+  it('injects stealth via addInitScript when enabled', async () => {
+    setStealthEnabled(true);
+    let calls = 0;
+    const ctx = {
+      addInitScript: () => {
+        calls++;
+        return Promise.resolve();
+      },
+      pages: () => [],
+      on: () => {
+        /* noop */
+      },
+      off: () => {
+        /* noop */
+      },
+      once: () => {
+        /* noop */
+      },
+    } as unknown as BrowserContext;
+    await observeContext(ctx);
+    expect(calls).toBe(1);
+    setStealthEnabled(false); // restore default
   });
 });

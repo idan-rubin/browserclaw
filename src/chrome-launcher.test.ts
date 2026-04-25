@@ -14,6 +14,7 @@ import {
   processExists,
   clearChromeSingletonArtifacts,
   clearStaleChromeSingletonLocks,
+  buildChromeLaunchArgs,
 } from './chrome-launcher.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -429,5 +430,108 @@ describe('clearStaleChromeSingletonLocks', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildChromeLaunchArgs
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('buildChromeLaunchArgs', () => {
+  const baseOpts = {
+    cdpPort: 9222,
+    userDataDir: '/tmp/test',
+    headless: false,
+    noSandbox: false,
+    ignoreHTTPSErrors: false,
+    ciDefaults: false,
+    platform: 'darwin' as NodeJS.Platform,
+  };
+
+  it('emits the minimum CDP-required args by default', () => {
+    const args = buildChromeLaunchArgs(baseOpts);
+    expect(args).toContain('--remote-debugging-port=9222');
+    expect(args).toContain('--user-data-dir=/tmp/test');
+    expect(args).toContain('--no-first-run');
+    expect(args).toContain('--no-default-browser-check');
+    expect(args).toContain('--disable-blink-features=AutomationControlled');
+    expect(args).toContain('about:blank');
+  });
+
+  it('does NOT include CI-deterministic flags by default (anti-fingerprint)', () => {
+    const args = buildChromeLaunchArgs(baseOpts);
+    expect(args).not.toContain('--disable-sync');
+    expect(args).not.toContain('--disable-background-networking');
+    expect(args).not.toContain('--disable-component-update');
+    expect(args).not.toContain('--disable-features=Translate,MediaRouter');
+  });
+
+  it('adds CI-deterministic flags when ciDefaults: true', () => {
+    const args = buildChromeLaunchArgs({ ...baseOpts, ciDefaults: true });
+    expect(args).toContain('--disable-sync');
+    expect(args).toContain('--disable-background-networking');
+    expect(args).toContain('--disable-component-update');
+    expect(args).toContain('--disable-features=Translate,MediaRouter');
+  });
+
+  it('adds --password-store=basic on linux always (avoid keyring hang)', () => {
+    expect(buildChromeLaunchArgs({ ...baseOpts, platform: 'linux' })).toContain('--password-store=basic');
+    expect(buildChromeLaunchArgs({ ...baseOpts, platform: 'linux', ciDefaults: true })).toContain(
+      '--password-store=basic',
+    );
+  });
+
+  it('does NOT add --password-store=basic on non-linux', () => {
+    expect(buildChromeLaunchArgs({ ...baseOpts, platform: 'darwin' })).not.toContain('--password-store=basic');
+    expect(buildChromeLaunchArgs({ ...baseOpts, platform: 'win32' })).not.toContain('--password-store=basic');
+  });
+
+  it('adds --ignore-certificate-errors when ignoreHTTPSErrors: true', () => {
+    expect(buildChromeLaunchArgs({ ...baseOpts, ignoreHTTPSErrors: true })).toContain('--ignore-certificate-errors');
+    expect(buildChromeLaunchArgs(baseOpts)).not.toContain('--ignore-certificate-errors');
+  });
+
+  it('adds --headless=new and --disable-gpu when headless', () => {
+    const args = buildChromeLaunchArgs({ ...baseOpts, headless: true });
+    expect(args).toContain('--headless=new');
+    expect(args).toContain('--disable-gpu');
+  });
+
+  it('adds --no-sandbox when requested', () => {
+    const args = buildChromeLaunchArgs({ ...baseOpts, noSandbox: true });
+    expect(args).toContain('--no-sandbox');
+  });
+
+  it('does NOT add --disable-setuid-sandbox (was redundant with --no-sandbox)', () => {
+    const args = buildChromeLaunchArgs({ ...baseOpts, noSandbox: true });
+    expect(args).not.toContain('--disable-setuid-sandbox');
+  });
+
+  it('adds --disable-dev-shm-usage on linux', () => {
+    const args = buildChromeLaunchArgs({ ...baseOpts, platform: 'linux' });
+    expect(args).toContain('--disable-dev-shm-usage');
+  });
+
+  it('does not add --disable-dev-shm-usage on darwin', () => {
+    const args = buildChromeLaunchArgs({ ...baseOpts, platform: 'darwin' });
+    expect(args).not.toContain('--disable-dev-shm-usage');
+  });
+
+  it('appends extra chromeArgs after defaults but before about:blank', () => {
+    const args = buildChromeLaunchArgs({ ...baseOpts, chromeArgs: ['--start-maximized', '--lang=en-US'] });
+    expect(args).toContain('--start-maximized');
+    expect(args).toContain('--lang=en-US');
+    expect(args[args.length - 1]).toBe('about:blank');
+  });
+
+  it('filters non-string and empty chromeArgs entries', () => {
+    const args = buildChromeLaunchArgs({
+      ...baseOpts,
+      chromeArgs: ['--ok', '', '   ', null as unknown as string, '--also-ok'],
+    });
+    expect(args).toContain('--ok');
+    expect(args).toContain('--also-ok');
+    expect(args).not.toContain('');
+    expect(args).not.toContain('   ');
   });
 });
