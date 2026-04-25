@@ -520,10 +520,6 @@ export async function disconnectBrowser(): Promise<void> {
 
 /**
  * Close the Playwright connection for a specific CDP URL without affecting other connections.
- *
- * `preserveBlockedMetadata`: when true, do not clear SSRF-blocked target/page-ref tracking.
- * Used by stale-cache recovery so a concurrent `markTargetBlocked` can't be lost in the
- * snapshot/clear/restore window.
  */
 export async function closePlaywrightBrowserConnection(opts?: {
   cdpUrl?: string;
@@ -864,8 +860,6 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
     return await getPageForTargetIdOnce(opts);
   } catch (err) {
     if (!isRecoverableStalePageSelectionError(err, reusedCachedBrowser)) throw err;
-    // Drop the stale cached connection but keep SSRF-blocked target metadata —
-    // a concurrent markTargetBlocked() during the close await would otherwise be lost.
     await closePlaywrightBrowserConnection({ cdpUrl: opts.cdpUrl, preserveBlockedMetadata: true });
     return await getPageForTargetIdOnce(opts);
   }
