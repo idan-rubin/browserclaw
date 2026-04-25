@@ -103,6 +103,14 @@ export interface LaunchOptions {
   /** Ignore HTTPS certificate errors (e.g. expired local dev certs). Default: `false` */
   ignoreHTTPSErrors?: boolean;
   /**
+   * Add CI-deterministic Chrome flags that suppress background networking,
+   * sync, component updates, the password store, and the Translate / MediaRouter
+   * features. These flags are useful for reproducible CI runs but make the
+   * browser easier to fingerprint as automation (the absence of safebrowsing,
+   * sync, and translate-fetcher traffic is itself a signal). Default: `false`.
+   */
+  ciDefaults?: boolean;
+  /**
    * Launch in a fully isolated profile: uses a unique per-run profile name,
    * a dedicated user-data directory, and does not share state with other
    * BrowserClaw sessions. Useful when running multiple concurrent browsers

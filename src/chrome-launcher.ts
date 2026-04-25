@@ -847,6 +847,55 @@ async function canRunCdpHealthCommand(wsUrl: string, timeoutMs = 800): Promise<b
   });
 }
 
+export interface BuildChromeLaunchArgsOptions {
+  cdpPort: number;
+  userDataDir: string;
+  headless: boolean;
+  noSandbox: boolean;
+  ignoreHTTPSErrors: boolean;
+  ciDefaults: boolean;
+  chromeArgs?: string[];
+  platform: NodeJS.Platform;
+}
+
+export function buildChromeLaunchArgs(opts: BuildChromeLaunchArgsOptions): string[] {
+  const args = [
+    `--remote-debugging-port=${String(opts.cdpPort)}`,
+    '--remote-debugging-address=127.0.0.1',
+    `--user-data-dir=${opts.userDataDir}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-blink-features=AutomationControlled',
+    '--disable-session-crashed-bubble',
+    '--hide-crash-restore-bubble',
+  ];
+  if (opts.ciDefaults) {
+    args.push(
+      '--disable-sync',
+      '--disable-background-networking',
+      '--disable-component-update',
+      '--disable-features=Translate,MediaRouter',
+      '--password-store=basic',
+    );
+  }
+  if (opts.headless) {
+    args.push('--headless=new', '--disable-gpu');
+  }
+  if (opts.noSandbox) {
+    args.push('--no-sandbox');
+  }
+  if (opts.ignoreHTTPSErrors) {
+    args.push('--ignore-certificate-errors');
+  }
+  if (opts.platform === 'linux') args.push('--disable-dev-shm-usage');
+  const extraArgs = Array.isArray(opts.chromeArgs)
+    ? opts.chromeArgs.filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
+    : [];
+  if (extraArgs.length) args.push(...extraArgs);
+  args.push('about:blank');
+  return args;
+}
+
 export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChrome> {
   const cdpPort = opts.cdpPort ?? DEFAULT_CDP_PORT;
   await ensurePortAvailable(cdpPort);
@@ -862,36 +911,16 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   fs.mkdirSync(userDataDir, { recursive: true });
 
   const spawnChrome = (spawnOpts?: { detached?: boolean }, runOpts?: { forceHeadless?: boolean }) => {
-    const args = [
-      `--remote-debugging-port=${String(cdpPort)}`,
-      '--remote-debugging-address=127.0.0.1',
-      `--user-data-dir=${userDataDir}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-sync',
-      '--disable-background-networking',
-      '--disable-component-update',
-      '--disable-features=Translate,MediaRouter',
-      '--disable-blink-features=AutomationControlled',
-      '--disable-session-crashed-bubble',
-      '--hide-crash-restore-bubble',
-      '--password-store=basic',
-    ];
-    if (opts.headless === true || runOpts?.forceHeadless === true) {
-      args.push('--headless=new', '--disable-gpu');
-    }
-    if (opts.noSandbox === true) {
-      args.push('--no-sandbox', '--disable-setuid-sandbox');
-    }
-    if (opts.ignoreHTTPSErrors === true) {
-      args.push('--ignore-certificate-errors');
-    }
-    if (process.platform === 'linux') args.push('--disable-dev-shm-usage');
-    const extraArgs = Array.isArray(opts.chromeArgs)
-      ? opts.chromeArgs.filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
-      : [];
-    if (extraArgs.length) args.push(...extraArgs);
-    args.push('about:blank');
+    const args = buildChromeLaunchArgs({
+      cdpPort,
+      userDataDir,
+      headless: opts.headless === true || runOpts?.forceHeadless === true,
+      noSandbox: opts.noSandbox === true,
+      ignoreHTTPSErrors: opts.ignoreHTTPSErrors === true,
+      ciDefaults: opts.ciDefaults === true,
+      chromeArgs: opts.chromeArgs,
+      platform: process.platform,
+    });
     return spawn(exe.path, args, {
       stdio: 'pipe',
       env: { ...process.env, HOME: os.homedir() },
