@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -10,6 +11,9 @@ import {
   normalizeCdpWsUrl,
   normalizeCdpHttpBaseForJsonEndpoints,
   resolveIsolatedProfile,
+  processExists,
+  clearChromeSingletonArtifacts,
+  clearStaleChromeSingletonLocks,
 } from './chrome-launcher.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -306,5 +310,124 @@ describe('resolveIsolatedProfile', () => {
     const namePart = path.basename(userDataDir);
     const label = namePart.split('-')[0];
     expect(label.length).toBe(32);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// processExists
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('processExists', () => {
+  it('returns true for the current process pid', () => {
+    expect(processExists(process.pid)).toBe(true);
+  });
+
+  it('returns false for an obviously dead pid', () => {
+    expect(processExists(2147483646)).toBe(false);
+  });
+
+  it('rejects non-positive integers', () => {
+    expect(processExists(0)).toBe(false);
+    expect(processExists(-1)).toBe(false);
+    expect(processExists(1.5)).toBe(false);
+    expect(processExists(Number.NaN)).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// clearChromeSingletonArtifacts / clearStaleChromeSingletonLocks
+// ─────────────────────────────────────────────────────────────────────────────
+
+function makeTempDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'bc-singleton-'));
+}
+
+describe('clearChromeSingletonArtifacts', () => {
+  it('removes Singleton* files when present', () => {
+    const dir = makeTempDir();
+    try {
+      fs.writeFileSync(path.join(dir, 'SingletonLock'), 'x');
+      fs.writeFileSync(path.join(dir, 'SingletonSocket'), 'x');
+      fs.writeFileSync(path.join(dir, 'SingletonCookie'), 'x');
+      clearChromeSingletonArtifacts(dir);
+      expect(() => fs.lstatSync(path.join(dir, 'SingletonLock'))).toThrow();
+      expect(fs.existsSync(path.join(dir, 'SingletonSocket'))).toBe(false);
+      expect(fs.existsSync(path.join(dir, 'SingletonCookie'))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is a no-op when no artifacts exist', () => {
+    const dir = makeTempDir();
+    try {
+      expect(() => {
+        clearChromeSingletonArtifacts(dir);
+      }).not.toThrow();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('clearStaleChromeSingletonLocks', () => {
+  // Skip on Windows where SingletonLock isn't a symlink
+  const itUnix = process.platform === 'win32' ? it.skip : it;
+
+  itUnix('returns false when SingletonLock is absent', () => {
+    const dir = makeTempDir();
+    try {
+      expect(clearStaleChromeSingletonLocks(dir)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  itUnix('returns false when lock is held by a live process on the same host', () => {
+    const dir = makeTempDir();
+    try {
+      const target = `${os.hostname()}-${String(process.pid)}`;
+      fs.symlinkSync(target, path.join(dir, 'SingletonLock'));
+      expect(clearStaleChromeSingletonLocks(dir, os.hostname())).toBe(false);
+      expect(fs.lstatSync(path.join(dir, 'SingletonLock')).isSymbolicLink()).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  itUnix('clears artifacts when lock pid is dead', () => {
+    const dir = makeTempDir();
+    try {
+      const target = `${os.hostname()}-2147483646`;
+      fs.symlinkSync(target, path.join(dir, 'SingletonLock'));
+      fs.writeFileSync(path.join(dir, 'SingletonSocket'), 'x');
+      expect(clearStaleChromeSingletonLocks(dir, os.hostname())).toBe(true);
+      expect(() => fs.lstatSync(path.join(dir, 'SingletonLock'))).toThrow();
+      expect(fs.existsSync(path.join(dir, 'SingletonSocket'))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  itUnix('clears artifacts when lock host differs from current host', () => {
+    const dir = makeTempDir();
+    try {
+      const target = `some-other-host-${String(process.pid)}`;
+      fs.symlinkSync(target, path.join(dir, 'SingletonLock'));
+      expect(clearStaleChromeSingletonLocks(dir, os.hostname())).toBe(true);
+      expect(() => fs.lstatSync(path.join(dir, 'SingletonLock'))).toThrow();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  itUnix('returns false when lock target has unexpected format', () => {
+    const dir = makeTempDir();
+    try {
+      fs.symlinkSync('not-a-valid-target', path.join(dir, 'SingletonLock'));
+      expect(clearStaleChromeSingletonLocks(dir, os.hostname())).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

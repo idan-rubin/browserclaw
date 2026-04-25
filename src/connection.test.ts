@@ -16,6 +16,7 @@ import {
   getAllPages,
   takeAiSnapshotText,
   pickActiveTargetId,
+  isRecoverableStalePageSelectionError,
 } from './connection.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -542,5 +543,39 @@ describe('pickActiveTargetId', () => {
 
     const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
     expect(result).toBe('t-b');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// isRecoverableStalePageSelectionError
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('isRecoverableStalePageSelectionError', () => {
+  it('returns false when no cached browser was reused', () => {
+    expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), false)).toBe(false);
+  });
+
+  it('returns true for BrowserTabNotFoundError when cache was reused', () => {
+    expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), true)).toBe(true);
+  });
+
+  it('returns true for "No pages available" error when cache was reused', () => {
+    const err = new Error('No pages available in the connected browser.');
+    expect(isRecoverableStalePageSelectionError(err, true)).toBe(true);
+  });
+
+  it('returns true for any error containing "tab not found" (case-insensitive) when cache was reused', () => {
+    expect(isRecoverableStalePageSelectionError(new Error('Tab Not Found'), true)).toBe(true);
+    expect(isRecoverableStalePageSelectionError(new Error('something: tab not found'), true)).toBe(true);
+  });
+
+  it('returns false for unrelated errors', () => {
+    expect(isRecoverableStalePageSelectionError(new Error('boom'), true)).toBe(false);
+    expect(isRecoverableStalePageSelectionError(new BlockedBrowserTargetError(), true)).toBe(false);
+  });
+
+  it('handles non-Error inputs', () => {
+    expect(isRecoverableStalePageSelectionError('tab not found', true)).toBe(true);
+    expect(isRecoverableStalePageSelectionError(null, true)).toBe(false);
   });
 });

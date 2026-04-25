@@ -7,6 +7,76 @@ import path from 'node:path';
 import { assertCdpEndpointAllowed } from './security.js';
 import type { ChromeExecutable, ChromeKind, LaunchOptions, RunningChrome, SsrfPolicy } from './types.js';
 
+// ── Singleton Lock Recovery ──
+
+const CHROME_SINGLETON_LOCK_PATHS = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+const CHROME_SINGLETON_IN_USE_PATTERN = /profile appears to be in use by another chromium process/i;
+
+export function processExists(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EPERM') return true;
+    return false;
+  }
+}
+
+export function clearChromeSingletonArtifacts(userDataDir: string): void {
+  for (const basename of CHROME_SINGLETON_LOCK_PATHS) {
+    try {
+      fs.rmSync(path.join(userDataDir, basename), { force: true });
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+export function clearStaleChromeSingletonLocks(userDataDir: string, hostname: string = os.hostname()): boolean {
+  const lockPath = path.join(userDataDir, 'SingletonLock');
+  let target: string;
+  try {
+    target = fs.readlinkSync(lockPath);
+  } catch {
+    return false;
+  }
+  const match = /^(?<lockHost>.+)-(?<pid>\d+)$/.exec(target);
+  if (!match?.groups) return false;
+  const lockHost = match.groups.lockHost;
+  const pid = Number.parseInt(match.groups.pid, 10);
+  if (lockHost === hostname && processExists(pid)) return false;
+  clearChromeSingletonArtifacts(userDataDir);
+  return true;
+}
+
+async function waitForChromeProcessExit(proc: ChildProcess, timeoutMs: number): Promise<void> {
+  if (proc.exitCode !== null || proc.signalCode !== null || proc.killed) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      proc.off('exit', onExit);
+      proc.off('close', onExit);
+      resolve();
+    }, timeoutMs);
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    proc.once('exit', onExit);
+    proc.once('close', onExit);
+  });
+}
+
+async function terminateChromeForRetry(proc: ChildProcess, userDataDir: string): Promise<void> {
+  try {
+    proc.kill('SIGKILL');
+  } catch {
+    /* may already be dead */
+  }
+  await waitForChromeProcessExit(proc, 5000);
+  clearStaleChromeSingletonLocks(userDataDir);
+}
+
 // ── Process Tree Kill ──
 
 /**
@@ -930,46 +1000,59 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
     ensureCleanExit(userDataDir);
   } catch {}
 
-  const proc = spawnChrome();
   const cdpUrl = `http://127.0.0.1:${String(cdpPort)}`;
 
-  // Capture stderr for diagnostics on failure
-  const stderrChunks: Buffer[] = [];
-  const onStderr = (chunk: Buffer) => {
-    stderrChunks.push(chunk);
+  const launchOnceAndWait = async (
+    allowSingletonRecovery: boolean,
+  ): Promise<{ proc: ReturnType<typeof spawnChrome> }> => {
+    const proc = spawnChrome();
+    const stderrChunks: Buffer[] = [];
+    const onStderr = (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+    };
+    proc.stderr.on('data', onStderr);
+
+    const readyDeadline = Date.now() + 15000;
+    let pollDelay = 200;
+    while (Date.now() < readyDeadline) {
+      if (await isChromeCdpReady(cdpUrl, 500)) break;
+      await new Promise((r) => setTimeout(r, pollDelay));
+      pollDelay = Math.min(pollDelay + 100, 1000);
+    }
+
+    if (!(await isChromeCdpReady(cdpUrl, 500))) {
+      const stderrOutput = Buffer.concat(stderrChunks).toString('utf8').trim();
+      if (
+        allowSingletonRecovery &&
+        CHROME_SINGLETON_IN_USE_PATTERN.test(stderrOutput) &&
+        clearStaleChromeSingletonLocks(userDataDir)
+      ) {
+        proc.stderr.off('data', onStderr);
+        await terminateChromeForRetry(proc, userDataDir);
+        return await launchOnceAndWait(false);
+      }
+      const stderrHint = stderrOutput ? `\nChrome stderr:\n${stderrOutput.slice(0, 2000)}` : '';
+      const sandboxHint =
+        process.platform === 'linux' && opts.noSandbox !== true
+          ? '\nHint: If running in a container or as root, try setting noSandbox: true.'
+          : '';
+      try {
+        proc.kill('SIGKILL');
+      } catch {}
+      try {
+        const lockFile = path.join(userDataDir, 'SingletonLock');
+        if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
+      } catch {}
+      throw new Error(`Failed to start Chrome CDP on port ${String(cdpPort)}.${sandboxHint}${stderrHint}`);
+    }
+
+    proc.stderr.off('data', onStderr);
+    proc.stderr.resume();
+    stderrChunks.length = 0;
+    return { proc };
   };
-  proc.stderr.on('data', onStderr);
 
-  const readyDeadline = Date.now() + 15000;
-  let pollDelay = 200;
-  while (Date.now() < readyDeadline) {
-    if (await isChromeCdpReady(cdpUrl, 500)) break;
-    await new Promise((r) => setTimeout(r, pollDelay));
-    // Back off polling to reduce CPU churn on slow launches
-    pollDelay = Math.min(pollDelay + 100, 1000);
-  }
-
-  if (!(await isChromeCdpReady(cdpUrl, 500))) {
-    const stderrOutput = Buffer.concat(stderrChunks).toString('utf8').trim();
-    const stderrHint = stderrOutput ? `\nChrome stderr:\n${stderrOutput.slice(0, 2000)}` : '';
-    const sandboxHint =
-      process.platform === 'linux' && opts.noSandbox !== true
-        ? '\nHint: If running in a container or as root, try setting noSandbox: true.'
-        : '';
-    try {
-      proc.kill('SIGKILL');
-    } catch {}
-    // Clean up userDataDir lock files on launch failure so subsequent retries don't stall
-    try {
-      const lockFile = path.join(userDataDir, 'SingletonLock');
-      if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
-    } catch {}
-    throw new Error(`Failed to start Chrome CDP on port ${String(cdpPort)}.${sandboxHint}${stderrHint}`);
-  }
-
-  proc.stderr.off('data', onStderr);
-  proc.stderr.resume(); // drain to prevent backpressure after removing the listener
-  stderrChunks.length = 0;
+  const { proc } = await launchOnceAndWait(true);
 
   return {
     pid: proc.pid ?? -1,

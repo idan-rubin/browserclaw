@@ -811,7 +811,19 @@ async function partitionAccessiblePages(opts: {
   return { accessible, blockedCount };
 }
 
-export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: SsrfPolicy }) {
+export function hasCachedPlaywrightBrowserConnection(cdpUrl: string): boolean {
+  return cachedByCdpUrl.has(normalizeCdpUrl(cdpUrl));
+}
+
+export function isRecoverableStalePageSelectionError(err: unknown, reusedCachedBrowser: boolean): boolean {
+  if (!reusedCachedBrowser) return false;
+  if (err instanceof BrowserTabNotFoundError) return true;
+  if (err instanceof Error && err.message.includes('No pages available in the connected browser.')) return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return message.toLowerCase().includes('tab not found');
+}
+
+async function getPageForTargetIdOnce(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: SsrfPolicy }) {
   if (opts.targetId !== undefined && opts.targetId !== '' && isBlockedTarget(opts.cdpUrl, opts.targetId))
     throw new BlockedBrowserTargetError();
   const { browser } = await connectBrowser(opts.cdpUrl, undefined, opts.ssrfPolicy);
@@ -835,6 +847,17 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
   if (foundTargetId !== null && foundTargetId !== '' && isBlockedTarget(opts.cdpUrl, foundTargetId))
     throw new BlockedBrowserTargetError();
   return found;
+}
+
+export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: SsrfPolicy }) {
+  const reusedCachedBrowser = hasCachedPlaywrightBrowserConnection(opts.cdpUrl);
+  try {
+    return await getPageForTargetIdOnce(opts);
+  } catch (err) {
+    if (!isRecoverableStalePageSelectionError(err, reusedCachedBrowser)) throw err;
+    await closePlaywrightBrowserConnection({ cdpUrl: opts.cdpUrl });
+    return await getPageForTargetIdOnce(opts);
+  }
 }
 
 /**
