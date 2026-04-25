@@ -875,9 +875,9 @@ export function buildChromeLaunchArgs(opts: BuildChromeLaunchArgsOptions): strin
       '--disable-background-networking',
       '--disable-component-update',
       '--disable-features=Translate,MediaRouter',
-      '--password-store=basic',
     );
   }
+  if (opts.platform === 'linux') args.push('--password-store=basic');
   if (opts.headless) {
     args.push('--headless=new', '--disable-gpu');
   }

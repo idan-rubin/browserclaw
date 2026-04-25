@@ -341,7 +341,6 @@ describe('buildChromeLaunchArgs', () => {
     expect(args).not.toContain('--disable-background-networking');
     expect(args).not.toContain('--disable-component-update');
     expect(args).not.toContain('--disable-features=Translate,MediaRouter');
-    expect(args).not.toContain('--password-store=basic');
   });
 
   it('adds CI-deterministic flags when ciDefaults: true', () => {
@@ -350,7 +349,23 @@ describe('buildChromeLaunchArgs', () => {
     expect(args).toContain('--disable-background-networking');
     expect(args).toContain('--disable-component-update');
     expect(args).toContain('--disable-features=Translate,MediaRouter');
-    expect(args).toContain('--password-store=basic');
+  });
+
+  it('adds --password-store=basic on linux always (avoid keyring hang)', () => {
+    expect(buildChromeLaunchArgs({ ...baseOpts, platform: 'linux' })).toContain('--password-store=basic');
+    expect(buildChromeLaunchArgs({ ...baseOpts, platform: 'linux', ciDefaults: true })).toContain(
+      '--password-store=basic',
+    );
+  });
+
+  it('does NOT add --password-store=basic on non-linux', () => {
+    expect(buildChromeLaunchArgs({ ...baseOpts, platform: 'darwin' })).not.toContain('--password-store=basic');
+    expect(buildChromeLaunchArgs({ ...baseOpts, platform: 'win32' })).not.toContain('--password-store=basic');
+  });
+
+  it('adds --ignore-certificate-errors when ignoreHTTPSErrors: true', () => {
+    expect(buildChromeLaunchArgs({ ...baseOpts, ignoreHTTPSErrors: true })).toContain('--ignore-certificate-errors');
+    expect(buildChromeLaunchArgs(baseOpts)).not.toContain('--ignore-certificate-errors');
   });
 
   it('adds --headless=new and --disable-gpu when headless', () => {
