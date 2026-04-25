@@ -552,30 +552,36 @@ describe('pickActiveTargetId', () => {
 
 describe('isRecoverableStalePageSelectionError', () => {
   it('returns false when no cached browser was reused', () => {
-    expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), false)).toBe(false);
+    expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), false, false)).toBe(false);
+    expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), false, true)).toBe(false);
   });
 
-  it('returns true for BrowserTabNotFoundError when cache was reused', () => {
-    expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), true)).toBe(true);
-  });
-
-  it('returns true for "No pages available" error when cache was reused', () => {
+  it('returns true for "No pages available" regardless of explicit targetId', () => {
     const err = new Error('No pages available in the connected browser.');
-    expect(isRecoverableStalePageSelectionError(err, true)).toBe(true);
+    expect(isRecoverableStalePageSelectionError(err, true, false)).toBe(true);
+    expect(isRecoverableStalePageSelectionError(err, true, true)).toBe(true);
   });
 
-  it('returns true for any error containing "tab not found" (case-insensitive) when cache was reused', () => {
-    expect(isRecoverableStalePageSelectionError(new Error('Tab Not Found'), true)).toBe(true);
-    expect(isRecoverableStalePageSelectionError(new Error('something: tab not found'), true)).toBe(true);
+  it('returns true for BrowserTabNotFoundError when no explicit targetId was passed', () => {
+    expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), true, false)).toBe(true);
+  });
+
+  it('returns false for BrowserTabNotFoundError when caller passed an explicit targetId', () => {
+    expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), true, true)).toBe(false);
+  });
+
+  it('returns true for "tab not found" message only when no explicit targetId', () => {
+    expect(isRecoverableStalePageSelectionError(new Error('Tab Not Found'), true, false)).toBe(true);
+    expect(isRecoverableStalePageSelectionError(new Error('Tab Not Found'), true, true)).toBe(false);
   });
 
   it('returns false for unrelated errors', () => {
-    expect(isRecoverableStalePageSelectionError(new Error('boom'), true)).toBe(false);
-    expect(isRecoverableStalePageSelectionError(new BlockedBrowserTargetError(), true)).toBe(false);
+    expect(isRecoverableStalePageSelectionError(new Error('boom'), true, false)).toBe(false);
+    expect(isRecoverableStalePageSelectionError(new BlockedBrowserTargetError(), true, false)).toBe(false);
   });
 
   it('handles non-Error inputs', () => {
-    expect(isRecoverableStalePageSelectionError('tab not found', true)).toBe(true);
-    expect(isRecoverableStalePageSelectionError(null, true)).toBe(false);
+    expect(isRecoverableStalePageSelectionError('tab not found', true, false)).toBe(true);
+    expect(isRecoverableStalePageSelectionError(null, true, false)).toBe(false);
   });
 });

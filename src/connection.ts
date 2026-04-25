@@ -820,10 +820,15 @@ export function hasCachedPlaywrightBrowserConnection(cdpUrl: string): boolean {
   return cachedByCdpUrl.has(normalizeCdpUrl(cdpUrl));
 }
 
-export function isRecoverableStalePageSelectionError(err: unknown, reusedCachedBrowser: boolean): boolean {
+export function isRecoverableStalePageSelectionError(
+  err: unknown,
+  reusedCachedBrowser: boolean,
+  hadExplicitTargetId: boolean,
+): boolean {
   if (!reusedCachedBrowser) return false;
-  if (err instanceof BrowserTabNotFoundError) return true;
   if (err instanceof Error && err.message.includes('No pages available in the connected browser.')) return true;
+  if (hadExplicitTargetId) return false;
+  if (err instanceof BrowserTabNotFoundError) return true;
   const message = err instanceof Error ? err.message : String(err);
   return message.toLowerCase().includes('tab not found');
 }
@@ -856,10 +861,11 @@ async function getPageForTargetIdOnce(opts: { cdpUrl: string; targetId?: string;
 
 export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: SsrfPolicy }) {
   const reusedCachedBrowser = hasCachedPlaywrightBrowserConnection(opts.cdpUrl);
+  const hadExplicitTargetId = opts.targetId !== undefined && opts.targetId !== '';
   try {
     return await getPageForTargetIdOnce(opts);
   } catch (err) {
-    if (!isRecoverableStalePageSelectionError(err, reusedCachedBrowser)) throw err;
+    if (!isRecoverableStalePageSelectionError(err, reusedCachedBrowser, hadExplicitTargetId)) throw err;
     await closePlaywrightBrowserConnection({ cdpUrl: opts.cdpUrl, preserveSsrfState: true });
     return await getPageForTargetIdOnce(opts);
   }
