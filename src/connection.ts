@@ -520,15 +520,24 @@ export async function disconnectBrowser(): Promise<void> {
 
 /**
  * Close the Playwright connection for a specific CDP URL without affecting other connections.
+ *
+ * `preserveBlockedMetadata`: when true, do not clear SSRF-blocked target/page-ref tracking.
+ * Used by stale-cache recovery so a concurrent `markTargetBlocked` can't be lost in the
+ * snapshot/clear/restore window.
  */
-export async function closePlaywrightBrowserConnection(opts?: { cdpUrl?: string }): Promise<void> {
+export async function closePlaywrightBrowserConnection(opts?: {
+  cdpUrl?: string;
+  preserveBlockedMetadata?: boolean;
+}): Promise<void> {
   if (opts?.cdpUrl !== undefined && opts.cdpUrl !== '') {
     return withConnectionLock(async () => {
       const cdpUrl = opts.cdpUrl;
       if (cdpUrl === undefined || cdpUrl === '') return;
       const normalized = normalizeCdpUrl(cdpUrl);
-      clearBlockedTargetsForCdpUrl(normalized);
-      clearBlockedPageRefsForCdpUrl(normalized);
+      if (opts.preserveBlockedMetadata !== true) {
+        clearBlockedTargetsForCdpUrl(normalized);
+        clearBlockedPageRefsForCdpUrl(normalized);
+      }
       const cur = cachedByCdpUrl.get(normalized);
       cachedByCdpUrl.delete(normalized);
       connectingByCdpUrl.delete(normalized);
@@ -849,26 +858,15 @@ async function getPageForTargetIdOnce(opts: { cdpUrl: string; targetId?: string;
   return found;
 }
 
-function snapshotBlockedTargetsForCdpUrl(cdpUrl: string): string[] {
-  const prefix = `${normalizeCdpUrl(cdpUrl)}::`;
-  const keys: string[] = [];
-  for (const key of blockedTargetsByCdpUrl) {
-    if (key.startsWith(prefix)) keys.push(key);
-  }
-  return keys;
-}
-
 export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: SsrfPolicy }) {
   const reusedCachedBrowser = hasCachedPlaywrightBrowserConnection(opts.cdpUrl);
   try {
     return await getPageForTargetIdOnce(opts);
   } catch (err) {
     if (!isRecoverableStalePageSelectionError(err, reusedCachedBrowser)) throw err;
-    // Preserve blocked-target metadata across the cache eviction so a recovery
-    // retry can't re-select a previously SSRF-blocked target.
-    const preserved = snapshotBlockedTargetsForCdpUrl(opts.cdpUrl);
-    await closePlaywrightBrowserConnection({ cdpUrl: opts.cdpUrl });
-    for (const key of preserved) blockedTargetsByCdpUrl.add(key);
+    // Drop the stale cached connection but keep SSRF-blocked target metadata —
+    // a concurrent markTargetBlocked() during the close await would otherwise be lost.
+    await closePlaywrightBrowserConnection({ cdpUrl: opts.cdpUrl, preserveBlockedMetadata: true });
     return await getPageForTargetIdOnce(opts);
   }
 }

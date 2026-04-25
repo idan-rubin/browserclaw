@@ -410,13 +410,13 @@ describe('clearStaleChromeSingletonLocks', () => {
     }
   });
 
-  itUnix('clears artifacts when lock host differs from current host', () => {
+  itUnix('does NOT clear when lock host differs (cross-host liveness unknown)', () => {
     const dir = makeTempDir();
     try {
       const target = `some-other-host-${String(process.pid)}`;
       fs.symlinkSync(target, path.join(dir, 'SingletonLock'));
-      expect(clearStaleChromeSingletonLocks(dir, os.hostname())).toBe(true);
-      expect(() => fs.lstatSync(path.join(dir, 'SingletonLock'))).toThrow();
+      expect(clearStaleChromeSingletonLocks(dir, os.hostname())).toBe(false);
+      expect(fs.lstatSync(path.join(dir, 'SingletonLock')).isSymbolicLink()).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

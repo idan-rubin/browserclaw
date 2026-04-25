@@ -45,7 +45,10 @@ export function clearStaleChromeSingletonLocks(userDataDir: string, hostname: st
   if (!match?.groups) return false;
   const lockHost = match.groups.lockHost;
   const pid = Number.parseInt(match.groups.pid, 10);
-  if (lockHost === hostname && processExists(pid)) return false;
+  // Cross-host: no way to check liveness, so leave it alone — user-data dirs on shared storage
+  // could have a live Chrome on the other machine. Same-host: only clear when the holder is dead.
+  if (lockHost !== hostname) return false;
+  if (processExists(pid)) return false;
   clearChromeSingletonArtifacts(userDataDir);
   return true;
 }
