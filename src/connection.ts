@@ -849,13 +849,26 @@ async function getPageForTargetIdOnce(opts: { cdpUrl: string; targetId?: string;
   return found;
 }
 
+function snapshotBlockedTargetsForCdpUrl(cdpUrl: string): string[] {
+  const prefix = `${normalizeCdpUrl(cdpUrl)}::`;
+  const keys: string[] = [];
+  for (const key of blockedTargetsByCdpUrl) {
+    if (key.startsWith(prefix)) keys.push(key);
+  }
+  return keys;
+}
+
 export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: SsrfPolicy }) {
   const reusedCachedBrowser = hasCachedPlaywrightBrowserConnection(opts.cdpUrl);
   try {
     return await getPageForTargetIdOnce(opts);
   } catch (err) {
     if (!isRecoverableStalePageSelectionError(err, reusedCachedBrowser)) throw err;
+    // Preserve blocked-target metadata across the cache eviction so a recovery
+    // retry can't re-select a previously SSRF-blocked target.
+    const preserved = snapshotBlockedTargetsForCdpUrl(opts.cdpUrl);
     await closePlaywrightBrowserConnection({ cdpUrl: opts.cdpUrl });
+    for (const key of preserved) blockedTargetsByCdpUrl.add(key);
     return await getPageForTargetIdOnce(opts);
   }
 }

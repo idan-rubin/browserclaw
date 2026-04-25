@@ -51,7 +51,8 @@ export function clearStaleChromeSingletonLocks(userDataDir: string, hostname: st
 }
 
 async function waitForChromeProcessExit(proc: ChildProcess, timeoutMs: number): Promise<void> {
-  if (proc.exitCode !== null || proc.signalCode !== null || proc.killed) return;
+  // proc.killed only signals that a kill() call succeeded, not that the process exited.
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
   await new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
       proc.off('exit', onExit);
