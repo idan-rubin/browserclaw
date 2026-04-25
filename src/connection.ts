@@ -523,21 +523,21 @@ export async function disconnectBrowser(): Promise<void> {
  */
 export async function closePlaywrightBrowserConnection(opts?: {
   cdpUrl?: string;
-  preserveBlockedMetadata?: boolean;
+  preserveSsrfState?: boolean;
 }): Promise<void> {
   if (opts?.cdpUrl !== undefined && opts.cdpUrl !== '') {
     return withConnectionLock(async () => {
       const cdpUrl = opts.cdpUrl;
       if (cdpUrl === undefined || cdpUrl === '') return;
       const normalized = normalizeCdpUrl(cdpUrl);
-      if (opts.preserveBlockedMetadata !== true) {
+      if (opts.preserveSsrfState !== true) {
         clearBlockedTargetsForCdpUrl(normalized);
         clearBlockedPageRefsForCdpUrl(normalized);
+        lastPolicyByCdpUrl.delete(normalized);
       }
       const cur = cachedByCdpUrl.get(normalized);
       cachedByCdpUrl.delete(normalized);
       connectingByCdpUrl.delete(normalized);
-      lastPolicyByCdpUrl.delete(normalized);
       if (!cur) return;
       if (cur.onDisconnected && typeof cur.browser.off === 'function')
         cur.browser.off('disconnected', cur.onDisconnected);
@@ -860,7 +860,7 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
     return await getPageForTargetIdOnce(opts);
   } catch (err) {
     if (!isRecoverableStalePageSelectionError(err, reusedCachedBrowser)) throw err;
-    await closePlaywrightBrowserConnection({ cdpUrl: opts.cdpUrl, preserveBlockedMetadata: true });
+    await closePlaywrightBrowserConnection({ cdpUrl: opts.cdpUrl, preserveSsrfState: true });
     return await getPageForTargetIdOnce(opts);
   }
 }
