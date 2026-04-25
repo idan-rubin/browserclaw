@@ -104,6 +104,8 @@ export interface LaunchOptions {
   ignoreHTTPSErrors?: boolean;
   /** Add CI-deterministic Chrome flags (sync/component-update/translate/safebrowsing). May fingerprint as automation. Default: `false`. */
   ciDefaults?: boolean;
+  /** Inject stealth patches (navigator.webdriver, plugins, WebGL vendor, etc.) to mimic native Chrome. The patches are themselves fingerprintable by sophisticated detectors and are off by default. Default: `false`. */
+  stealth?: boolean;
   /**
    * Launch in a fully isolated profile: uses a unique per-run profile name,
    * a dedicated user-data directory, and does not share state with other
@@ -163,6 +165,8 @@ export interface ConnectOptions {
    * Videos are saved when the page or context is closed.
    */
   recordVideo?: { dir: string; size?: { width: number; height: number } };
+  /** Inject stealth patches. See `LaunchOptions.stealth` — same caveat applies. Default: `false`. */
+  stealth?: boolean;
 }
 
 // ── Snapshot ──
