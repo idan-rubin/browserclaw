@@ -11,7 +11,6 @@ import {
   ensurePageState,
   ensureContextState,
   observeContext,
-  setStealthEnabled,
 } from './page-utils.js';
 import type { PageState, NetworkRequest } from './types.js';
 
@@ -306,7 +305,6 @@ describe('ensureContextState', () => {
 
 describe('observeContext stealth gating', () => {
   it('does NOT inject stealth when disabled (default)', async () => {
-    setStealthEnabled(false);
     let calls = 0;
     const ctx = {
       addInitScript: () => {
@@ -329,7 +327,6 @@ describe('observeContext stealth gating', () => {
   });
 
   it('injects stealth via addInitScript when enabled', async () => {
-    setStealthEnabled(true);
     let calls = 0;
     const ctx = {
       addInitScript: () => {
@@ -347,8 +344,75 @@ describe('observeContext stealth gating', () => {
         /* noop */
       },
     } as unknown as BrowserContext;
-    await observeContext(ctx);
+    await observeContext(ctx, { stealth: true });
     expect(calls).toBe(1);
-    setStealthEnabled(false); // restore default
+  });
+
+  it('does not leak stealth between contexts', async () => {
+    let stealthCalls = 0;
+    let plainCalls = 0;
+    const stealthCtx = {
+      addInitScript: () => {
+        stealthCalls++;
+        return Promise.resolve();
+      },
+      pages: () => [],
+      on: () => {
+        /* noop */
+      },
+      off: () => {
+        /* noop */
+      },
+      once: () => {
+        /* noop */
+      },
+    } as unknown as BrowserContext;
+    const plainCtx = {
+      addInitScript: () => {
+        plainCalls++;
+        return Promise.resolve();
+      },
+      pages: () => [],
+      on: () => {
+        /* noop */
+      },
+      off: () => {
+        /* noop */
+      },
+      once: () => {
+        /* noop */
+      },
+    } as unknown as BrowserContext;
+
+    await observeContext(stealthCtx, { stealth: true });
+    await observeContext(plainCtx);
+
+    expect(stealthCalls).toBe(1);
+    expect(plainCalls).toBe(0);
+  });
+
+  it('can enable stealth after a context was already observed', async () => {
+    let calls = 0;
+    const ctx = {
+      addInitScript: () => {
+        calls++;
+        return Promise.resolve();
+      },
+      pages: () => [],
+      on: () => {
+        /* noop */
+      },
+      off: () => {
+        /* noop */
+      },
+      once: () => {
+        /* noop */
+      },
+    } as unknown as BrowserContext;
+
+    await observeContext(ctx, { stealth: false });
+    await observeContext(ctx, { stealth: true });
+
+    expect(calls).toBe(1);
   });
 });

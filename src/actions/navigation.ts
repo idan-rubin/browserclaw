@@ -6,8 +6,8 @@ import {
   connectBrowser,
   getPageForTargetId,
   ensurePageState,
-  ensureContextState,
   observeContext,
+  getStealthEnabledForCdpUrl,
   pageTargetId,
   getAllPages,
   forceDisconnectPlaywrightConnection,
@@ -39,9 +39,10 @@ async function createRecordingContext(
   browser: Browser,
   cdpUrl: string,
   recordVideo: { dir: string; size?: { width: number; height: number } },
+  stealth?: boolean,
 ): Promise<BrowserContext> {
   const context = await browser.newContext({ recordVideo });
-  await observeContext(context);
+  await observeContext(context, { stealth: stealth ?? getStealthEnabledForCdpUrl(cdpUrl) });
   recordingContexts.set(cdpUrl, context);
   context.on('close', () => recordingContexts.delete(cdpUrl));
   return context;
@@ -554,15 +555,21 @@ export async function createPageViaPlaywright(opts: {
   cdpUrl: string;
   url?: string;
   ssrfPolicy?: SsrfPolicy;
+  stealth?: boolean;
   /** @deprecated Use ssrfPolicy: { dangerouslyAllowPrivateNetwork: true } instead */
   allowInternal?: boolean;
   recordVideo?: { dir: string; size?: { width: number; height: number } };
 }): Promise<BrowserTab> {
-  const { browser } = await connectBrowser(opts.cdpUrl);
+  /* eslint-disable @typescript-eslint/no-deprecated */
+  const policy =
+    opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
+  /* eslint-enable @typescript-eslint/no-deprecated */
+  const { browser } = await connectBrowser(opts.cdpUrl, undefined, policy, { stealth: opts.stealth });
   const context = opts.recordVideo
-    ? (recordingContexts.get(opts.cdpUrl) ?? (await createRecordingContext(browser, opts.cdpUrl, opts.recordVideo)))
+    ? (recordingContexts.get(opts.cdpUrl) ??
+      (await createRecordingContext(browser, opts.cdpUrl, opts.recordVideo, opts.stealth)))
     : (browser.contexts()[0] ?? (await browser.newContext()));
-  ensureContextState(context);
+  await observeContext(context, { stealth: opts.stealth ?? getStealthEnabledForCdpUrl(opts.cdpUrl) });
   const page = await context.newPage();
   ensurePageState(page);
   clearBlockedPageRef(opts.cdpUrl, page);
@@ -570,10 +577,6 @@ export async function createPageViaPlaywright(opts: {
   clearBlockedTarget(opts.cdpUrl, createdTargetId ?? undefined);
 
   const targetUrl = (opts.url ?? '').trim() || 'about:blank';
-  /* eslint-disable @typescript-eslint/no-deprecated */
-  const policy =
-    opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
-  /* eslint-enable @typescript-eslint/no-deprecated */
 
   if (targetUrl !== 'about:blank') {
     await assertBrowserNavigationAllowed({ url: targetUrl, ...withBrowserNavigationPolicy(policy) });

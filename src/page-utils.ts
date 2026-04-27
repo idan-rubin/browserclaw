@@ -11,6 +11,13 @@ const pageStates = new WeakMap<Page, PageState>();
 const contextStates = new WeakMap<BrowserContext, ContextState>();
 const observedContexts = new WeakSet<BrowserContext>();
 const observedPages = new WeakSet<Page>();
+const contextStealthSettings = new WeakMap<BrowserContext, boolean>();
+const stealthInitScriptContexts = new WeakSet<BrowserContext>();
+const stealthAppliedPages = new WeakSet<Page>();
+
+export interface ObserveOptions {
+  stealth?: boolean;
+}
 
 // ── Arm ID Counters ──
 
@@ -185,6 +192,7 @@ export function ensurePageState(page: Page): PageState {
     page.on('close', () => {
       pageStates.delete(page);
       observedPages.delete(page);
+      stealthAppliedPages.delete(page);
     });
   }
 
@@ -205,54 +213,69 @@ export function setDialogHandlerOnPage(page: Page, handler?: DialogHandler): voi
 
 // ── Stealth ──
 
-let stealthEnabled = false;
-
-export function setStealthEnabled(enabled: boolean): void {
-  stealthEnabled = enabled;
+function resolveContextStealth(context: BrowserContext, opts?: ObserveOptions): boolean {
+  const current = contextStealthSettings.get(context) ?? false;
+  if (opts?.stealth === true && !current) contextStealthSettings.set(context, true);
+  return contextStealthSettings.get(context) ?? false;
 }
 
-async function applyStealthToPage(page: Page): Promise<void> {
+function contextStealthEnabled(context: BrowserContext): boolean {
+  return contextStealthSettings.get(context) ?? false;
+}
+
+async function installStealthInitScript(context: BrowserContext): Promise<void> {
+  if (stealthInitScriptContexts.has(context)) return;
+  stealthInitScriptContexts.add(context);
+  try {
+    await context.addInitScript(STEALTH_SCRIPT);
+  } catch (e: unknown) {
+    stealthInitScriptContexts.delete(context);
+    if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
+      console.warn('[browserclaw] stealth initScript failed:', e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function applyStealthToPage(page: Page, stealthEnabled: boolean): Promise<void> {
   if (!stealthEnabled) return;
+  if (stealthAppliedPages.has(page)) return;
   try {
     await page.evaluate(STEALTH_SCRIPT);
+    stealthAppliedPages.add(page);
   } catch (e: unknown) {
     if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
       console.warn('[browserclaw] stealth evaluate failed:', e instanceof Error ? e.message : String(e));
   }
 }
 
-export async function observeContext(context: BrowserContext): Promise<void> {
-  if (observedContexts.has(context)) return;
-  observedContexts.add(context);
+export async function observeContext(context: BrowserContext, opts?: ObserveOptions): Promise<void> {
+  const stealthEnabled = resolveContextStealth(context, opts);
   ensureContextState(context);
 
-  if (stealthEnabled) {
-    try {
-      await context.addInitScript(STEALTH_SCRIPT);
-    } catch (e: unknown) {
-      if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
-        console.warn('[browserclaw] stealth initScript failed:', e instanceof Error ? e.message : String(e));
-    }
-  }
+  if (stealthEnabled) await installStealthInitScript(context);
 
   for (const page of context.pages()) {
     ensurePageState(page);
-    await applyStealthToPage(page);
+    await applyStealthToPage(page, stealthEnabled);
   }
+
+  if (observedContexts.has(context)) return;
+  observedContexts.add(context);
+
   const onPage = (page: Page) => {
     ensurePageState(page);
-    applyStealthToPage(page).catch(() => {
+    applyStealthToPage(page, contextStealthEnabled(context)).catch(() => {
       /* noop — best-effort stealth for new pages */
     });
   };
   context.on('page', onPage);
   context.once('close', () => {
     context.off('page', onPage);
+    stealthInitScriptContexts.delete(context);
   });
 }
 
-export async function observeBrowser(browser: Browser): Promise<void> {
-  for (const context of browser.contexts()) await observeContext(context);
+export async function observeBrowser(browser: Browser, opts?: ObserveOptions): Promise<void> {
+  for (const context of browser.contexts()) await observeContext(context, opts);
 }
 
 // ── Error Helpers ──

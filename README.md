@@ -157,7 +157,10 @@ const browser = await BrowserClaw.connect();
 
 `connect()` checks that Chrome is reachable, then the internal CDP connection retries 3 times with increasing timeouts (5 s, 7 s, 9 s) — safe for Docker/CI where Chrome starts slowly.
 
-**Anti-detection:** browserclaw automatically hides `navigator.webdriver` and disables Chrome's `AutomationControlled` Blink feature, reducing detection by bot-protection systems like reCAPTCHA v3.
+**Anti-detection:** `launch()` always passes Chrome the flag that disables the `AutomationControlled` Blink feature.
+`connect()` attaches to an already-running Chrome, so it cannot add launch flags retroactively. To inject JavaScript
+stealth patches for `navigator.webdriver`, plugins, WebGL vendor, and related browser signals, pass `stealth: true` to
+`launch()` or `connect()`.
 
 #### Isolated profiles (per-run, per-process)
 
@@ -227,10 +230,10 @@ BrowserClaw exports structured errors so workflow code can tell apart the common
 
 ```typescript
 import {
-  BrowserTabNotFoundError,   // targetId no longer resolves to an open tab
-  StaleRefError,              // ref is not in the current snapshot
-  SnapshotHydrationError,     // snapshot returned without interactive refs
-  NavigationRaceError,        // the page navigated during an operation
+  BrowserTabNotFoundError, // targetId no longer resolves to an open tab
+  StaleRefError, // ref is not in the current snapshot
+  SnapshotHydrationError, // snapshot returned without interactive refs
+  NavigationRaceError, // the page navigated during an operation
 } from 'browserclaw';
 
 try {
