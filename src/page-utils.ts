@@ -214,7 +214,8 @@ export function setDialogHandlerOnPage(page: Page, handler?: DialogHandler): voi
 // ── Stealth ──
 
 function resolveContextStealth(context: BrowserContext, opts?: ObserveOptions): boolean {
-  if (opts?.stealth !== undefined) contextStealthSettings.set(context, opts.stealth);
+  const current = contextStealthSettings.get(context) ?? false;
+  if (opts?.stealth === true && !current) contextStealthSettings.set(context, true);
   return contextStealthSettings.get(context) ?? false;
 }
 

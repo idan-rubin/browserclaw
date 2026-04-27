@@ -431,10 +431,11 @@ export async function connectBrowser(
   observeOptions?: ObserveOptions,
 ): Promise<CachedConnection> {
   const normalized = normalizeCdpUrl(cdpUrl);
-  if (observeOptions?.stealth !== undefined) stealthByCdpUrl.set(normalized, observeOptions.stealth);
+  if (observeOptions?.stealth === true && stealthByCdpUrl.get(normalized) !== true)
+    stealthByCdpUrl.set(normalized, true);
   const effectiveObserveOptions: ObserveOptions = { stealth: getStealthEnabledForCdpUrl(normalized) };
   const observeCached = async (connected: CachedConnection): Promise<CachedConnection> => {
-    if (observeOptions?.stealth !== undefined) await observeBrowser(connected.browser, effectiveObserveOptions);
+    if (effectiveObserveOptions.stealth === true) await observeBrowser(connected.browser, effectiveObserveOptions);
     return connected;
   };
 
