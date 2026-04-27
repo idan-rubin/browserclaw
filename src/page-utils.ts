@@ -225,10 +225,11 @@ function contextStealthEnabled(context: BrowserContext): boolean {
 
 async function installStealthInitScript(context: BrowserContext): Promise<void> {
   if (stealthInitScriptContexts.has(context)) return;
+  stealthInitScriptContexts.add(context);
   try {
     await context.addInitScript(STEALTH_SCRIPT);
-    stealthInitScriptContexts.add(context);
   } catch (e: unknown) {
+    stealthInitScriptContexts.delete(context);
     if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
       console.warn('[browserclaw] stealth initScript failed:', e instanceof Error ? e.message : String(e));
   }
