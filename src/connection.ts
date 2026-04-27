@@ -12,7 +12,7 @@ import {
   hasProxyEnvConfigured,
 } from './chrome-launcher.js';
 import { BrowserTabNotFoundError } from './errors.js';
-import { ensurePageState, observeBrowser, setDialogHandlerOnPage } from './page-utils.js';
+import { ensurePageState, observeBrowser, setDialogHandlerOnPage, type ObserveOptions } from './page-utils.js';
 import { clearRoleRefsForCdpUrl, normalizeCdpUrl } from './ref-resolver.js';
 import { assertCdpEndpointAllowed } from './security.js';
 import type { DialogHandler, SsrfPolicy } from './types.js';
@@ -282,10 +282,15 @@ interface CachedConnection {
 
 const cachedByCdpUrl = new Map<string, CachedConnection>();
 const connectingByCdpUrl = new Map<string, Promise<CachedConnection>>();
+const stealthByCdpUrl = new Map<string, boolean>();
 // Remembered per-URL so reconnects re-run assertCdpEndpointAllowed even when
 // the action function chain doesn't thread a policy through. Closes the
 // DNS-rebinding window between connect attempts.
 const lastPolicyByCdpUrl = new Map<string, SsrfPolicy>();
+
+export function getStealthEnabledForCdpUrl(cdpUrl: string): boolean {
+  return stealthByCdpUrl.get(normalizeCdpUrl(cdpUrl)) ?? false;
+}
 
 // ── Connection Mutex ──
 // Serializes connect/disconnect operations to prevent races where a disconnect
@@ -423,26 +428,34 @@ export async function connectBrowser(
   cdpUrl: string,
   authToken?: string,
   ssrfPolicy?: SsrfPolicy,
+  observeOptions?: ObserveOptions,
 ): Promise<CachedConnection> {
   const normalized = normalizeCdpUrl(cdpUrl);
+  if (observeOptions?.stealth !== undefined) stealthByCdpUrl.set(normalized, observeOptions.stealth);
+  const effectiveObserveOptions: ObserveOptions = { stealth: getStealthEnabledForCdpUrl(normalized) };
+  const observeCached = async (connected: CachedConnection): Promise<CachedConnection> => {
+    if (observeOptions?.stealth === true) await observeBrowser(connected.browser, effectiveObserveOptions);
+    return connected;
+  };
+
   // Lock-free fast path: return cached connection
   const existing_cached = cachedByCdpUrl.get(normalized);
-  if (existing_cached) return existing_cached;
+  if (existing_cached) return await observeCached(existing_cached);
 
   if (ssrfPolicy !== undefined) lastPolicyByCdpUrl.set(normalized, ssrfPolicy);
   const effectivePolicy = ssrfPolicy ?? lastPolicyByCdpUrl.get(normalized);
   await assertCdpEndpointAllowed(normalized, effectivePolicy);
 
   const existing = connectingByCdpUrl.get(normalized);
-  if (existing) return await existing;
+  if (existing) return await observeCached(await existing);
 
   // Slow path: acquire connection lock before creating a new connection
   return withConnectionLock(async () => {
     // Re-check after acquiring lock
     const rechecked = cachedByCdpUrl.get(normalized);
-    if (rechecked) return rechecked;
+    if (rechecked) return await observeCached(rechecked);
     const recheckPending = connectingByCdpUrl.get(normalized);
-    if (recheckPending) return await recheckPending;
+    if (recheckPending) return await observeCached(await recheckPending);
 
     const connectWithRetry = async () => {
       let lastErr: unknown;
@@ -466,7 +479,7 @@ export async function connectBrowser(
           };
           const connected: CachedConnection = { browser, cdpUrl: normalized, onDisconnected };
           cachedByCdpUrl.set(normalized, connected);
-          await observeBrowser(browser);
+          await observeBrowser(browser, effectiveObserveOptions);
           browser.on('disconnected', onDisconnected);
           return connected;
         } catch (err) {
@@ -512,6 +525,7 @@ export async function disconnectBrowser(): Promise<void> {
       });
     }
     cachedByCdpUrl.clear();
+    stealthByCdpUrl.clear();
     lastPolicyByCdpUrl.clear();
     clearBlockedTargetsForCdpUrl();
     clearBlockedPageRefsForCdpUrl();
@@ -533,6 +547,7 @@ export async function closePlaywrightBrowserConnection(opts?: {
       if (opts.preserveSsrfState !== true) {
         clearBlockedTargetsForCdpUrl(normalized);
         clearBlockedPageRefsForCdpUrl(normalized);
+        stealthByCdpUrl.delete(normalized);
         lastPolicyByCdpUrl.delete(normalized);
       }
       const cur = cachedByCdpUrl.get(normalized);

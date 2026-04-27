@@ -157,7 +157,9 @@ const browser = await BrowserClaw.connect();
 
 `connect()` checks that Chrome is reachable, then the internal CDP connection retries 3 times with increasing timeouts (5 s, 7 s, 9 s) — safe for Docker/CI where Chrome starts slowly.
 
-**Anti-detection:** browserclaw automatically hides `navigator.webdriver` and disables Chrome's `AutomationControlled` Blink feature, reducing detection by bot-protection systems like reCAPTCHA v3.
+**Anti-detection:** browserclaw always disables Chrome's `AutomationControlled` Blink feature. To also inject JavaScript
+stealth patches for `navigator.webdriver`, plugins, WebGL vendor, and related browser signals, pass `stealth: true` to
+`launch()` or `connect()`.
 
 #### Isolated profiles (per-run, per-process)
 

@@ -66,7 +66,6 @@ import {
   BrowserTabNotFoundError,
   resolveActiveTargetId,
 } from './connection.js';
-import { setStealthEnabled } from './page-utils.js';
 import { assertCdpEndpointAllowed } from './security.js';
 import { snapshotAi } from './snapshot/ai-snapshot.js';
 import { snapshotRole, snapshotAria } from './snapshot/aria-snapshot.js';
@@ -1765,6 +1764,7 @@ export class BrowserClaw {
   private readonly cdpUrl: string;
   private readonly ssrfPolicy: SsrfPolicy | undefined;
   private readonly recordVideo: { dir: string; size?: { width: number; height: number } } | undefined;
+  private readonly stealth: boolean;
   private chrome: RunningChrome | null;
   private readonly _telemetry: RunTelemetry;
 
@@ -1774,12 +1774,14 @@ export class BrowserClaw {
     telemetry: RunTelemetry,
     ssrfPolicy?: SsrfPolicy,
     recordVideo?: { dir: string; size?: { width: number; height: number } },
+    stealth = false,
   ) {
     this.cdpUrl = cdpUrl;
     this.chrome = chrome;
     this._telemetry = telemetry;
     this.ssrfPolicy = ssrfPolicy;
     this.recordVideo = recordVideo;
+    this.stealth = stealth;
   }
 
   /**
@@ -1808,7 +1810,7 @@ export class BrowserClaw {
    */
   static async launch(opts: LaunchOptions = {}): Promise<BrowserClaw> {
     const startedAt = new Date().toISOString();
-    setStealthEnabled(opts.stealth === true);
+    const stealth = opts.stealth === true;
     const chrome = await launchChrome(opts);
     try {
       const cdpUrl = `http://127.0.0.1:${String(chrome.cdpPort)}`;
@@ -1817,12 +1819,12 @@ export class BrowserClaw {
         opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
       /* eslint-enable @typescript-eslint/no-deprecated */
       // Bootstrap connect to our own freshly-spawned loopback Chrome — no policy check.
-      await connectBrowser(cdpUrl, undefined);
+      await connectBrowser(cdpUrl, undefined, undefined, { stealth });
       const telemetry: RunTelemetry = {
         launchMs: chrome.launchMs,
         timestamps: { startedAt, launchedAt: new Date().toISOString() },
       };
-      const browser = new BrowserClaw(cdpUrl, chrome, telemetry, ssrfPolicy, opts.recordVideo);
+      const browser = new BrowserClaw(cdpUrl, chrome, telemetry, ssrfPolicy, opts.recordVideo, stealth);
       if (opts.url !== undefined && opts.url !== '') {
         const page = await browser.currentPage();
         const navT0 = Date.now();
@@ -1855,7 +1857,7 @@ export class BrowserClaw {
    */
   static async connect(cdpUrl?: string, opts?: ConnectOptions): Promise<BrowserClaw> {
     const startedAt = new Date().toISOString();
-    setStealthEnabled(opts?.stealth === true);
+    const stealth = opts?.stealth === true;
     const connectT0 = Date.now();
     let resolvedUrl = cdpUrl;
     if (resolvedUrl === undefined || resolvedUrl === '') {
@@ -1877,12 +1879,12 @@ export class BrowserClaw {
     if (!(await isChromeReachable(resolvedUrl, 3000, opts?.authToken, ssrfPolicy))) {
       throw new Error(`Cannot connect to Chrome at ${resolvedUrl}. Is Chrome running with --remote-debugging-port?`);
     }
-    await connectBrowser(resolvedUrl, opts?.authToken, ssrfPolicy);
+    await connectBrowser(resolvedUrl, opts?.authToken, ssrfPolicy, { stealth });
     const telemetry: RunTelemetry = {
       connectMs: Date.now() - connectT0,
       timestamps: { startedAt, connectedAt: new Date().toISOString() },
     };
-    return new BrowserClaw(resolvedUrl, null, telemetry, ssrfPolicy, opts?.recordVideo);
+    return new BrowserClaw(resolvedUrl, null, telemetry, ssrfPolicy, opts?.recordVideo, stealth);
   }
 
   /**
@@ -1903,6 +1905,7 @@ export class BrowserClaw {
       url,
       ssrfPolicy: this.ssrfPolicy,
       recordVideo: this.recordVideo,
+      stealth: this.stealth,
     });
     return new CrawlPage(this.cdpUrl, tab.targetId, this.ssrfPolicy);
   }
@@ -1921,7 +1924,7 @@ export class BrowserClaw {
    */
   async currentPage(): Promise<CrawlPage> {
     const connectT0 = Date.now();
-    await connectBrowser(this.cdpUrl);
+    await connectBrowser(this.cdpUrl, undefined, this.ssrfPolicy, { stealth: this.stealth });
     if (this._telemetry.connectMs === undefined) {
       this._telemetry.connectMs = Date.now() - connectT0;
       this._telemetry.timestamps.connectedAt = new Date().toISOString();
