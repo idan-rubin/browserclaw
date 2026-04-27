@@ -16,6 +16,7 @@ import {
   getAllPages,
   takeAiSnapshotText,
   pickActiveTargetId,
+  isRecoverablePlaywrightDisconnectError,
   isRecoverableStalePageSelectionError,
 } from './connection.js';
 
@@ -583,5 +584,33 @@ describe('isRecoverableStalePageSelectionError', () => {
   it('handles non-Error inputs', () => {
     expect(isRecoverableStalePageSelectionError('tab not found', true, false)).toBe(true);
     expect(isRecoverableStalePageSelectionError(null, true, false)).toBe(false);
+  });
+});
+
+describe('isRecoverablePlaywrightDisconnectError', () => {
+  it.each([
+    'Target page, context or browser has been closed',
+    'Browser has been closed',
+    'browser disconnected',
+    'Target closed',
+    'Connection closed',
+    'WebSocket closed',
+    'CDP socket closed',
+  ])('returns true for %s', (msg) => {
+    expect(isRecoverablePlaywrightDisconnectError(new Error(msg))).toBe(true);
+  });
+
+  it('matches case-insensitively', () => {
+    expect(isRecoverablePlaywrightDisconnectError(new Error('TARGET CLOSED'))).toBe(true);
+  });
+
+  it('returns false for unrelated errors', () => {
+    expect(isRecoverablePlaywrightDisconnectError(new Error('boom'))).toBe(false);
+    expect(isRecoverablePlaywrightDisconnectError(new Error('No pages available'))).toBe(false);
+  });
+
+  it('handles non-Error inputs', () => {
+    expect(isRecoverablePlaywrightDisconnectError('target closed')).toBe(true);
+    expect(isRecoverablePlaywrightDisconnectError(null)).toBe(false);
   });
 });
