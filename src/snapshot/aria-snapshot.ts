@@ -261,7 +261,7 @@ function buildAriaSnapshotRefs(nodes: AriaNode[], markedRefs: Set<string>): Role
     refs[node.ref] = {
       role,
       ...(name !== undefined ? { name } : {}),
-      ...(nth > 0 ? { nth } : {}),
+      nth,
       ...(markedRefs.has(node.ref) ? { domMarker: true } : {}),
     };
   }

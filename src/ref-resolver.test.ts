@@ -457,6 +457,23 @@ describe('refLocator', () => {
     expect(loc._name).toBe('Submit');
   });
 
+  it('disambiguates first duplicate ax ref with nth=0 in fallback', () => {
+    const page = mockPage();
+    storeRoleRefsForTarget({
+      page,
+      cdpUrl: 'ws://localhost:9222',
+      refs: {
+        ax1: { role: 'button', name: 'Submit', nth: 0 },
+        ax2: { role: 'button', name: 'Submit', nth: 1 },
+      },
+      mode: 'role',
+    });
+    const first = refLocator(page, 'ax1') as unknown as { _nth: number };
+    const second = refLocator(page, 'ax2') as unknown as { _nth: number };
+    expect(first._nth).toBe(0);
+    expect(second._nth).toBe(1);
+  });
+
   it('returns getByRole locator for known role ref', () => {
     const page = mockPage();
     storeRoleRefsForTarget({
