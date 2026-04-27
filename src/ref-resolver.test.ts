@@ -426,10 +426,52 @@ describe('refLocator', () => {
     expect(() => refLocator(page, 'e999')).toThrow('Unknown ref "e999"');
   });
 
-  it('rejects axN refs from snapshotAria with a helpful error', () => {
+  it('throws StaleRefError on axN ref when no aria snapshot was stored', () => {
     const page = mockPage();
-    expect(() => refLocator(page, 'ax1')).toThrow(/snapshotAria/);
-    expect(() => refLocator(page, 'ax42')).toThrow(/eN refs/);
+    ensurePageState(page);
+    expect(() => refLocator(page, 'ax1')).toThrow('Unknown ref "ax1"');
+  });
+
+  it('resolves axN ref via DOM marker selector when domMarker is set', () => {
+    const page = mockPage();
+    storeRoleRefsForTarget({
+      page,
+      cdpUrl: 'ws://localhost:9222',
+      refs: { ax1: { role: 'button', name: 'Submit', domMarker: true } },
+      mode: 'role',
+    });
+    const loc = refLocator(page, 'ax1') as unknown as { _selector: string };
+    expect(loc._selector).toBe('[data-browserclaw-ref="ax1"]');
+  });
+
+  it('falls back to getByRole for axN ref without domMarker', () => {
+    const page = mockPage();
+    storeRoleRefsForTarget({
+      page,
+      cdpUrl: 'ws://localhost:9222',
+      refs: { ax1: { role: 'button', name: 'Submit' } },
+      mode: 'role',
+    });
+    const loc = refLocator(page, 'ax1') as unknown as { _role: string; _name?: string };
+    expect(loc._role).toBe('button');
+    expect(loc._name).toBe('Submit');
+  });
+
+  it('disambiguates first duplicate ax ref with nth=0 in fallback', () => {
+    const page = mockPage();
+    storeRoleRefsForTarget({
+      page,
+      cdpUrl: 'ws://localhost:9222',
+      refs: {
+        ax1: { role: 'button', name: 'Submit', nth: 0 },
+        ax2: { role: 'button', name: 'Submit', nth: 1 },
+      },
+      mode: 'role',
+    });
+    const first = refLocator(page, 'ax1') as unknown as { _nth: number };
+    const second = refLocator(page, 'ax2') as unknown as { _nth: number };
+    expect(first._nth).toBe(0);
+    expect(second._nth).toBe(1);
   });
 
   it('returns getByRole locator for known role ref', () => {

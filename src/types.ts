@@ -192,6 +192,12 @@ export interface RoleRefInfo {
    * this selector directly instead of `aria-ref` or `getByRole()`.
    */
   selector?: string;
+  /**
+   * For `axN` refs: set to true when a marker attribute was successfully
+   * stamped onto the live DOM node, allowing direct attribute-selector
+   * resolution instead of falling back to role+name+nth.
+   */
+  domMarker?: boolean;
 }
 
 /** Map of ref IDs (e.g. `'e1'`, `'e2'`) to their element information. */

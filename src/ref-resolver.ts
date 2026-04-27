@@ -147,15 +147,23 @@ export function resolveBoundedDelayMs(value: number | undefined, label: string, 
 // ── Ref Locator ──
 
 const AX_REF_PATTERN = /^ax\d+$/;
+export const BROWSER_REF_MARKER_ATTRIBUTE = 'data-browserclaw-ref';
 
 export function refLocator(page: Page, ref: string) {
   const normalized = ref.startsWith('@') ? ref.slice(1) : ref.startsWith('ref=') ? ref.slice(4) : ref;
   if (normalized.trim() === '') throw new Error('ref is required');
 
   if (AX_REF_PATTERN.test(normalized)) {
-    throw new Error(
-      `Ref "${normalized}" comes from a snapshotAria() result and cannot be used with actions. Call page.snapshot() and use the eN refs from that snapshot instead.`,
-    );
+    const state = getPageState(page);
+    const info = state?.roleRefs?.[normalized];
+    if (!info) throw new StaleRefError(normalized);
+    if (info.domMarker === true) return page.locator(`[${BROWSER_REF_MARKER_ATTRIBUTE}="${normalized}"]`);
+    const role = info.role as Parameters<Page['getByRole']>[0];
+    const locator =
+      info.name !== undefined && info.name !== ''
+        ? page.getByRole(role, { name: info.name, exact: true })
+        : page.getByRole(role);
+    return info.nth !== undefined ? locator.nth(info.nth) : locator;
   }
 
   if (/^e\d+$/.test(normalized)) {

@@ -1,3 +1,5 @@
+import type { Page } from 'playwright-core';
+
 import { assertPageNavigationCompletedSafely } from '../actions/navigation.js';
 import {
   getPageForTargetId,
@@ -7,7 +9,8 @@ import {
   withPlaywrightPageCdpSession,
   takeAiSnapshotText,
 } from '../connection.js';
-import type { SnapshotResult, AriaSnapshotResult, AriaNode, SsrfPolicy } from '../types.js';
+import { BROWSER_REF_MARKER_ATTRIBUTE } from '../ref-resolver.js';
+import type { SnapshotResult, AriaSnapshotResult, AriaNode, RoleRefs, SsrfPolicy } from '../types.js';
 
 import { enrichSnapshotFromDom, mergeSnapshotWithEnrichment, nextRefCounter } from './dom-enrichment.js';
 import { buildRoleSnapshotFromAriaSnapshot, buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
@@ -177,8 +180,18 @@ export async function snapshotAria(opts: {
     };
   });
 
+  const formatted = formatAriaNodes(Array.isArray(res.nodes) ? res.nodes : [], limit);
+  const markedRefs = await markBackendDomRefsOnPage(page, formatted);
+  storeRoleRefsForTarget({
+    page,
+    cdpUrl: opts.cdpUrl,
+    targetId: opts.targetId,
+    refs: buildAriaSnapshotRefs(formatted, markedRefs),
+    mode: 'role',
+  });
+
   return {
-    nodes: formatAriaNodes(Array.isArray(res.nodes) ? res.nodes : [], limit),
+    nodes: formatted,
     untrusted: true,
     contentMeta: {
       sourceUrl,
@@ -186,6 +199,78 @@ export async function snapshotAria(opts: {
       capturedAt: new Date().toISOString(),
     },
   };
+}
+
+async function markBackendDomRefsOnPage(page: Page, nodes: AriaNode[]): Promise<Set<string>> {
+  await page
+    .locator(`[${BROWSER_REF_MARKER_ATTRIBUTE}]`)
+    .evaluateAll((elements, attr) => {
+      for (const element of elements) if (element instanceof Element) element.removeAttribute(attr);
+    }, BROWSER_REF_MARKER_ATTRIBUTE)
+    .catch(() => {
+      /* best-effort cleanup of stale markers */
+    });
+  const targetable = nodes.filter(
+    (n) => typeof n.backendDOMNodeId === 'number' && Number.isFinite(n.backendDOMNodeId) && n.backendDOMNodeId > 0,
+  );
+  const marked = new Set<string>();
+  if (!targetable.length) return marked;
+  return await withPlaywrightPageCdpSession(page, async (session) => {
+    type Send = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+    const send: Send = (method, params) =>
+      session.send(method as Parameters<typeof session.send>[0], params as Parameters<typeof session.send>[1]);
+    await send('DOM.enable').catch(() => {
+      /* best-effort */
+    });
+    const backendNodeIds = [...new Set(targetable.map((n) => Math.floor(n.backendDOMNodeId ?? 0)))];
+    const pushed = (await send('DOM.pushNodesByBackendIdsToFrontend', { backendNodeIds }).catch(() => ({}))) as {
+      nodeIds?: unknown;
+    };
+    const nodeIds = Array.isArray(pushed.nodeIds) ? (pushed.nodeIds as number[]) : [];
+    const nodeIdByBackendId = new Map<number, number>();
+    for (let i = 0; i < backendNodeIds.length; i++) {
+      const backendNodeId = backendNodeIds[i];
+      const nodeId = nodeIds[i];
+      if (backendNodeId && typeof nodeId === 'number' && nodeId > 0) nodeIdByBackendId.set(backendNodeId, nodeId);
+    }
+    for (const node of targetable) {
+      const nodeId = nodeIdByBackendId.get(Math.floor(node.backendDOMNodeId ?? 0));
+      if (nodeId === undefined || nodeId <= 0) continue;
+      try {
+        await send('DOM.setAttributeValue', { nodeId, name: BROWSER_REF_MARKER_ATTRIBUTE, value: node.ref });
+        marked.add(node.ref);
+      } catch {
+        /* node may have been detached between push and set; skip */
+      }
+    }
+    return marked;
+  });
+}
+
+function buildAriaSnapshotRefs(nodes: AriaNode[], markedRefs: Set<string>): RoleRefs {
+  const refs: RoleRefs = {};
+  const counts = new Map<string, number>();
+  const refsByKey = new Map<string, string[]>();
+  for (const node of nodes) {
+    const role = (node.role || 'unknown').toLowerCase();
+    const name = node.name.trim() || undefined;
+    const key = `${role}:${name ?? ''}`;
+    const nth = counts.get(key) ?? 0;
+    counts.set(key, nth + 1);
+    refsByKey.set(key, [...(refsByKey.get(key) ?? []), node.ref]);
+    refs[node.ref] = {
+      role,
+      ...(name !== undefined ? { name } : {}),
+      nth,
+      ...(markedRefs.has(node.ref) ? { domMarker: true } : {}),
+    };
+  }
+  for (const refsForKey of refsByKey.values()) {
+    if (refsForKey.length > 1) continue;
+    const ref = refsForKey[0];
+    delete refs[ref].nth;
+  }
+  return refs;
 }
 
 function axValue(v: { value?: string | number | boolean } | undefined): string {

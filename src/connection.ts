@@ -6,6 +6,7 @@ import type { Browser, Page, CDPSession } from 'playwright-core';
 
 import {
   getChromeWebSocketUrl,
+  isWebSocketUrl,
   normalizeCdpHttpBaseForJsonEndpoints,
   normalizeCdpWsUrl,
   isLoopbackHost,
@@ -466,12 +467,19 @@ export async function connectBrowser(
           const endpoint =
             (await getChromeWebSocketUrl(normalized, timeout, authToken, effectivePolicy).catch(() => null)) ??
             normalized;
-          const headers: Record<string, string> = getHeadersWithAuth(endpoint);
-          if (authToken !== undefined && authToken !== '' && !headers.Authorization)
-            headers.Authorization = `Bearer ${authToken}`;
-          const browser = await withNoProxyForCdpUrl(endpoint, () =>
-            chromium.connectOverCDP(endpoint, { timeout, headers }),
-          );
+          const connectAt = async (target: string) => {
+            const headers: Record<string, string> = getHeadersWithAuth(target);
+            if (authToken !== undefined && authToken !== '' && !headers.Authorization)
+              headers.Authorization = `Bearer ${authToken}`;
+            return await withNoProxyForCdpUrl(target, () => chromium.connectOverCDP(target, { timeout, headers }));
+          };
+          let browser: Browser;
+          try {
+            browser = await connectAt(endpoint);
+          } catch (connectErr) {
+            if (!isWebSocketUrl(normalized) || endpoint === normalized) throw connectErr;
+            browser = await connectAt(normalized);
+          }
           const onDisconnected = () => {
             if (cachedByCdpUrl.get(normalized)?.browser === browser) {
               cachedByCdpUrl.delete(normalized);
@@ -834,6 +842,19 @@ async function partitionAccessiblePages(opts: {
 
 export function hasCachedPlaywrightBrowserConnection(cdpUrl: string): boolean {
   return cachedByCdpUrl.has(normalizeCdpUrl(cdpUrl));
+}
+
+export function isRecoverablePlaywrightDisconnectError(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    message.includes('target page, context or browser has been closed') ||
+    message.includes('browser has been closed') ||
+    message.includes('browser disconnected') ||
+    message.includes('target closed') ||
+    message.includes('connection closed') ||
+    message.includes('websocket closed') ||
+    message.includes('cdp socket closed')
+  );
 }
 
 export function isRecoverableStalePageSelectionError(

@@ -3,11 +3,14 @@ import type { Browser, BrowserContext, Page, Route, Request, Frame } from 'playw
 import {
   BrowserTabNotFoundError,
   BlockedBrowserTargetError,
+  closePlaywrightBrowserConnection,
   connectBrowser,
   getPageForTargetId,
   ensurePageState,
   observeContext,
   getStealthEnabledForCdpUrl,
+  hasCachedPlaywrightBrowserConnection,
+  isRecoverablePlaywrightDisconnectError,
   pageTargetId,
   getAllPages,
   forceDisconnectPlaywrightConnection,
@@ -533,14 +536,14 @@ export async function navigateViaPlaywright(opts: {
   return { url: page.url() };
 }
 
-export async function listPagesViaPlaywright(opts: { cdpUrl: string }): Promise<BrowserTab[]> {
-  const { browser } = await connectBrowser(opts.cdpUrl);
+async function listPagesViaPlaywrightOnce(cdpUrl: string): Promise<BrowserTab[]> {
+  const { browser } = await connectBrowser(cdpUrl);
   const pages = getAllPages(browser);
   const results: BrowserTab[] = [];
   for (const page of pages) {
-    if (isBlockedPageRef(opts.cdpUrl, page)) continue;
+    if (isBlockedPageRef(cdpUrl, page)) continue;
     const tid = await pageTargetId(page).catch(() => null);
-    if (tid !== null && tid !== '' && !isBlockedTarget(opts.cdpUrl, tid))
+    if (tid !== null && tid !== '' && !isBlockedTarget(cdpUrl, tid))
       results.push({
         targetId: tid,
         title: await page.title().catch(() => ''),
@@ -549,6 +552,17 @@ export async function listPagesViaPlaywright(opts: { cdpUrl: string }): Promise<
       });
   }
   return results;
+}
+
+export async function listPagesViaPlaywright(opts: { cdpUrl: string }): Promise<BrowserTab[]> {
+  const reusedCachedBrowser = hasCachedPlaywrightBrowserConnection(opts.cdpUrl);
+  try {
+    return await listPagesViaPlaywrightOnce(opts.cdpUrl);
+  } catch (err) {
+    if (!reusedCachedBrowser || !isRecoverablePlaywrightDisconnectError(err)) throw err;
+    await closePlaywrightBrowserConnection({ cdpUrl: opts.cdpUrl, preserveSsrfState: true });
+    return await listPagesViaPlaywrightOnce(opts.cdpUrl);
+  }
 }
 
 export async function createPageViaPlaywright(opts: {
