@@ -988,7 +988,9 @@ export async function pickActiveTargetId(opts: {
   preferUrl: string;
   tidOf: (page: Page) => Promise<string | null>;
 }): Promise<string | null> {
-  const { accessible, preferTargetId, preferUrl, tidOf } = opts;
+  const { preferTargetId, preferUrl, tidOf } = opts;
+  // chrome://omnibox-popup* leaks as a page target without ciDefaults launch flags.
+  const accessible = opts.accessible.filter((page) => !page.url().startsWith('chrome://omnibox-popup'));
 
   if (preferTargetId !== '') {
     for (const page of accessible) {
