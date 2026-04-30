@@ -2,24 +2,29 @@ import type { Page } from 'playwright-core';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import type * as InteractionModule from './actions/interaction.js';
+import type * as ScreenshotModule from './capture/screenshot.js';
 import type * as ConnectionModule from './connection.js';
 import { BrowserTabNotFoundError } from './errors.js';
 
-const { mockGetPageForTargetId, mockResolveActiveTargetId, mockPageTargetId, mockClickViaPlaywright } = vi.hoisted(
-  () => ({
-    mockGetPageForTargetId:
-      vi.fn<(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: unknown }) => Promise<Page>>(),
-    mockResolveActiveTargetId:
-      vi.fn<
-        (
-          cdpUrl: string,
-          opts?: { preferTargetId?: string; preferUrl?: string; ssrfPolicy?: unknown },
-        ) => Promise<string | null>
-      >(),
-    mockPageTargetId: vi.fn<(page: Page) => Promise<string | null>>(),
-    mockClickViaPlaywright: vi.fn<(opts: Record<string, unknown>) => Promise<void>>(),
-  }),
-);
+const {
+  mockGetPageForTargetId,
+  mockResolveActiveTargetId,
+  mockPageTargetId,
+  mockClickViaPlaywright,
+  mockTakeScreenshotViaPlaywright,
+} = vi.hoisted(() => ({
+  mockGetPageForTargetId: vi.fn<(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: unknown }) => Promise<Page>>(),
+  mockResolveActiveTargetId:
+    vi.fn<
+      (
+        cdpUrl: string,
+        opts?: { preferTargetId?: string; preferUrl?: string; ssrfPolicy?: unknown },
+      ) => Promise<string | null>
+    >(),
+  mockPageTargetId: vi.fn<(page: Page) => Promise<string | null>>(),
+  mockClickViaPlaywright: vi.fn<(opts: Record<string, unknown>) => Promise<void>>(),
+  mockTakeScreenshotViaPlaywright: vi.fn<(opts: Record<string, unknown>) => Promise<{ buffer: Buffer }>>(),
+}));
 
 vi.mock('./connection.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ConnectionModule>();
@@ -37,6 +42,14 @@ vi.mock('./actions/interaction.js', async (importOriginal) => {
   return {
     ...actual,
     clickViaPlaywright: mockClickViaPlaywright,
+  };
+});
+
+vi.mock('./capture/screenshot.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof ScreenshotModule>();
+  return {
+    ...actual,
+    takeScreenshotViaPlaywright: mockTakeScreenshotViaPlaywright,
   };
 });
 
@@ -192,5 +205,26 @@ describe('CrawlPage click — AbortSignal forwarding', () => {
 
     expect(mockClickViaPlaywright).toHaveBeenCalledTimes(1);
     expect(mockClickViaPlaywright.mock.calls[0]?.[0]).toMatchObject({ signal: undefined });
+  });
+});
+
+describe('CrawlPage.screenshot — timeoutMs forwarding', () => {
+  beforeEach(() => {
+    mockTakeScreenshotViaPlaywright.mockReset();
+    mockTakeScreenshotViaPlaywright.mockResolvedValue({ buffer: Buffer.from('') });
+  });
+
+  it('forwards timeoutMs to takeScreenshotViaPlaywright', async () => {
+    const page = new CrawlPage('http://localhost:9222', 't-1');
+    await page.screenshot({ timeoutMs: 5000 });
+    expect(mockTakeScreenshotViaPlaywright).toHaveBeenCalledTimes(1);
+    expect(mockTakeScreenshotViaPlaywright.mock.calls[0]?.[0]).toMatchObject({ timeoutMs: 5000 });
+  });
+
+  it('passes timeoutMs: undefined when omitted', async () => {
+    const page = new CrawlPage('http://localhost:9222', 't-1');
+    await page.screenshot();
+    expect(mockTakeScreenshotViaPlaywright).toHaveBeenCalledTimes(1);
+    expect(mockTakeScreenshotViaPlaywright.mock.calls[0]?.[0]).toMatchObject({ timeoutMs: undefined });
   });
 });

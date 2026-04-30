@@ -1,10 +1,34 @@
+import type * as ChildProcess from 'node:child_process';
 import fs from 'node:fs';
+import type * as Net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import {
+const { execFileMock } = vi.hoisted(() => ({
+  execFileMock: vi.fn(),
+}));
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof ChildProcess>();
+  return {
+    ...actual,
+    execFile: (
+      file: string,
+      args: string[],
+      optsOrCb: unknown,
+      cb?: (err: Error | null, stdout: string, stderr: string) => void,
+    ) => {
+      const callback = typeof optsOrCb === 'function' ? (optsOrCb as typeof cb) : cb;
+      execFileMock(file, args);
+      if (typeof callback === 'function') callback(null, '', '');
+      return { kill: () => undefined, unref: () => undefined } as unknown as ReturnType<typeof actual.execFile>;
+    },
+  };
+});
+
+const {
   isLoopbackHost,
   isDirectCdpWebSocketEndpoint,
   hasProxyEnvConfigured,
@@ -15,7 +39,10 @@ import {
   clearChromeSingletonArtifacts,
   clearStaleChromeSingletonLocks,
   buildChromeLaunchArgs,
-} from './chrome-launcher.js';
+  wipeChromeSessionState,
+  reserveFreePortFromList,
+  activateMacOsWindowByPid,
+} = await import('./chrome-launcher.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isLoopbackHost
@@ -533,5 +560,126 @@ describe('buildChromeLaunchArgs', () => {
     expect(args).toContain('--also-ok');
     expect(args).not.toContain('');
     expect(args).not.toContain('   ');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// wipeChromeSessionState
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('wipeChromeSessionState', () => {
+  it('removes Tabs_* and Session_* files but preserves cookies and other data', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bc-wipe-'));
+    const sessionsDir = path.join(tmpRoot, 'Default', 'Sessions');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionsDir, 'Tabs_1700000000000'), 'tabs');
+    fs.writeFileSync(path.join(sessionsDir, 'Session_1700000000000'), 'session');
+    fs.writeFileSync(path.join(sessionsDir, 'Cookies'), 'cookies');
+    fs.writeFileSync(path.join(tmpRoot, 'Default', 'Preferences'), '{}');
+
+    wipeChromeSessionState(tmpRoot);
+
+    expect(fs.existsSync(path.join(sessionsDir, 'Tabs_1700000000000'))).toBe(false);
+    expect(fs.existsSync(path.join(sessionsDir, 'Session_1700000000000'))).toBe(false);
+    expect(fs.existsSync(path.join(sessionsDir, 'Cookies'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpRoot, 'Default', 'Preferences'))).toBe(true);
+
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('does not throw when Sessions dir does not exist', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bc-wipe-'));
+    expect(() => {
+      wipeChromeSessionState(tmpRoot);
+    }).not.toThrow();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// reserveFreePortFromList
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('reserveFreePortFromList', () => {
+  it('returns the first free port from the candidate list', async () => {
+    const start = 39000 + Math.floor(Math.random() * 1000);
+    const candidates = [start, start + 1, start + 2];
+    const port = await reserveFreePortFromList(candidates);
+    expect(candidates).toContain(port);
+  });
+
+  it('skips a held port and returns the next free candidate', async () => {
+    const net = await import('node:net');
+    const start = 39000 + Math.floor(Math.random() * 1000);
+    const blocker = await new Promise<Net.Server>((resolve, reject) => {
+      const s = net
+        .createServer()
+        .once('error', reject)
+        .once('listening', () => {
+          resolve(s);
+        })
+        .listen(start);
+    });
+    try {
+      const port = await reserveFreePortFromList([start, start + 1]);
+      expect(port).toBe(start + 1);
+    } finally {
+      await new Promise<void>((resolve) => {
+        blocker.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+
+  it('throws when no candidate is free', async () => {
+    const net = await import('node:net');
+    const start = 39000 + Math.floor(Math.random() * 1000);
+    const blocker = await new Promise<Net.Server>((resolve, reject) => {
+      const s = net
+        .createServer()
+        .once('error', reject)
+        .once('listening', () => {
+          resolve(s);
+        })
+        .listen(start);
+    });
+    try {
+      await expect(reserveFreePortFromList([start])).rejects.toThrow(/No free port/);
+    } finally {
+      await new Promise<void>((resolve) => {
+        blocker.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// activateMacOsWindowByPid
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('activateMacOsWindowByPid', () => {
+  beforeEach(() => {
+    execFileMock.mockReset();
+  });
+
+  it('invokes osascript with frontmost-by-pid for the given numeric pid', async () => {
+    await activateMacOsWindowByPid(12345);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    const call = execFileMock.mock.calls[0] as [string, string[]] | undefined;
+    expect(call?.[0]).toBe('osascript');
+    expect(call?.[1][0]).toBe('-e');
+    expect(call?.[1][1]).toContain('System Events');
+    expect(call?.[1][1]).toContain('unix id is 12345');
+    expect(call?.[1][1]).toContain('set frontmost');
+  });
+
+  it('does not throw when execFile errors (best-effort contract)', async () => {
+    execFileMock.mockImplementationOnce(() => {
+      throw new Error('osascript not found');
+    });
+    await expect(activateMacOsWindowByPid(99)).resolves.toBeUndefined();
   });
 });

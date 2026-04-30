@@ -1,8 +1,11 @@
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 import { assertCdpEndpointAllowed } from './security.js';
 import type { ChromeExecutable, ChromeKind, LaunchOptions, RunningChrome, SsrfPolicy } from './types.js';
@@ -505,35 +508,37 @@ export function resolveBrowserExecutable(opts?: { executablePath?: string }): Ch
 
 // ── Port Check ──
 
+async function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const tester = net
+      .createServer()
+      .once('error', () => {
+        tester.close(() => {
+          resolve(false);
+        });
+      })
+      .once('listening', () => {
+        tester.close(() => {
+          resolve(true);
+        });
+      })
+      .listen(port);
+  });
+}
+
 async function ensurePortAvailable(port: number, retries = 2): Promise<void> {
   for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const tester = net
-          .createServer()
-          .once('error', (err: NodeJS.ErrnoException) => {
-            // Close the server to release its handle on non-EADDRINUSE errors
-            tester.close(() => {
-              if (err.code === 'EADDRINUSE') reject(new Error(`Port ${String(port)} is already in use`));
-              else reject(err);
-            });
-          })
-          .once('listening', () => {
-            tester.close(() => {
-              resolve();
-            });
-          })
-          .listen(port);
-      });
-      return;
-    } catch (err) {
-      if (attempt < retries) {
-        await new Promise((r) => setTimeout(r, 100));
-        continue;
-      }
-      throw err;
-    }
+    if (await isPortAvailable(port)) return;
+    if (attempt < retries) await new Promise((r) => setTimeout(r, 100));
   }
+  throw new Error(`Port ${String(port)} is already in use`);
+}
+
+export async function reserveFreePortFromList(candidates: readonly number[]): Promise<number> {
+  for (const port of candidates) {
+    if (await isPortAvailable(port)) return port;
+  }
+  throw new Error(`No free port found among [${candidates.join(', ')}]`);
 }
 
 // ── Profile Decoration ──
@@ -607,11 +612,57 @@ function ensureCleanExit(userDataDir: string): void {
   setDeep(prefs, ['exit_type'], 'Normal');
   setDeep(prefs, ['exited_cleanly'], true);
   safeWriteJson(preferencesPath, prefs);
+  wipeChromeSessionState(userDataDir);
+}
+
+const CHROME_SESSION_FILE_PREFIXES = ['Tabs_', 'Session_'];
+const CHROME_SESSION_FILE_NAMES = ['Current Session', 'Current Tabs', 'Last Session', 'Last Tabs'];
+
+export function wipeChromeSessionState(userDataDir: string): void {
+  const sessionsDir = path.join(userDataDir, 'Default', 'Sessions');
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(sessionsDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn(
+        `[browserclaw] wipeChromeSessionState read failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return;
+  }
+  for (const name of entries) {
+    const isSessionFile =
+      CHROME_SESSION_FILE_NAMES.includes(name) || CHROME_SESSION_FILE_PREFIXES.some((p) => name.startsWith(p));
+    if (!isSessionFile) continue;
+    try {
+      fs.unlinkSync(path.join(sessionsDir, name));
+    } catch (err) {
+      console.warn(
+        `[browserclaw] wipeChromeSessionState unlink ${name} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+export async function activateMacOsWindowByPid(pid: number): Promise<void> {
+  try {
+    await execFileAsync(
+      'osascript',
+      [
+        '-e',
+        `tell application "System Events" to set frontmost of (first process whose unix id is ${String(pid)}) to true`,
+      ],
+      { timeout: 1500 },
+    );
+  } catch (err) {
+    console.warn(`[browserclaw] activateMacOsWindowByPid failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 // ── Launch Chrome ──
 
-const DEFAULT_CDP_PORT = 9222;
+const COMMON_CDP_PORTS = [9222, 9223, 9224, 9225, 9226, 9229];
 const DEFAULT_PROFILE_NAME = 'browserclaw';
 const DEFAULT_PROFILE_COLOR = '#FF4500';
 
@@ -804,8 +855,6 @@ async function fetchChromeVersion(
   }
 }
 
-const COMMON_CDP_PORTS = [9222, 9223, 9224, 9225, 9226, 9229];
-
 export async function discoverChromeCdpUrl(timeoutMs = 500): Promise<string | null> {
   const results = await Promise.all(
     COMMON_CDP_PORTS.map(async (port) => {
@@ -972,8 +1021,13 @@ export function buildChromeLaunchArgs(opts: BuildChromeLaunchArgsOptions): strin
 }
 
 export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChrome> {
-  const cdpPort = opts.cdpPort ?? DEFAULT_CDP_PORT;
-  await ensurePortAvailable(cdpPort);
+  let cdpPort: number;
+  if (opts.cdpPort !== undefined) {
+    await ensurePortAvailable(opts.cdpPort);
+    cdpPort = opts.cdpPort;
+  } else {
+    cdpPort = await reserveFreePortFromList(COMMON_CDP_PORTS);
+  }
 
   const exe = resolveBrowserExecutable({ executablePath: opts.executablePath });
   if (!exe)

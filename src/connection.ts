@@ -737,7 +737,7 @@ interface CdpTarget {
 }
 
 export function getAllPages(browser: Browser) {
-  return browser.contexts().flatMap((c) => c.pages());
+  return browser.contexts().flatMap((c) => c.pages().filter((p) => !p.url().startsWith('chrome://omnibox-popup')));
 }
 
 /** Cache of CDP target IDs — stable for a page's lifetime. */

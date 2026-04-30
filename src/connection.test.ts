@@ -385,6 +385,22 @@ describe('getAllPages', () => {
     } as unknown as Browser;
     expect(getAllPages(browser)).toHaveLength(0);
   });
+
+  it('skips chrome://omnibox-popup* targets that Chrome surfaces as page targets', () => {
+    const real = { url: () => 'https://example.com/' };
+    const blank = { url: () => 'about:blank' };
+    const omnibox = { url: () => 'chrome://omnibox-popup.top-chrome/' };
+    const omniboxAim = { url: () => 'chrome://omnibox-popup.top-chrome/omnibox_popup_aim.html' };
+    const settings = { url: () => 'chrome://settings/' };
+    const browser = {
+      contexts: () => [{ pages: () => [omnibox, real, blank, omniboxAim, settings] }],
+    } as unknown as Browser;
+    expect(getAllPages(browser).map((p) => p.url())).toEqual([
+      'https://example.com/',
+      'about:blank',
+      'chrome://settings/',
+    ]);
+  });
 });
 
 // Passing track to Playwright makes it return incremental diffs on repeat snapshots, which our parser can't handle.
