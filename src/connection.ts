@@ -737,7 +737,6 @@ interface CdpTarget {
 }
 
 export function getAllPages(browser: Browser) {
-  // chrome://omnibox-popup is the WebUI for the address-bar dropdown — never user-navigable content.
   return browser.contexts().flatMap((c) => c.pages().filter((p) => !p.url().startsWith('chrome://omnibox-popup')));
 }
 
