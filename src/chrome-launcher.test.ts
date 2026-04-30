@@ -40,7 +40,7 @@ const {
   clearStaleChromeSingletonLocks,
   buildChromeLaunchArgs,
   wipeChromeSessionState,
-  reservePortStartingAt,
+  reserveFreePortFromList,
   activateMacOsWindowByPid,
 } = await import('./chrome-launcher.js');
 
@@ -597,19 +597,18 @@ describe('wipeChromeSessionState', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// reservePortStartingAt
+// reserveFreePortFromList
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('reservePortStartingAt', () => {
-  it('returns the start port when it is free', async () => {
-    // Pick a high port unlikely to be held.
+describe('reserveFreePortFromList', () => {
+  it('returns the first free port from the candidate list', async () => {
     const start = 39000 + Math.floor(Math.random() * 1000);
-    const port = await reservePortStartingAt(start);
-    expect(port).toBeGreaterThanOrEqual(start);
-    expect(port).toBeLessThan(start + 20);
+    const candidates = [start, start + 1, start + 2];
+    const port = await reserveFreePortFromList(candidates);
+    expect(candidates).toContain(port);
   });
 
-  it('skips a held port and returns the next free one', async () => {
+  it('skips a held port and returns the next free candidate', async () => {
     const net = await import('node:net');
     const start = 39000 + Math.floor(Math.random() * 1000);
     const blocker = await new Promise<Net.Server>((resolve, reject) => {
@@ -622,8 +621,31 @@ describe('reservePortStartingAt', () => {
         .listen(start);
     });
     try {
-      const port = await reservePortStartingAt(start);
+      const port = await reserveFreePortFromList([start, start + 1]);
       expect(port).toBe(start + 1);
+    } finally {
+      await new Promise<void>((resolve) => {
+        blocker.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+
+  it('throws when no candidate is free', async () => {
+    const net = await import('node:net');
+    const start = 39000 + Math.floor(Math.random() * 1000);
+    const blocker = await new Promise<Net.Server>((resolve, reject) => {
+      const s = net
+        .createServer()
+        .once('error', reject)
+        .once('listening', () => {
+          resolve(s);
+        })
+        .listen(start);
+    });
+    try {
+      await expect(reserveFreePortFromList([start])).rejects.toThrow(/No free port/);
     } finally {
       await new Promise<void>((resolve) => {
         blocker.close(() => {

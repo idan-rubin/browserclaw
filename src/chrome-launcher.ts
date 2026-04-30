@@ -534,12 +534,11 @@ async function ensurePortAvailable(port: number, retries = 2): Promise<void> {
   throw new Error(`Port ${String(port)} is already in use`);
 }
 
-export async function reservePortStartingAt(startPort: number, maxAttempts = 20): Promise<number> {
-  for (let i = 0; i < maxAttempts; i++) {
-    const candidate = startPort + i;
-    if (await isPortAvailable(candidate)) return candidate;
+export async function reserveFreePortFromList(candidates: readonly number[]): Promise<number> {
+  for (const port of candidates) {
+    if (await isPortAvailable(port)) return port;
   }
-  throw new Error(`No free port found in range ${String(startPort)}–${String(startPort + maxAttempts - 1)}`);
+  throw new Error(`No free port found among [${candidates.join(', ')}]`);
 }
 
 // ── Profile Decoration ──
@@ -663,7 +662,7 @@ export async function activateMacOsWindowByPid(pid: number): Promise<void> {
 
 // ── Launch Chrome ──
 
-const DEFAULT_CDP_PORT = 9222;
+const COMMON_CDP_PORTS = [9222, 9223, 9224, 9225, 9226, 9229];
 const DEFAULT_PROFILE_NAME = 'browserclaw';
 const DEFAULT_PROFILE_COLOR = '#FF4500';
 
@@ -856,8 +855,6 @@ async function fetchChromeVersion(
   }
 }
 
-const COMMON_CDP_PORTS = [9222, 9223, 9224, 9225, 9226, 9229];
-
 export async function discoverChromeCdpUrl(timeoutMs = 500): Promise<string | null> {
   const results = await Promise.all(
     COMMON_CDP_PORTS.map(async (port) => {
@@ -1029,7 +1026,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
     await ensurePortAvailable(opts.cdpPort);
     cdpPort = opts.cdpPort;
   } else {
-    cdpPort = await reservePortStartingAt(DEFAULT_CDP_PORT);
+    cdpPort = await reserveFreePortFromList(COMMON_CDP_PORTS);
   }
 
   const exe = resolveBrowserExecutable({ executablePath: opts.executablePath });
