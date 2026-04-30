@@ -737,7 +737,8 @@ interface CdpTarget {
 }
 
 export function getAllPages(browser: Browser) {
-  return browser.contexts().flatMap((c) => c.pages());
+  // chrome://omnibox-popup is the WebUI for the address-bar dropdown — never user-navigable content.
+  return browser.contexts().flatMap((c) => c.pages().filter((p) => !p.url().startsWith('chrome://omnibox-popup')));
 }
 
 /** Cache of CDP target IDs — stable for a page's lifetime. */
@@ -988,9 +989,7 @@ export async function pickActiveTargetId(opts: {
   preferUrl: string;
   tidOf: (page: Page) => Promise<string | null>;
 }): Promise<string | null> {
-  const { preferTargetId, preferUrl, tidOf } = opts;
-  // chrome://omnibox-popup* leaks as a page target without ciDefaults launch flags.
-  const accessible = opts.accessible.filter((page) => !page.url().startsWith('chrome://omnibox-popup'));
+  const { accessible, preferTargetId, preferUrl, tidOf } = opts;
 
   if (preferTargetId !== '') {
     for (const page of accessible) {

@@ -385,6 +385,22 @@ describe('getAllPages', () => {
     } as unknown as Browser;
     expect(getAllPages(browser)).toHaveLength(0);
   });
+
+  it('skips chrome://omnibox-popup* targets that Chrome surfaces as page targets', () => {
+    const real = { url: () => 'https://example.com/' };
+    const blank = { url: () => 'about:blank' };
+    const omnibox = { url: () => 'chrome://omnibox-popup.top-chrome/' };
+    const omniboxAim = { url: () => 'chrome://omnibox-popup.top-chrome/omnibox_popup_aim.html' };
+    const settings = { url: () => 'chrome://settings/' };
+    const browser = {
+      contexts: () => [{ pages: () => [omnibox, real, blank, omniboxAim, settings] }],
+    } as unknown as Browser;
+    expect(getAllPages(browser).map((p) => p.url())).toEqual([
+      'https://example.com/',
+      'about:blank',
+      'chrome://settings/',
+    ]);
+  });
 });
 
 // Passing track to Playwright makes it return incremental diffs on repeat snapshots, which our parser can't handle.
@@ -544,38 +560,6 @@ describe('pickActiveTargetId', () => {
 
     const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
     expect(result).toBe('t-b');
-  });
-
-  it('filters chrome://omnibox-popup targets so they never win the picker', async () => {
-    const accessible = [pageWithUrl('chrome://omnibox-popup-7c8e1f.html'), pageWithUrl('about:blank')];
-    const tids = new Map<Page, string>([
-      [accessible[0], 't-omnibox'],
-      [accessible[1], 't-blank'],
-    ]);
-    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
-
-    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
-    expect(result).toBe('t-blank');
-  });
-
-  it('returns null when the only candidate is a chrome://omnibox-popup target', async () => {
-    const accessible = [pageWithUrl('chrome://omnibox-popup-7c8e1f.html')];
-    const tidOf = () => Promise.resolve('t-omnibox');
-
-    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
-    expect(result).toBeNull();
-  });
-
-  it('does not filter user-navigable chrome:// pages such as settings/history', async () => {
-    const accessible = [pageWithUrl('chrome://settings/'), pageWithUrl('about:blank')];
-    const tids = new Map<Page, string>([
-      [accessible[0], 't-settings'],
-      [accessible[1], 't-blank'],
-    ]);
-    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
-
-    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
-    expect(result).toBe('t-settings');
   });
 });
 
