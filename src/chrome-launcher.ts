@@ -1,4 +1,7 @@
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -509,8 +512,8 @@ async function isPortAvailable(port: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const tester = net
       .createServer()
-      .once('error', (err: NodeJS.ErrnoException) => {
-        tester.close(() => resolve(err.code !== 'EADDRINUSE' ? false : false));
+      .once('error', () => {
+        tester.close(() => resolve(false));
       })
       .once('listening', () => {
         tester.close(() => resolve(true));
@@ -609,6 +612,9 @@ function ensureCleanExit(userDataDir: string): void {
   wipeChromeSessionState(userDataDir);
 }
 
+const CHROME_SESSION_FILE_PREFIXES = ['Tabs_', 'Session_'];
+const CHROME_SESSION_FILE_NAMES = ['Current Session', 'Current Tabs', 'Last Session', 'Last Tabs'];
+
 export function wipeChromeSessionState(userDataDir: string): void {
   const sessionsDir = path.join(userDataDir, 'Default', 'Sessions');
   let entries: string[];
@@ -623,7 +629,9 @@ export function wipeChromeSessionState(userDataDir: string): void {
     return;
   }
   for (const name of entries) {
-    if (!name.startsWith('Tabs_') && !name.startsWith('Session_')) continue;
+    const isSessionFile =
+      CHROME_SESSION_FILE_NAMES.includes(name) || CHROME_SESSION_FILE_PREFIXES.some((p) => name.startsWith(p));
+    if (!isSessionFile) continue;
     try {
       fs.unlinkSync(path.join(sessionsDir, name));
     } catch (err) {
@@ -634,15 +642,15 @@ export function wipeChromeSessionState(userDataDir: string): void {
   }
 }
 
-export function activateMacOsWindowByPid(pid: number): void {
+export async function activateMacOsWindowByPid(pid: number): Promise<void> {
   try {
-    execFileSync(
+    await execFileAsync(
       'osascript',
       [
         '-e',
         `tell application "System Events" to set frontmost of (first process whose unix id is ${String(pid)}) to true`,
       ],
-      { timeout: 1500, stdio: 'pipe' },
+      { timeout: 1500 },
     );
   } catch (err) {
     console.warn(`[browserclaw] activateMacOsWindowByPid failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1012,10 +1020,13 @@ export function buildChromeLaunchArgs(opts: BuildChromeLaunchArgsOptions): strin
 }
 
 export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChrome> {
-  const cdpPort =
-    opts.cdpPort !== undefined
-      ? (await ensurePortAvailable(opts.cdpPort), opts.cdpPort)
-      : await reservePortStartingAt(DEFAULT_CDP_PORT);
+  let cdpPort: number;
+  if (opts.cdpPort !== undefined) {
+    await ensurePortAvailable(opts.cdpPort);
+    cdpPort = opts.cdpPort;
+  } else {
+    cdpPort = await reservePortStartingAt(DEFAULT_CDP_PORT);
+  }
 
   const exe = resolveBrowserExecutable({ executablePath: opts.executablePath });
   if (!exe)

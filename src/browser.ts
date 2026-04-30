@@ -1034,7 +1034,7 @@ export class CrawlPage {
    */
   async screenshotWithLabels(
     refs: string[],
-    opts?: { maxLabels?: number; type?: 'png' | 'jpeg' },
+    opts?: { maxLabels?: number; type?: 'png' | 'jpeg'; timeoutMs?: number },
   ): Promise<{
     buffer: Buffer;
     labels: { ref: string; index: number; box: { x: number; y: number; width: number; height: number } }[];
@@ -1046,6 +1046,7 @@ export class CrawlPage {
       refs,
       maxLabels: opts?.maxLabels,
       type: opts?.type,
+      timeoutMs: opts?.timeoutMs,
       ssrfPolicy: this.ssrfPolicy,
     });
   }
@@ -1984,7 +1985,7 @@ export class BrowserClaw {
   async focus(targetId: string): Promise<void> {
     await focusPageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId });
     if (process.platform === 'darwin' && this.chrome?.pid !== undefined) {
-      activateMacOsWindowByPid(this.chrome.pid);
+      await activateMacOsWindowByPid(this.chrome.pid);
     }
   }
 

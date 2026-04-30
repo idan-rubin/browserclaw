@@ -49,6 +49,7 @@ export async function screenshotWithLabelsViaPlaywright(opts: {
   refs: string[];
   maxLabels?: number;
   type?: 'png' | 'jpeg';
+  timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
 }): Promise<{
   buffer: Buffer;
@@ -134,7 +135,7 @@ export async function screenshotWithLabelsViaPlaywright(opts: {
       );
     }
     return {
-      buffer: await page.screenshot({ type }),
+      buffer: await page.screenshot({ type, timeout: opts.timeoutMs }),
       labels,
       skipped,
     };
