@@ -1,11 +1,11 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 import { assertCdpEndpointAllowed } from './security.js';
 import type { ChromeExecutable, ChromeKind, LaunchOptions, RunningChrome, SsrfPolicy } from './types.js';
@@ -513,10 +513,14 @@ async function isPortAvailable(port: number): Promise<boolean> {
     const tester = net
       .createServer()
       .once('error', () => {
-        tester.close(() => resolve(false));
+        tester.close(() => {
+          resolve(false);
+        });
       })
       .once('listening', () => {
-        tester.close(() => resolve(true));
+        tester.close(() => {
+          resolve(true);
+        });
       })
       .listen(port);
   });
@@ -621,7 +625,7 @@ export function wipeChromeSessionState(userDataDir: string): void {
   try {
     entries = fs.readdirSync(sessionsDir);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
       console.warn(
         `[browserclaw] wipeChromeSessionState read failed: ${err instanceof Error ? err.message : String(err)}`,
       );

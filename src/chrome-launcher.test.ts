@@ -1,4 +1,6 @@
+import type * as ChildProcess from 'node:child_process';
 import fs from 'node:fs';
+import type * as Net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -9,7 +11,7 @@ const { execFileMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>();
+  const actual = await importOriginal<typeof ChildProcess>();
   return {
     ...actual,
     execFile: (
@@ -587,7 +589,9 @@ describe('wipeChromeSessionState', () => {
 
   it('does not throw when Sessions dir does not exist', () => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bc-wipe-'));
-    expect(() => wipeChromeSessionState(tmpRoot)).not.toThrow();
+    expect(() => {
+      wipeChromeSessionState(tmpRoot);
+    }).not.toThrow();
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 });
@@ -608,18 +612,24 @@ describe('reservePortStartingAt', () => {
   it('skips a held port and returns the next free one', async () => {
     const net = await import('node:net');
     const start = 39000 + Math.floor(Math.random() * 1000);
-    const blocker = await new Promise<import('node:net').Server>((resolve, reject) => {
+    const blocker = await new Promise<Net.Server>((resolve, reject) => {
       const s = net
         .createServer()
         .once('error', reject)
-        .once('listening', () => resolve(s))
+        .once('listening', () => {
+          resolve(s);
+        })
         .listen(start);
     });
     try {
       const port = await reservePortStartingAt(start);
       expect(port).toBe(start + 1);
     } finally {
-      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+      await new Promise<void>((resolve) => {
+        blocker.close(() => {
+          resolve();
+        });
+      });
     }
   });
 });
@@ -636,16 +646,16 @@ describe('activateMacOsWindowByPid', () => {
   it('invokes osascript with frontmost-by-pid for the given numeric pid', async () => {
     await activateMacOsWindowByPid(12345);
     expect(execFileMock).toHaveBeenCalledTimes(1);
-    const [file, args] = execFileMock.mock.calls[0] ?? [];
-    expect(file).toBe('osascript');
-    expect(args[0]).toBe('-e');
-    expect(args[1]).toContain('System Events');
-    expect(args[1]).toContain('unix id is 12345');
-    expect(args[1]).toContain('set frontmost');
+    const call = execFileMock.mock.calls[0] as [string, string[]] | undefined;
+    expect(call?.[0]).toBe('osascript');
+    expect(call?.[1][0]).toBe('-e');
+    expect(call?.[1][1]).toContain('System Events');
+    expect(call?.[1][1]).toContain('unix id is 12345');
+    expect(call?.[1][1]).toContain('set frontmost');
   });
 
   it('does not throw when execFile errors (best-effort contract)', async () => {
-    execFileMock.mockImplementationOnce((_file: string, _args: string[]) => {
+    execFileMock.mockImplementationOnce(() => {
       throw new Error('osascript not found');
     });
     await expect(activateMacOsWindowByPid(99)).resolves.toBeUndefined();
