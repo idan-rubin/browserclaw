@@ -505,35 +505,34 @@ export function resolveBrowserExecutable(opts?: { executablePath?: string }): Ch
 
 // ── Port Check ──
 
+async function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const tester = net
+      .createServer()
+      .once('error', (err: NodeJS.ErrnoException) => {
+        tester.close(() => resolve(err.code !== 'EADDRINUSE' ? false : false));
+      })
+      .once('listening', () => {
+        tester.close(() => resolve(true));
+      })
+      .listen(port);
+  });
+}
+
 async function ensurePortAvailable(port: number, retries = 2): Promise<void> {
   for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const tester = net
-          .createServer()
-          .once('error', (err: NodeJS.ErrnoException) => {
-            // Close the server to release its handle on non-EADDRINUSE errors
-            tester.close(() => {
-              if (err.code === 'EADDRINUSE') reject(new Error(`Port ${String(port)} is already in use`));
-              else reject(err);
-            });
-          })
-          .once('listening', () => {
-            tester.close(() => {
-              resolve();
-            });
-          })
-          .listen(port);
-      });
-      return;
-    } catch (err) {
-      if (attempt < retries) {
-        await new Promise((r) => setTimeout(r, 100));
-        continue;
-      }
-      throw err;
-    }
+    if (await isPortAvailable(port)) return;
+    if (attempt < retries) await new Promise((r) => setTimeout(r, 100));
   }
+  throw new Error(`Port ${String(port)} is already in use`);
+}
+
+export async function reservePortStartingAt(startPort: number, maxAttempts = 20): Promise<number> {
+  for (let i = 0; i < maxAttempts; i++) {
+    const candidate = startPort + i;
+    if (await isPortAvailable(candidate)) return candidate;
+  }
+  throw new Error(`No free port found in range ${String(startPort)}–${String(startPort + maxAttempts - 1)}`);
 }
 
 // ── Profile Decoration ──
@@ -607,6 +606,47 @@ function ensureCleanExit(userDataDir: string): void {
   setDeep(prefs, ['exit_type'], 'Normal');
   setDeep(prefs, ['exited_cleanly'], true);
   safeWriteJson(preferencesPath, prefs);
+  wipeChromeSessionState(userDataDir);
+}
+
+export function wipeChromeSessionState(userDataDir: string): void {
+  const sessionsDir = path.join(userDataDir, 'Default', 'Sessions');
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(sessionsDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      console.warn(
+        `[browserclaw] wipeChromeSessionState read failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith('Tabs_') && !name.startsWith('Session_')) continue;
+    try {
+      fs.unlinkSync(path.join(sessionsDir, name));
+    } catch (err) {
+      console.warn(
+        `[browserclaw] wipeChromeSessionState unlink ${name} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+export function activateMacOsWindowByPid(pid: number): void {
+  try {
+    execFileSync(
+      'osascript',
+      [
+        '-e',
+        `tell application "System Events" to set frontmost of (first process whose unix id is ${String(pid)}) to true`,
+      ],
+      { timeout: 1500, stdio: 'pipe' },
+    );
+  } catch (err) {
+    console.warn(`[browserclaw] activateMacOsWindowByPid failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 // ── Launch Chrome ──
@@ -972,8 +1012,10 @@ export function buildChromeLaunchArgs(opts: BuildChromeLaunchArgsOptions): strin
 }
 
 export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChrome> {
-  const cdpPort = opts.cdpPort ?? DEFAULT_CDP_PORT;
-  await ensurePortAvailable(cdpPort);
+  const cdpPort =
+    opts.cdpPort !== undefined
+      ? (await ensurePortAvailable(opts.cdpPort), opts.cdpPort)
+      : await reservePortStartingAt(DEFAULT_CDP_PORT);
 
   const exe = resolveBrowserExecutable({ executablePath: opts.executablePath });
   if (!exe)

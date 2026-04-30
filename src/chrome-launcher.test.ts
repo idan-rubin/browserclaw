@@ -15,6 +15,8 @@ import {
   clearChromeSingletonArtifacts,
   clearStaleChromeSingletonLocks,
   buildChromeLaunchArgs,
+  wipeChromeSessionState,
+  reservePortStartingAt,
 } from './chrome-launcher.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -533,5 +535,68 @@ describe('buildChromeLaunchArgs', () => {
     expect(args).toContain('--also-ok');
     expect(args).not.toContain('');
     expect(args).not.toContain('   ');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// wipeChromeSessionState
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('wipeChromeSessionState', () => {
+  it('removes Tabs_* and Session_* files but preserves cookies and other data', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bc-wipe-'));
+    const sessionsDir = path.join(tmpRoot, 'Default', 'Sessions');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionsDir, 'Tabs_1700000000000'), 'tabs');
+    fs.writeFileSync(path.join(sessionsDir, 'Session_1700000000000'), 'session');
+    fs.writeFileSync(path.join(sessionsDir, 'Cookies'), 'cookies');
+    fs.writeFileSync(path.join(tmpRoot, 'Default', 'Preferences'), '{}');
+
+    wipeChromeSessionState(tmpRoot);
+
+    expect(fs.existsSync(path.join(sessionsDir, 'Tabs_1700000000000'))).toBe(false);
+    expect(fs.existsSync(path.join(sessionsDir, 'Session_1700000000000'))).toBe(false);
+    expect(fs.existsSync(path.join(sessionsDir, 'Cookies'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpRoot, 'Default', 'Preferences'))).toBe(true);
+
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('does not throw when Sessions dir does not exist', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bc-wipe-'));
+    expect(() => wipeChromeSessionState(tmpRoot)).not.toThrow();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// reservePortStartingAt
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('reservePortStartingAt', () => {
+  it('returns the start port when it is free', async () => {
+    // Pick a high port unlikely to be held.
+    const start = 39000 + Math.floor(Math.random() * 1000);
+    const port = await reservePortStartingAt(start);
+    expect(port).toBeGreaterThanOrEqual(start);
+    expect(port).toBeLessThan(start + 20);
+  });
+
+  it('skips a held port and returns the next free one', async () => {
+    const net = await import('node:net');
+    const start = 39000 + Math.floor(Math.random() * 1000);
+    const blocker = await new Promise<import('node:net').Server>((resolve, reject) => {
+      const s = net
+        .createServer()
+        .once('error', reject)
+        .once('listening', () => resolve(s))
+        .listen(start);
+    });
+    try {
+      const port = await reservePortStartingAt(start);
+      expect(port).toBe(start + 1);
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
   });
 });

@@ -53,7 +53,13 @@ import { pdfViaPlaywright } from './capture/pdf.js';
 import { responseBodyViaPlaywright, waitForRequestViaPlaywright } from './capture/response.js';
 import { takeScreenshotViaPlaywright, screenshotWithLabelsViaPlaywright } from './capture/screenshot.js';
 import { traceStartViaPlaywright, traceStopViaPlaywright } from './capture/trace.js';
-import { launchChrome, stopChrome, isChromeReachable, discoverChromeCdpUrl } from './chrome-launcher.js';
+import {
+  launchChrome,
+  stopChrome,
+  isChromeReachable,
+  discoverChromeCdpUrl,
+  activateMacOsWindowByPid,
+} from './chrome-launcher.js';
 import {
   connectBrowser,
   closePlaywrightBrowserConnection,
@@ -989,6 +995,7 @@ export class CrawlPage {
       ref: opts?.ref,
       element: opts?.element,
       type: opts?.type,
+      timeoutMs: opts?.timeoutMs,
       ssrfPolicy: this.ssrfPolicy,
     });
     return result.buffer;
@@ -1975,7 +1982,10 @@ export class BrowserClaw {
    * @param targetId - CDP target ID of the tab (from `tabs()` or `page.id`)
    */
   async focus(targetId: string): Promise<void> {
-    return focusPageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId });
+    await focusPageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId });
+    if (process.platform === 'darwin' && this.chrome?.pid !== undefined) {
+      activateMacOsWindowByPid(this.chrome.pid);
+    }
   }
 
   /**

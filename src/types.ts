@@ -405,6 +405,8 @@ export interface ScreenshotOptions {
   type?: 'png' | 'jpeg';
   /** Enable labeled screenshot mode (used internally by screenshotWithLabels) */
   labels?: boolean;
+  /** Max ms to wait for the screenshot. Default: Playwright's 30s. Pass 0 to disable. */
+  timeoutMs?: number;
 }
 
 // ── Activity ──

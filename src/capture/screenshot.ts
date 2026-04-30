@@ -9,6 +9,7 @@ export async function takeScreenshotViaPlaywright(opts: {
   ref?: string;
   element?: string;
   type?: 'png' | 'jpeg';
+  timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
 }): Promise<{ buffer: Buffer }> {
   const page = await getPageForTargetId({
@@ -29,16 +30,17 @@ export async function takeScreenshotViaPlaywright(opts: {
   }
 
   const type = opts.type ?? 'png';
+  const timeout = opts.timeoutMs;
 
   if (opts.ref !== undefined && opts.ref !== '') {
     if (opts.fullPage === true) throw new Error('fullPage is not supported for element screenshots');
-    return { buffer: await refLocator(page, opts.ref).screenshot({ type }) };
+    return { buffer: await refLocator(page, opts.ref).screenshot({ type, timeout }) };
   }
   if (opts.element !== undefined && opts.element !== '') {
     if (opts.fullPage === true) throw new Error('fullPage is not supported for element screenshots');
-    return { buffer: await page.locator(opts.element).first().screenshot({ type }) };
+    return { buffer: await page.locator(opts.element).first().screenshot({ type, timeout }) };
   }
-  return { buffer: await page.screenshot({ type, fullPage: Boolean(opts.fullPage) }) };
+  return { buffer: await page.screenshot({ type, fullPage: Boolean(opts.fullPage), timeout }) };
 }
 
 export async function screenshotWithLabelsViaPlaywright(opts: {
