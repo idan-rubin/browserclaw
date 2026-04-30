@@ -2,9 +2,31 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import {
+const { execFileMock } = vi.hoisted(() => ({
+  execFileMock: vi.fn(),
+}));
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    execFile: (
+      file: string,
+      args: string[],
+      optsOrCb: unknown,
+      cb?: (err: Error | null, stdout: string, stderr: string) => void,
+    ) => {
+      const callback = typeof optsOrCb === 'function' ? (optsOrCb as typeof cb) : cb;
+      execFileMock(file, args);
+      if (typeof callback === 'function') callback(null, '', '');
+      return { kill: () => undefined, unref: () => undefined } as unknown as ReturnType<typeof actual.execFile>;
+    },
+  };
+});
+
+const {
   isLoopbackHost,
   isDirectCdpWebSocketEndpoint,
   hasProxyEnvConfigured,
@@ -17,7 +39,8 @@ import {
   buildChromeLaunchArgs,
   wipeChromeSessionState,
   reservePortStartingAt,
-} from './chrome-launcher.js';
+  activateMacOsWindowByPid,
+} = await import('./chrome-launcher.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isLoopbackHost
@@ -598,5 +621,33 @@ describe('reservePortStartingAt', () => {
     } finally {
       await new Promise<void>((resolve) => blocker.close(() => resolve()));
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// activateMacOsWindowByPid
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('activateMacOsWindowByPid', () => {
+  beforeEach(() => {
+    execFileMock.mockReset();
+  });
+
+  it('invokes osascript with frontmost-by-pid for the given numeric pid', async () => {
+    await activateMacOsWindowByPid(12345);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    const [file, args] = execFileMock.mock.calls[0] ?? [];
+    expect(file).toBe('osascript');
+    expect(args[0]).toBe('-e');
+    expect(args[1]).toContain('System Events');
+    expect(args[1]).toContain('unix id is 12345');
+    expect(args[1]).toContain('set frontmost');
+  });
+
+  it('does not throw when execFile errors (best-effort contract)', async () => {
+    execFileMock.mockImplementationOnce((_file: string, _args: string[]) => {
+      throw new Error('osascript not found');
+    });
+    await expect(activateMacOsWindowByPid(99)).resolves.toBeUndefined();
   });
 });
