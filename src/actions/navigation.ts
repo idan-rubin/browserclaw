@@ -2,7 +2,6 @@ import type { Browser, BrowserContext, Page, Route, Request, Frame } from 'playw
 
 import {
   BrowserTabNotFoundError,
-  BlockedBrowserTargetError,
   closePlaywrightBrowserConnection,
   connectBrowser,
   getPageForTargetId,
@@ -578,6 +577,14 @@ export async function createPageViaPlaywright(opts: {
   const policy =
     opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
   /* eslint-enable @typescript-eslint/no-deprecated */
+  const targetUrl = (opts.url ?? '').trim() || 'about:blank';
+
+  // Preflight URL policy *before* allocating a tab. Otherwise a denial would
+  // leak the freshly-created blank tab into the browser session.
+  if (targetUrl !== 'about:blank') {
+    await assertBrowserNavigationAllowed({ url: targetUrl, ...withBrowserNavigationPolicy(policy) });
+  }
+
   const { browser } = await connectBrowser(opts.cdpUrl, undefined, policy, { stealth: opts.stealth });
   const context = opts.recordVideo
     ? (recordingContexts.get(opts.cdpUrl) ??
@@ -585,18 +592,17 @@ export async function createPageViaPlaywright(opts: {
     : (browser.contexts()[0] ?? (await browser.newContext()));
   await observeContext(context, { stealth: opts.stealth ?? getStealthEnabledForCdpUrl(opts.cdpUrl) });
   const page = await context.newPage();
-  ensurePageState(page);
-  clearBlockedPageRef(opts.cdpUrl, page);
-  const createdTargetId = await pageTargetId(page).catch(() => null);
-  clearBlockedTarget(opts.cdpUrl, createdTargetId ?? undefined);
 
-  const targetUrl = (opts.url ?? '').trim() || 'about:blank';
+  // From here on, anything that throws would leave a tab dangling. Wrap and
+  // close the page on any failure so callers don't accumulate junk tabs.
+  try {
+    ensurePageState(page);
+    clearBlockedPageRef(opts.cdpUrl, page);
+    const createdTargetId = await pageTargetId(page).catch(() => null);
+    clearBlockedTarget(opts.cdpUrl, createdTargetId ?? undefined);
 
-  if (targetUrl !== 'about:blank') {
-    await assertBrowserNavigationAllowed({ url: targetUrl, ...withBrowserNavigationPolicy(policy) });
-    let response: Awaited<ReturnType<Page['goto']>> = null;
-    try {
-      response = await gotoPageWithNavigationGuard({
+    if (targetUrl !== 'about:blank') {
+      const response = await gotoPageWithNavigationGuard({
         cdpUrl: opts.cdpUrl,
         page,
         url: targetUrl,
@@ -604,27 +610,32 @@ export async function createPageViaPlaywright(opts: {
         ssrfPolicy: policy,
         targetId: createdTargetId ?? undefined,
       });
-    } catch (err) {
-      if (isPolicyDenyNavigationError(err) || err instanceof BlockedBrowserTargetError) throw err;
-      console.warn(`[browserclaw] createPage navigation failed: ${err instanceof Error ? err.message : String(err)}`);
+      await assertPageNavigationCompletedSafely({
+        cdpUrl: opts.cdpUrl,
+        page,
+        response,
+        ssrfPolicy: policy,
+        targetId: createdTargetId ?? undefined,
+      });
     }
-    await assertPageNavigationCompletedSafely({
-      cdpUrl: opts.cdpUrl,
-      page,
-      response,
-      ssrfPolicy: policy,
-      targetId: createdTargetId ?? undefined,
-    });
-  }
 
-  const tid = createdTargetId ?? (await pageTargetId(page).catch(() => null));
-  if (tid === null || tid === '') throw new Error('Failed to get targetId for new page');
-  return {
-    targetId: tid,
-    title: await page.title().catch(() => ''),
-    url: page.url(),
-    type: 'page',
-  };
+    const tid = createdTargetId ?? (await pageTargetId(page).catch(() => null));
+    if (tid === null || tid === '') throw new Error('Failed to get targetId for new page');
+    return {
+      targetId: tid,
+      title: await page.title().catch(() => ''),
+      url: page.url(),
+      type: 'page',
+    };
+  } catch (err) {
+    // closeBlockedNavigationTarget (called by the post-nav safety check for
+    // policy denials) may have already closed the page — page.close() is
+    // idempotent in Playwright and the .catch() swallows the no-op error.
+    await page.close().catch(() => {
+      /* best-effort cleanup */
+    });
+    throw err;
+  }
 }
 
 export async function closePageViaPlaywright(opts: {

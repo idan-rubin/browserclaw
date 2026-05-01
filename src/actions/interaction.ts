@@ -660,7 +660,16 @@ export async function armFileUploadViaPlaywright(opts: {
   paths?: string[];
   timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
-}): Promise<void> {
+}): Promise<{ done: Promise<void> }> {
+  // Two-phase contract:
+  //   1. Awaiting this function resolves once the filechooser listener is armed.
+  //   2. The returned `done` promise resolves after setFiles completes (or rejects
+  //      on timeout / invalid paths). The caller should:
+  //         const { done } = await page.armFileUpload([...]);
+  //         await page.click('e3');
+  //         await done;
+  //      The outer await closes the listener-arming race that was present when
+  //      `getPageForTargetId` ran async before `waitForEvent` registered.
   const page = await getPageForTargetId({
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
@@ -676,9 +685,15 @@ export async function armFileUploadViaPlaywright(opts: {
     if (state.armIdUpload === armId) state.armIdUpload = 0;
   };
   page.once('close', resetArm);
-  page
-    .waitForEvent('filechooser', { timeout })
-    .then(async (fileChooser) => {
+
+  // Listener registration is synchronous in Playwright. Capturing the promise
+  // here — before this function returns — guarantees the listener is in place
+  // for the caller's next action.
+  const fileChooserPromise = page.waitForEvent('filechooser', { timeout });
+
+  const done = (async () => {
+    try {
+      const fileChooser = await fileChooserPromise;
       if (state.armIdUpload !== armId) return;
 
       if (opts.paths === undefined || opts.paths.length === 0) {
@@ -696,13 +711,12 @@ export async function armFileUploadViaPlaywright(opts: {
         scopeLabel: `uploads directory (${DEFAULT_UPLOAD_DIR})`,
       });
       if (!uploadPathsResult.ok) {
-        console.warn(`[browserclaw] armFileUpload: path validation failed: ${uploadPathsResult.error}`);
         try {
           await page.keyboard.press('Escape');
         } catch {
           /* intentional no-op */
         }
-        return;
+        throw new Error(`armFileUpload: path validation failed: ${uploadPathsResult.error}`);
       }
 
       await fileChooser.setFiles(uploadPathsResult.paths);
@@ -720,14 +734,11 @@ export async function armFileUploadViaPlaywright(opts: {
           `[browserclaw] armFileUpload: dispatch events failed: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
-    })
-    .catch((e: unknown) => {
-      console.warn(
-        `[browserclaw] armFileUpload: filechooser wait failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    })
-    .finally(() => {
+    } finally {
       resetArm();
       page.off('close', resetArm);
-    });
+    }
+  })();
+
+  return { done };
 }
