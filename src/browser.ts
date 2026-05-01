@@ -1834,9 +1834,26 @@ export class BrowserClaw {
       };
       const browser = new BrowserClaw(cdpUrl, chrome, telemetry, ssrfPolicy, opts.recordVideo, stealth);
       if (opts.url !== undefined && opts.url !== '') {
-        const page = await browser.currentPage();
         const navT0 = Date.now();
-        await page.goto(opts.url);
+        if (opts.recordVideo !== undefined) {
+          // Playwright records video at the BrowserContext level, set when the context
+          // is created. Chrome's initial blank tab lives in the default context, so
+          // navigating it via currentPage().goto() would skip recording. Open a fresh
+          // page (which goes through the recording context) and close the blank tab.
+          const blankTargetId = await browser
+            .currentPage()
+            .then((p) => p.id)
+            .catch(() => null);
+          await browser.open(opts.url);
+          if (blankTargetId !== null) {
+            await browser.close(blankTargetId).catch(() => {
+              /* best-effort cleanup */
+            });
+          }
+        } else {
+          const page = await browser.currentPage();
+          await page.goto(opts.url);
+        }
         telemetry.navMs = Date.now() - navT0;
         telemetry.timestamps.navigatedAt = new Date().toISOString();
       }

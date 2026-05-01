@@ -676,58 +676,56 @@ export async function armFileUploadViaPlaywright(opts: {
     if (state.armIdUpload === armId) state.armIdUpload = 0;
   };
   page.once('close', resetArm);
-  page
-    .waitForEvent('filechooser', { timeout })
-    .then(async (fileChooser) => {
-      if (state.armIdUpload !== armId) return;
 
-      if (opts.paths === undefined || opts.paths.length === 0) {
-        try {
-          await page.keyboard.press('Escape');
-        } catch {
-          /* intentional no-op */
-        }
-        return;
-      }
+  // Register the filechooser listener synchronously before any further await so
+  // the caller's "store the promise, trigger the picker, await it" pattern works:
+  // the listener is in place by the time this function yields back to the caller.
+  const fileChooserPromise = page.waitForEvent('filechooser', { timeout });
 
-      const uploadPathsResult = await resolveStrictExistingPathsWithinRoot({
-        rootDir: DEFAULT_UPLOAD_DIR,
-        requestedPaths: opts.paths,
-        scopeLabel: `uploads directory (${DEFAULT_UPLOAD_DIR})`,
-      });
-      if (!uploadPathsResult.ok) {
-        console.warn(`[browserclaw] armFileUpload: path validation failed: ${uploadPathsResult.error}`);
-        try {
-          await page.keyboard.press('Escape');
-        } catch {
-          /* intentional no-op */
-        }
-        return;
-      }
+  try {
+    const fileChooser = await fileChooserPromise;
+    if (state.armIdUpload !== armId) return;
 
-      await fileChooser.setFiles(uploadPathsResult.paths);
-
+    if (opts.paths === undefined || opts.paths.length === 0) {
       try {
-        const input = typeof fileChooser.element === 'function' ? await Promise.resolve(fileChooser.element()) : null;
-        if (input !== null) {
-          await input.evaluate((el: Element) => {
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-          });
-        }
-      } catch (e: unknown) {
-        console.warn(
-          `[browserclaw] armFileUpload: dispatch events failed: ${e instanceof Error ? e.message : String(e)}`,
-        );
+        await page.keyboard.press('Escape');
+      } catch {
+        /* intentional no-op */
       }
-    })
-    .catch((e: unknown) => {
-      console.warn(
-        `[browserclaw] armFileUpload: filechooser wait failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    })
-    .finally(() => {
-      resetArm();
-      page.off('close', resetArm);
+      return;
+    }
+
+    const uploadPathsResult = await resolveStrictExistingPathsWithinRoot({
+      rootDir: DEFAULT_UPLOAD_DIR,
+      requestedPaths: opts.paths,
+      scopeLabel: `uploads directory (${DEFAULT_UPLOAD_DIR})`,
     });
+    if (!uploadPathsResult.ok) {
+      try {
+        await page.keyboard.press('Escape');
+      } catch {
+        /* intentional no-op */
+      }
+      throw new Error(`armFileUpload: path validation failed: ${uploadPathsResult.error}`);
+    }
+
+    await fileChooser.setFiles(uploadPathsResult.paths);
+
+    try {
+      const input = typeof fileChooser.element === 'function' ? await Promise.resolve(fileChooser.element()) : null;
+      if (input !== null) {
+        await input.evaluate((el: Element) => {
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+      }
+    } catch (e: unknown) {
+      console.warn(
+        `[browserclaw] armFileUpload: dispatch events failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  } finally {
+    resetArm();
+    page.off('close', resetArm);
+  }
 }

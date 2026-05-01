@@ -605,8 +605,14 @@ export async function createPageViaPlaywright(opts: {
         targetId: createdTargetId ?? undefined,
       });
     } catch (err) {
-      if (isPolicyDenyNavigationError(err) || err instanceof BlockedBrowserTargetError) throw err;
-      console.warn(`[browserclaw] createPage navigation failed: ${err instanceof Error ? err.message : String(err)}`);
+      // Close the freshly-created tab so we don't leak chrome-error://chromewebdata/
+      // pages or partially-loaded targets when the caller's exception handler runs.
+      if (!(isPolicyDenyNavigationError(err) || err instanceof BlockedBrowserTargetError)) {
+        await page.close().catch(() => {
+          /* best-effort cleanup */
+        });
+      }
+      throw err;
     }
     await assertPageNavigationCompletedSafely({
       cdpUrl: opts.cdpUrl,
