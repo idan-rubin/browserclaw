@@ -3,12 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import type * as ConnectionModule from '../connection.js';
 
-const {
-  mockGetPageForTargetId,
-  mockEnsurePageState,
-  mockBumpUploadArmId,
-  mockNormalizeTimeoutMs,
-} = vi.hoisted(() => ({
+const { mockGetPageForTargetId, mockEnsurePageState, mockBumpUploadArmId, mockNormalizeTimeoutMs } = vi.hoisted(() => ({
   mockGetPageForTargetId: vi.fn<(opts: unknown) => Promise<Page>>(),
   mockEnsurePageState: vi.fn<(page: unknown) => Record<string, number>>(),
   mockBumpUploadArmId: vi.fn<(state: Record<string, number>) => number>(),
