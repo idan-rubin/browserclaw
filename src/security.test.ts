@@ -348,6 +348,36 @@ describe('security.ts', () => {
       it('should block fd00::1', () => {
         expect(isInternalUrl('http://[fd00::1]')).toBe(true);
       });
+
+      it('should allow fc00::1 when allowIpv6UniqueLocalRange is true', () => {
+        expect(isInternalUrl('http://[fc00::1]', { allowIpv6UniqueLocalRange: true })).toBe(false);
+      });
+
+      it('should allow fd00::1 when allowIpv6UniqueLocalRange is true', () => {
+        expect(isInternalUrl('http://[fd00::1]', { allowIpv6UniqueLocalRange: true })).toBe(false);
+      });
+
+      it('should NOT allow fc00::1 when policy does not explicitly allow it', () => {
+        expect(isInternalUrl('http://[fc00::1]', {})).toBe(true);
+      });
+
+      it('should still block other IPv6 ranges when only allowIpv6UniqueLocalRange is set', () => {
+        expect(isInternalUrl('http://[::1]', { allowIpv6UniqueLocalRange: true })).toBe(true);
+        expect(isInternalUrl('http://[fe80::1]', { allowIpv6UniqueLocalRange: true })).toBe(true);
+        expect(isInternalUrl('http://[fec0::1]', { allowIpv6UniqueLocalRange: true })).toBe(true);
+      });
+
+      it('treats allowIpv6UniqueLocalRange as orthogonal to dangerouslyAllowPrivateNetwork', () => {
+        // dangerouslyAllowPrivateNetwork alone does not unblock ULA at the isInternalUrl layer.
+        expect(isInternalUrl('http://[fc00::1]', { dangerouslyAllowPrivateNetwork: true })).toBe(true);
+        // Both flags together: ULA flag does the work, DAPN doesn't interfere.
+        expect(
+          isInternalUrl('http://[fc00::1]', {
+            dangerouslyAllowPrivateNetwork: true,
+            allowIpv6UniqueLocalRange: true,
+          }),
+        ).toBe(false);
+      });
     });
 
     describe('IPv6 multicast (ff00::/8)', () => {
@@ -734,6 +764,22 @@ describe('security.ts', () => {
         policy: STRICT_POLICY,
       });
       expect(result.addresses).toHaveLength(1);
+    });
+
+    it('does not serve a permissive-ULA cached result to a strict-ULA caller', async () => {
+      const ulaLookup = (() => Promise.resolve([{ address: 'fc00::1', family: 6 }])) as unknown as LookupFn;
+      const hostname = `cache-iso-${randomUUID().slice(0, 8)}.test`;
+      const permissive = await resolvePinnedHostnameWithPolicy(hostname, {
+        lookupFn: ulaLookup,
+        policy: { allowIpv6UniqueLocalRange: true },
+      });
+      expect(permissive.addresses).toContain('fc00::1');
+      await expect(
+        resolvePinnedHostnameWithPolicy(hostname, {
+          lookupFn: ulaLookup,
+          policy: STRICT_POLICY,
+        }),
+      ).rejects.toThrow(InvalidBrowserNavigationUrlError);
     });
 
     it('should honor hostnameAllowlist restriction', async () => {
@@ -1590,6 +1636,11 @@ describe('security.ts', () => {
     it('should respect allowRfc2544BenchmarkRange in policy', () => {
       expect(isInternalUrl('http://198.18.0.1', { allowRfc2544BenchmarkRange: true })).toBe(false);
       expect(isInternalUrl('http://198.18.0.1', { allowRfc2544BenchmarkRange: false })).toBe(true);
+    });
+
+    it('should respect allowIpv6UniqueLocalRange in policy', () => {
+      expect(isInternalUrl('http://[fc00::1]', { allowIpv6UniqueLocalRange: true })).toBe(false);
+      expect(isInternalUrl('http://[fc00::1]', { allowIpv6UniqueLocalRange: false })).toBe(true);
     });
   });
 

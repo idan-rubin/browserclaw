@@ -42,6 +42,12 @@ export interface SsrfPolicy {
    * environments where this range is used for legitimate routing.
    */
   allowRfc2544BenchmarkRange?: boolean;
+  /**
+   * Allow navigation to the IPv6 unique local address range (fc00::/7).
+   * This range is blocked by default. Enable only in trusted fake-IP proxy
+   * stacks that use ULA addresses for legitimate routing.
+   */
+  allowIpv6UniqueLocalRange?: boolean;
 }
 
 // ── Chrome Launcher ──
