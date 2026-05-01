@@ -348,6 +348,24 @@ describe('security.ts', () => {
       it('should block fd00::1', () => {
         expect(isInternalUrl('http://[fd00::1]')).toBe(true);
       });
+
+      it('should allow fc00::1 when allowIpv6UniqueLocalRange is true', () => {
+        expect(isInternalUrl('http://[fc00::1]', { allowIpv6UniqueLocalRange: true })).toBe(false);
+      });
+
+      it('should allow fd00::1 when allowIpv6UniqueLocalRange is true', () => {
+        expect(isInternalUrl('http://[fd00::1]', { allowIpv6UniqueLocalRange: true })).toBe(false);
+      });
+
+      it('should NOT allow fc00::1 when policy does not explicitly allow it', () => {
+        expect(isInternalUrl('http://[fc00::1]', {})).toBe(true);
+      });
+
+      it('should still block other IPv6 ranges when only allowIpv6UniqueLocalRange is set', () => {
+        expect(isInternalUrl('http://[::1]', { allowIpv6UniqueLocalRange: true })).toBe(true);
+        expect(isInternalUrl('http://[fe80::1]', { allowIpv6UniqueLocalRange: true })).toBe(true);
+        expect(isInternalUrl('http://[fec0::1]', { allowIpv6UniqueLocalRange: true })).toBe(true);
+      });
     });
 
     describe('IPv6 multicast (ff00::/8)', () => {
@@ -1590,6 +1608,11 @@ describe('security.ts', () => {
     it('should respect allowRfc2544BenchmarkRange in policy', () => {
       expect(isInternalUrl('http://198.18.0.1', { allowRfc2544BenchmarkRange: true })).toBe(false);
       expect(isInternalUrl('http://198.18.0.1', { allowRfc2544BenchmarkRange: false })).toBe(true);
+    });
+
+    it('should respect allowIpv6UniqueLocalRange in policy', () => {
+      expect(isInternalUrl('http://[fc00::1]', { allowIpv6UniqueLocalRange: true })).toBe(false);
+      expect(isInternalUrl('http://[fc00::1]', { allowIpv6UniqueLocalRange: false })).toBe(true);
     });
   });
 

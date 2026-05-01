@@ -180,8 +180,12 @@ const BLOCKED_IPV6_RANGES = new Set([
 
 const RFC2544_BENCHMARK_PREFIX: [ipaddr.IPv4, number] = [ipaddr.IPv4.parse('198.18.0.0'), 15];
 
-interface IsPrivateIpOpts {
+interface IsPrivateIpv4Opts {
   allowRfc2544BenchmarkRange?: boolean;
+}
+
+interface IsPrivateIpv6Opts {
+  allowUniqueLocalRange?: boolean;
 }
 
 const EMBEDDED_IPV4_SENTINEL_RULES: {
@@ -290,14 +294,16 @@ function looksLikeUnsupportedIpv4Literal(address: string): boolean {
   return parts.every((part) => /^[0-9]+$/.test(part) || /^0x/i.test(part));
 }
 
-function isBlockedSpecialUseIpv4Address(address: ipaddr.IPv4, opts?: IsPrivateIpOpts): boolean {
+function isBlockedSpecialUseIpv4Address(address: ipaddr.IPv4, opts?: IsPrivateIpv4Opts): boolean {
   const inRfc2544 = address.match(RFC2544_BENCHMARK_PREFIX);
   if (inRfc2544 && opts?.allowRfc2544BenchmarkRange === true) return false;
   return BLOCKED_IPV4_RANGES.has(address.range()) || inRfc2544;
 }
 
-function isBlockedSpecialUseIpv6Address(address: ipaddr.IPv6): boolean {
-  if (BLOCKED_IPV6_RANGES.has(address.range())) return true;
+function isBlockedSpecialUseIpv6Address(address: ipaddr.IPv6, opts?: IsPrivateIpv6Opts): boolean {
+  const range = address.range();
+  if (range === 'uniqueLocal' && opts?.allowUniqueLocalRange === true) return false;
+  if (BLOCKED_IPV6_RANGES.has(range)) return true;
   return (address.parts[0] & 0xffc0) === 0xfec0;
 }
 
@@ -317,8 +323,12 @@ function extractEmbeddedIpv4FromIpv6(address: ipaddr.IPv6): ipaddr.IPv4 | undefi
   }
 }
 
-function resolveIpv4SpecialUseBlockOptions(policy?: SsrfPolicy): IsPrivateIpOpts {
+function resolveIpv4SpecialUseBlockOptions(policy?: SsrfPolicy): IsPrivateIpv4Opts {
   return { allowRfc2544BenchmarkRange: policy?.allowRfc2544BenchmarkRange === true };
+}
+
+function resolveIpv6SpecialUseBlockOptions(policy?: SsrfPolicy): IsPrivateIpv6Opts {
+  return { allowUniqueLocalRange: policy?.allowIpv6UniqueLocalRange === true };
 }
 
 function isBlockedHostnameOrIp(hostname: string, policy?: SsrfPolicy): boolean {
@@ -334,12 +344,13 @@ function isPrivateIpAddress(address: string, policy?: SsrfPolicy): boolean {
   if (!normalized) return true;
 
   const blockOptions = resolveIpv4SpecialUseBlockOptions(policy);
+  const ipv6BlockOptions = resolveIpv6SpecialUseBlockOptions(policy);
 
   const strictIp = parseCanonicalIpAddress(normalized);
   if (strictIp) {
     if (strictIp.kind() === 'ipv4') return isBlockedSpecialUseIpv4Address(strictIp as ipaddr.IPv4, blockOptions);
     const v6 = strictIp as ipaddr.IPv6;
-    if (isBlockedSpecialUseIpv6Address(v6)) return true;
+    if (isBlockedSpecialUseIpv6Address(v6, ipv6BlockOptions)) return true;
     const embeddedIpv4 = extractEmbeddedIpv4FromIpv6(v6);
     if (embeddedIpv4) return isBlockedSpecialUseIpv4Address(embeddedIpv4, blockOptions);
     return false;
@@ -490,9 +501,10 @@ function dnsPolicyFingerprint(policy: SsrfPolicy | undefined): string {
   const allowed = normalizeHostnameSet(policy?.allowedHostnames);
   const allowlist = normalizeHostnameAllowlist(policy?.hostnameAllowlist);
   const allowRfc2544 = policy?.allowRfc2544BenchmarkRange === true;
+  const allowIpv6Ula = policy?.allowIpv6UniqueLocalRange === true;
   const allowedKey = [...allowed].sort().join(',');
   const allowlistKey = allowlist.sort().join(',');
-  return `${allowPrivate ? '1' : '0'}|${allowRfc2544 ? '1' : '0'}|${allowedKey}|${allowlistKey}`;
+  return `${allowPrivate ? '1' : '0'}|${allowRfc2544 ? '1' : '0'}|${allowIpv6Ula ? '1' : '0'}|${allowedKey}|${allowlistKey}`;
 }
 
 function dnsCacheKey(hostname: string, policy: SsrfPolicy | undefined): string {
