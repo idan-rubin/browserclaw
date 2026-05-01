@@ -660,7 +660,16 @@ export async function armFileUploadViaPlaywright(opts: {
   paths?: string[];
   timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
-}): Promise<void> {
+}): Promise<{ done: Promise<void> }> {
+  // Two-phase contract:
+  //   1. Awaiting this function resolves once the filechooser listener is armed.
+  //   2. The returned `done` promise resolves after setFiles completes (or rejects
+  //      on timeout / invalid paths). The caller should:
+  //         const { done } = await page.armFileUpload([...]);
+  //         await page.click('e3');
+  //         await done;
+  //      The outer await closes the listener-arming race that was present when
+  //      `getPageForTargetId` ran async before `waitForEvent` registered.
   const page = await getPageForTargetId({
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
@@ -677,55 +686,59 @@ export async function armFileUploadViaPlaywright(opts: {
   };
   page.once('close', resetArm);
 
-  // Register the filechooser listener synchronously before any further await so
-  // the caller's "store the promise, trigger the picker, await it" pattern works:
-  // the listener is in place by the time this function yields back to the caller.
+  // Listener registration is synchronous in Playwright. Capturing the promise
+  // here — before this function returns — guarantees the listener is in place
+  // for the caller's next action.
   const fileChooserPromise = page.waitForEvent('filechooser', { timeout });
 
-  try {
-    const fileChooser = await fileChooserPromise;
-    if (state.armIdUpload !== armId) return;
-
-    if (opts.paths === undefined || opts.paths.length === 0) {
-      try {
-        await page.keyboard.press('Escape');
-      } catch {
-        /* intentional no-op */
-      }
-      return;
-    }
-
-    const uploadPathsResult = await resolveStrictExistingPathsWithinRoot({
-      rootDir: DEFAULT_UPLOAD_DIR,
-      requestedPaths: opts.paths,
-      scopeLabel: `uploads directory (${DEFAULT_UPLOAD_DIR})`,
-    });
-    if (!uploadPathsResult.ok) {
-      try {
-        await page.keyboard.press('Escape');
-      } catch {
-        /* intentional no-op */
-      }
-      throw new Error(`armFileUpload: path validation failed: ${uploadPathsResult.error}`);
-    }
-
-    await fileChooser.setFiles(uploadPathsResult.paths);
-
+  const done = (async () => {
     try {
-      const input = typeof fileChooser.element === 'function' ? await Promise.resolve(fileChooser.element()) : null;
-      if (input !== null) {
-        await input.evaluate((el: Element) => {
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        });
+      const fileChooser = await fileChooserPromise;
+      if (state.armIdUpload !== armId) return;
+
+      if (opts.paths === undefined || opts.paths.length === 0) {
+        try {
+          await page.keyboard.press('Escape');
+        } catch {
+          /* intentional no-op */
+        }
+        return;
       }
-    } catch (e: unknown) {
-      console.warn(
-        `[browserclaw] armFileUpload: dispatch events failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
+
+      const uploadPathsResult = await resolveStrictExistingPathsWithinRoot({
+        rootDir: DEFAULT_UPLOAD_DIR,
+        requestedPaths: opts.paths,
+        scopeLabel: `uploads directory (${DEFAULT_UPLOAD_DIR})`,
+      });
+      if (!uploadPathsResult.ok) {
+        try {
+          await page.keyboard.press('Escape');
+        } catch {
+          /* intentional no-op */
+        }
+        throw new Error(`armFileUpload: path validation failed: ${uploadPathsResult.error}`);
+      }
+
+      await fileChooser.setFiles(uploadPathsResult.paths);
+
+      try {
+        const input = typeof fileChooser.element === 'function' ? await Promise.resolve(fileChooser.element()) : null;
+        if (input !== null) {
+          await input.evaluate((el: Element) => {
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          });
+        }
+      } catch (e: unknown) {
+        console.warn(
+          `[browserclaw] armFileUpload: dispatch events failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    } finally {
+      resetArm();
+      page.off('close', resetArm);
     }
-  } finally {
-    resetArm();
-    page.off('close', resetArm);
-  }
+  })();
+
+  return { done };
 }

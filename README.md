@@ -379,9 +379,11 @@ await copyFile('/path/to/file.pdf', staged);
 await page.uploadFile('e3', [staged]);
 
 // Arm pattern: for non-input file pickers
-const uploadDone = page.armFileUpload([staged]);
+// Awaiting the call resolves once the listener is armed; awaiting `done`
+// resolves after files have been set on the chooser.
+const { done } = await page.armFileUpload([staged]);
 await page.click('e3'); // triggers the file chooser
-await uploadDone;
+await done;
 ```
 
 #### Dialog Handling

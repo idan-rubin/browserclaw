@@ -730,21 +730,28 @@ export class CrawlPage {
   }
 
   /**
-   * Arm a one-shot file chooser handler.
+   * Arm a one-shot file chooser handler. Two-phase API:
    *
-   * Returns a promise — store it (don't await), trigger the file picker, then await it.
+   *   1. `await page.armFileUpload(...)` resolves once the filechooser listener
+   *      is armed. Only then is it safe to trigger the picker.
+   *   2. The returned `done` promise resolves after the files have been set on
+   *      the chooser (or rejects on timeout or invalid paths).
+   *
+   * The outer await closes a previously-present race where the listener was
+   * registered after `armFileUpload` had already returned to the caller.
    *
    * @param paths - File paths to set when the chooser appears (empty to clear)
    * @param opts - Timeout options
+   * @returns `{ done }` — `done` resolves when files are set
    *
    * @example
    * ```ts
-   * const uploadDone = page.armFileUpload(['/path/to/file.pdf']); // don't await here
+   * const { done } = await page.armFileUpload(['/path/to/file.pdf']);
    * await page.click('e3'); // triggers file picker
-   * await uploadDone;       // wait for files to be set
+   * await done;             // wait for files to be set
    * ```
    */
-  async armFileUpload(paths?: string[], opts?: { timeoutMs?: number }): Promise<void> {
+  async armFileUpload(paths?: string[], opts?: { timeoutMs?: number }): Promise<{ done: Promise<void> }> {
     return armFileUploadViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
