@@ -939,6 +939,21 @@ function isBlankUrl(url: string): boolean {
   return url === '' || url === 'about:blank' || url.startsWith('chrome://new-tab-page') || url === 'chrome://newtab/';
 }
 
+const BROWSER_INTERNAL_TARGET_URL_PREFIXES = [
+  'chrome://',
+  'chrome-untrusted://',
+  'devtools://',
+  'edge://',
+  'brave://',
+  'vivaldi://',
+  'opera://',
+];
+
+export function isBrowserInternalTargetUrl(url: string): boolean {
+  const normalized = url.trim().toLowerCase();
+  return BROWSER_INTERNAL_TARGET_URL_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
 /**
  * Best-effort heuristic resolver for a usable page targetId.
  *
@@ -1007,7 +1022,8 @@ export async function pickActiveTargetId(opts: {
   }
 
   for (const page of accessible) {
-    if (!isBlankUrl(page.url())) {
+    const url = page.url();
+    if (!isBlankUrl(url) && !isBrowserInternalTargetUrl(url)) {
       const tid = await tidOf(page);
       if (tid !== null && tid !== '') return tid;
     }

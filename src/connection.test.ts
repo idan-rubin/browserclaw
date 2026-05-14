@@ -561,6 +561,30 @@ describe('pickActiveTargetId', () => {
     const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
     expect(result).toBe('t-b');
   });
+
+  it('skips browser-internal URLs in the non-blank pass so it matches the tabs filter', async () => {
+    const accessible = [pageWithUrl('chrome://settings/'), pageWithUrl('https://a.test/')];
+    const tids = new Map<Page, string>([
+      [accessible[0], 't-chrome'],
+      [accessible[1], 't-real'],
+    ]);
+    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBe('t-real');
+  });
+
+  it('still honors preferTargetId for browser-internal URLs when explicitly requested', async () => {
+    const accessible = [pageWithUrl('chrome://settings/'), pageWithUrl('https://a.test/')];
+    const tids = new Map<Page, string>([
+      [accessible[0], 't-chrome'],
+      [accessible[1], 't-real'],
+    ]);
+    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: 't-chrome', preferUrl: '', tidOf });
+    expect(result).toBe('t-chrome');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

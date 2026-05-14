@@ -17,6 +17,7 @@ import {
   withPageScopedCdpClient,
   isBlockedTarget,
   isBlockedPageRef,
+  isBrowserInternalTargetUrl,
   markTargetBlocked,
   markPageRefBlocked,
   clearBlockedPageRef,
@@ -543,21 +544,6 @@ export async function navigateViaPlaywright(opts: {
     throw err;
   }
   return { url: page.url() };
-}
-
-const BROWSER_INTERNAL_TARGET_URL_PREFIXES = [
-  'chrome://',
-  'chrome-untrusted://',
-  'devtools://',
-  'edge://',
-  'brave://',
-  'vivaldi://',
-  'opera://',
-];
-
-function isBrowserInternalTargetUrl(url: string): boolean {
-  const normalized = url.trim().toLowerCase();
-  return BROWSER_INTERNAL_TARGET_URL_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 }
 
 async function listPagesViaPlaywrightOnce(cdpUrl: string): Promise<BrowserTab[]> {
