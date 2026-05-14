@@ -935,8 +935,35 @@ export async function getRestoredPageForTarget(opts: {
   return page;
 }
 
+const BROWSER_INTERNAL_TARGET_URL_PREFIXES = [
+  'chrome://',
+  'chrome-untrusted://',
+  'devtools://',
+  'edge://',
+  'brave://',
+  'vivaldi://',
+  'opera://',
+];
+
+function isVendorNewTabUrl(normalized: string): boolean {
+  for (const prefix of BROWSER_INTERNAL_TARGET_URL_PREFIXES) {
+    if (!normalized.startsWith(prefix)) continue;
+    const rest = normalized.slice(prefix.length);
+    if (rest === 'newtab' || rest === 'newtab/' || rest.startsWith('new-tab-page')) return true;
+  }
+  return false;
+}
+
 function isBlankUrl(url: string): boolean {
-  return url === '' || url === 'about:blank' || url.startsWith('chrome://new-tab-page') || url === 'chrome://newtab/';
+  if (url === '' || url === 'about:blank') return true;
+  return isVendorNewTabUrl(url.trim().toLowerCase());
+}
+
+export function isBrowserInternalTargetUrl(url: string): boolean {
+  const normalized = url.trim().toLowerCase();
+  if (normalized === '' || normalized === 'about:blank') return false;
+  if (isVendorNewTabUrl(normalized)) return false;
+  return BROWSER_INTERNAL_TARGET_URL_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 }
 
 /**
@@ -1007,16 +1034,15 @@ export async function pickActiveTargetId(opts: {
   }
 
   for (const page of accessible) {
-    if (!isBlankUrl(page.url())) {
+    const url = page.url();
+    if (!isBlankUrl(url) && !isBrowserInternalTargetUrl(url)) {
       const tid = await tidOf(page);
       if (tid !== null && tid !== '') return tid;
     }
   }
 
-  // Final fallback: any accessible page whose targetId resolves. We iterate
-  // rather than only asking `accessible[0]` because a transient pageTargetId
-  // failure on the first page must not mask a usable later page.
   for (const page of accessible) {
+    if (isBrowserInternalTargetUrl(page.url())) continue;
     const tid = await tidOf(page);
     if (tid !== null && tid !== '') return tid;
   }

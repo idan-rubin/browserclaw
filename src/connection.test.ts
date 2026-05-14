@@ -561,6 +561,85 @@ describe('pickActiveTargetId', () => {
     const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
     expect(result).toBe('t-b');
   });
+
+  it('skips browser-internal URLs in the non-blank pass so it matches the tabs filter', async () => {
+    const accessible = [pageWithUrl('chrome://settings/'), pageWithUrl('https://a.test/')];
+    const tids = new Map<Page, string>([
+      [accessible[0], 't-chrome'],
+      [accessible[1], 't-real'],
+    ]);
+    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBe('t-real');
+  });
+
+  it('still honors preferTargetId for browser-internal URLs when explicitly requested', async () => {
+    const accessible = [pageWithUrl('chrome://settings/'), pageWithUrl('https://a.test/')];
+    const tids = new Map<Page, string>([
+      [accessible[0], 't-chrome'],
+      [accessible[1], 't-real'],
+    ]);
+    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: 't-chrome', preferUrl: '', tidOf });
+    expect(result).toBe('t-chrome');
+  });
+
+  it('prefers a blank tab over a browser-internal page in the final fallback', async () => {
+    const accessible = [pageWithUrl('chrome://settings/'), pageWithUrl('about:blank')];
+    const tids = new Map<Page, string>([
+      [accessible[0], 't-chrome'],
+      [accessible[1], 't-blank'],
+    ]);
+    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBe('t-blank');
+  });
+
+  it('returns null when every accessible page is browser-internal', async () => {
+    const accessible = [pageWithUrl('chrome://settings/'), pageWithUrl('devtools://devtools/')];
+    const tids = new Map<Page, string>([
+      [accessible[0], 't-chrome'],
+      [accessible[1], 't-devtools'],
+    ]);
+    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBeNull();
+  });
+
+  it('keeps the default new-tab page eligible in the final fallback', async () => {
+    const accessible = [pageWithUrl('chrome://newtab/')];
+    const tidOf = (page: Page) => Promise.resolve(page === accessible[0] ? 't-newtab' : null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBe('t-newtab');
+  });
+
+  it('keeps chrome://new-tab-page eligible in the final fallback', async () => {
+    const accessible = [pageWithUrl('chrome://new-tab-page/')];
+    const tidOf = (page: Page) => Promise.resolve(page === accessible[0] ? 't-newtab' : null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBe('t-newtab');
+  });
+
+  it('keeps vendor new-tab pages eligible (edge, brave, vivaldi, opera)', async () => {
+    const cases: { url: string; expected: string }[] = [
+      { url: 'edge://newtab/', expected: 't-edge' },
+      { url: 'brave://newtab/', expected: 't-brave' },
+      { url: 'vivaldi://newtab', expected: 't-vivaldi' },
+      { url: 'opera://newtab/', expected: 't-opera' },
+    ];
+    for (const { url, expected } of cases) {
+      const accessible = [pageWithUrl(url)];
+      const tidOf = (page: Page) => Promise.resolve(page === accessible[0] ? expected : null);
+      const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+      expect(result).toBe(expected);
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -445,6 +445,8 @@ export function createPinnedLookup(params: {
     address,
     family: address.includes(':') ? (6 as const) : (4 as const),
   }));
+  const ipv4Records = records.filter((entry) => entry.family === 4);
+  const automaticRecords = ipv4Records.length > 0 ? ipv4Records : records;
   let index = 0;
 
   // dns.lookup has complex overloads; we use a loosely-typed inner signature
@@ -468,12 +470,14 @@ export function createPinnedLookup(params: {
 
     const opts: { all?: boolean; family?: number } =
       typeof second === 'object' ? (second as { all?: boolean; family?: number }) : {};
-    const requestedFamily = typeof second === 'number' ? second : typeof opts.family === 'number' ? opts.family : 0;
+    const requestedFamily: number | undefined =
+      typeof second === 'number' ? second : typeof opts.family === 'number' ? opts.family : undefined;
+    const fallbackPool = requestedFamily === undefined ? automaticRecords : records;
     const candidates =
       requestedFamily === 4 || requestedFamily === 6
         ? records.filter((entry) => entry.family === requestedFamily)
-        : records;
-    const usable = candidates.length > 0 ? candidates : records;
+        : fallbackPool;
+    const usable = candidates.length > 0 ? candidates : fallbackPool;
 
     if (opts.all === true) {
       cb(null, usable);

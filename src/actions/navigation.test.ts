@@ -52,7 +52,8 @@ vi.mock('../security.js', async (importOriginal) => {
   };
 });
 
-const { createPageViaPlaywright } = await import('./navigation.js');
+const { createPageViaPlaywright, assertPageNavigationCompletedSafely, listPagesViaPlaywright } =
+  await import('./navigation.js');
 const { InvalidBrowserNavigationUrlError } = await import('../security.js');
 
 interface FakePage {
@@ -184,5 +185,114 @@ describe('createPageViaPlaywright leak prevention', () => {
 
     expect(tab.targetId).toBe('t-new');
     expect(page.close).not.toHaveBeenCalled();
+  });
+});
+
+describe('assertPageNavigationCompletedSafely policy denial', () => {
+  beforeEach(() => {
+    mockAssertBrowserNavigationResultAllowed.mockReset();
+    mockAssertBrowserNavigationResultAllowed.mockResolvedValue(undefined);
+    mockAssertBrowserNavigationRedirectChainAllowed.mockReset();
+    mockAssertBrowserNavigationRedirectChainAllowed.mockResolvedValue(undefined);
+  });
+
+  it('does not close the page on policy denial (read-only assertion)', async () => {
+    const page = buildFakePage({ url: () => 'https://blocked.example/' });
+    mockAssertBrowserNavigationResultAllowed.mockRejectedValue(
+      new InvalidBrowserNavigationUrlError('Navigation blocked: example denial'),
+    );
+
+    await expect(
+      assertPageNavigationCompletedSafely({
+        cdpUrl: 'http://localhost:9222',
+        page: page as never,
+        response: null,
+      }),
+    ).rejects.toThrow(/example denial/);
+
+    expect(page.close).not.toHaveBeenCalled();
+  });
+});
+
+describe('listPagesViaPlaywright browser-internal filter', () => {
+  beforeEach(() => {
+    mockConnectBrowser.mockReset();
+    mockPageTargetId.mockReset();
+  });
+
+  function pageWithUrl(url: string): FakePage {
+    return buildFakePage({ url: () => url });
+  }
+
+  it('filters out chrome:// and devtools:// pages from listings', async () => {
+    const realPage = pageWithUrl('https://example.test/');
+    const chromePage = pageWithUrl('chrome://settings/');
+    const devtoolsPage = pageWithUrl('devtools://devtools/bundled/inspector.html');
+    const edgePage = pageWithUrl('edge://flags/');
+    const context = { pages: () => [realPage, chromePage, devtoolsPage, edgePage] };
+    const browser = { contexts: () => [context] };
+    mockConnectBrowser.mockResolvedValue({
+      browser: browser as unknown as Browser,
+      cdpUrl: 'http://localhost:9222',
+    });
+
+    const calls = new Map<FakePage, string>([
+      [realPage, 't-real'],
+      [chromePage, 't-chrome'],
+      [devtoolsPage, 't-devtools'],
+      [edgePage, 't-edge'],
+    ]);
+    mockPageTargetId.mockImplementation((p: FakePage) => Promise.resolve(calls.get(p) ?? ''));
+
+    const tabs = await listPagesViaPlaywright({ cdpUrl: 'http://localhost:9222' });
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0]?.targetId).toBe('t-real');
+    expect(tabs[0]?.url).toBe('https://example.test/');
+  });
+
+  it('keeps default new-tab pages in the listing across vendors', async () => {
+    const chromeNewtab = pageWithUrl('chrome://newtab/');
+    const chromeNtp = pageWithUrl('chrome://new-tab-page/');
+    const edgeNewtab = pageWithUrl('edge://newtab/');
+    const braveNewtab = pageWithUrl('brave://newtab/');
+    const settings = pageWithUrl('chrome://settings/');
+    const real = pageWithUrl('https://example.test/');
+    const context = { pages: () => [chromeNewtab, chromeNtp, edgeNewtab, braveNewtab, settings, real] };
+    const browser = { contexts: () => [context] };
+    mockConnectBrowser.mockResolvedValue({
+      browser: browser as unknown as Browser,
+      cdpUrl: 'http://localhost:9222',
+    });
+    const calls = new Map<FakePage, string>([
+      [chromeNewtab, 't-cnt'],
+      [chromeNtp, 't-cntp'],
+      [edgeNewtab, 't-enewtab'],
+      [braveNewtab, 't-bnewtab'],
+      [settings, 't-settings'],
+      [real, 't-real'],
+    ]);
+    mockPageTargetId.mockImplementation((p: FakePage) => Promise.resolve(calls.get(p) ?? ''));
+
+    const tabs = await listPagesViaPlaywright({ cdpUrl: 'http://localhost:9222' });
+    expect(tabs.map((t) => t.targetId)).toEqual(['t-cnt', 't-cntp', 't-enewtab', 't-bnewtab', 't-real']);
+  });
+
+  it('matches prefixes case-insensitively and after trimming', async () => {
+    const upperChrome = pageWithUrl('  CHROME://VERSION  ');
+    const realPage = pageWithUrl('https://example.test/');
+    const context = { pages: () => [upperChrome, realPage] };
+    const browser = { contexts: () => [context] };
+    mockConnectBrowser.mockResolvedValue({
+      browser: browser as unknown as Browser,
+      cdpUrl: 'http://localhost:9222',
+    });
+    const calls = new Map<FakePage, string>([
+      [upperChrome, 't-up'],
+      [realPage, 't-real'],
+    ]);
+    mockPageTargetId.mockImplementation((p: FakePage) => Promise.resolve(calls.get(p) ?? ''));
+
+    const tabs = await listPagesViaPlaywright({ cdpUrl: 'http://localhost:9222' });
+    expect(tabs.map((t) => t.targetId)).toEqual(['t-real']);
   });
 });

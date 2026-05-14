@@ -17,6 +17,7 @@ import {
   withPageScopedCdpClient,
   isBlockedTarget,
   isBlockedPageRef,
+  isBrowserInternalTargetUrl,
   markTargetBlocked,
   markPageRefBlocked,
   clearBlockedPageRef,
@@ -99,12 +100,16 @@ function isSubframeDocumentNavigationRequest(page: Page, request: Request): bool
   }
 }
 
-async function closeBlockedNavigationTarget(opts: { cdpUrl: string; page: Page; targetId?: string }): Promise<void> {
+async function quarantineBlockedTarget(opts: { cdpUrl: string; page: Page; targetId?: string }): Promise<void> {
   markPageRefBlocked(opts.cdpUrl, opts.page);
   const resolvedTargetId = await pageTargetId(opts.page).catch(() => null);
   const fallbackTargetId = opts.targetId?.trim() ?? '';
   const targetIdToBlock = resolvedTargetId ?? fallbackTargetId;
   if (targetIdToBlock) markTargetBlocked(opts.cdpUrl, targetIdToBlock);
+}
+
+async function closeBlockedNavigationTarget(opts: { cdpUrl: string; page: Page; targetId?: string }): Promise<void> {
+  await quarantineBlockedTarget(opts);
   await opts.page.close().catch((e: unknown) => {
     console.warn('[browserclaw] failed to close blocked page', e);
   });
@@ -123,7 +128,7 @@ export async function assertPageNavigationCompletedSafely(opts: {
     await assertBrowserNavigationResultAllowed({ url: opts.page.url(), ...navigationPolicy });
   } catch (err) {
     if (isPolicyDenyNavigationError(err))
-      await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page: opts.page, targetId: opts.targetId });
+      await quarantineBlockedTarget({ cdpUrl: opts.cdpUrl, page: opts.page, targetId: opts.targetId });
     throw err;
   }
 }
@@ -525,13 +530,19 @@ export async function navigateViaPlaywright(opts: {
     response = await navigate();
   }
 
-  await assertPageNavigationCompletedSafely({
-    cdpUrl: opts.cdpUrl,
-    page,
-    response,
-    ssrfPolicy: policy,
-    targetId: opts.targetId,
-  });
+  try {
+    await assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page,
+      response,
+      ssrfPolicy: policy,
+      targetId: opts.targetId,
+    });
+  } catch (err) {
+    if (isPolicyDenyNavigationError(err))
+      await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page, targetId: opts.targetId });
+    throw err;
+  }
   return { url: page.url() };
 }
 
@@ -542,13 +553,15 @@ async function listPagesViaPlaywrightOnce(cdpUrl: string): Promise<BrowserTab[]>
   for (const page of pages) {
     if (isBlockedPageRef(cdpUrl, page)) continue;
     const tid = await pageTargetId(page).catch(() => null);
-    if (tid !== null && tid !== '' && !isBlockedTarget(cdpUrl, tid))
-      results.push({
-        targetId: tid,
-        title: await page.title().catch(() => ''),
-        url: page.url(),
-        type: 'page',
-      });
+    if (tid === null || tid === '' || isBlockedTarget(cdpUrl, tid)) continue;
+    const url = page.url();
+    if (isBrowserInternalTargetUrl(url)) continue;
+    results.push({
+      targetId: tid,
+      title: await page.title().catch(() => ''),
+      url,
+      type: 'page',
+    });
   }
   return results;
 }
@@ -593,8 +606,6 @@ export async function createPageViaPlaywright(opts: {
   await observeContext(context, { stealth: opts.stealth ?? getStealthEnabledForCdpUrl(opts.cdpUrl) });
   const page = await context.newPage();
 
-  // From here on, anything that throws would leave a tab dangling. Wrap and
-  // close the page on any failure so callers don't accumulate junk tabs.
   try {
     ensurePageState(page);
     clearBlockedPageRef(opts.cdpUrl, page);
@@ -628,12 +639,7 @@ export async function createPageViaPlaywright(opts: {
       type: 'page',
     };
   } catch (err) {
-    // closeBlockedNavigationTarget (called by the post-nav safety check for
-    // policy denials) may have already closed the page — page.close() is
-    // idempotent in Playwright and the .catch() swallows the no-op error.
-    await page.close().catch(() => {
-      /* best-effort cleanup */
-    });
+    await page.close().catch(() => undefined);
     throw err;
   }
 }
