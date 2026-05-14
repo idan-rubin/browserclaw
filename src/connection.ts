@@ -1030,7 +1030,8 @@ export async function pickActiveTargetId(opts: {
   }
 
   for (const page of accessible) {
-    if (isBrowserInternalTargetUrl(page.url())) continue;
+    const url = page.url();
+    if (isBrowserInternalTargetUrl(url) && !isBlankUrl(url)) continue;
     const tid = await tidOf(page);
     if (tid !== null && tid !== '') return tid;
   }

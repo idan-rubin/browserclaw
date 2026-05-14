@@ -609,6 +609,22 @@ describe('pickActiveTargetId', () => {
     const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
     expect(result).toBeNull();
   });
+
+  it('keeps the default new-tab page eligible in the final fallback', async () => {
+    const accessible = [pageWithUrl('chrome://newtab/')];
+    const tidOf = (page: Page) => Promise.resolve(page === accessible[0] ? 't-newtab' : null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBe('t-newtab');
+  });
+
+  it('keeps chrome://new-tab-page eligible in the final fallback', async () => {
+    const accessible = [pageWithUrl('chrome://new-tab-page/')];
+    const tidOf = (page: Page) => Promise.resolve(page === accessible[0] ? 't-newtab' : null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBe('t-newtab');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
