@@ -1029,10 +1029,8 @@ export async function pickActiveTargetId(opts: {
     }
   }
 
-  // Final fallback: any accessible page whose targetId resolves. We iterate
-  // rather than only asking `accessible[0]` because a transient pageTargetId
-  // failure on the first page must not mask a usable later page.
   for (const page of accessible) {
+    if (isBrowserInternalTargetUrl(page.url())) continue;
     const tid = await tidOf(page);
     if (tid !== null && tid !== '') return tid;
   }

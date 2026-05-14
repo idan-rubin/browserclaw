@@ -585,6 +585,30 @@ describe('pickActiveTargetId', () => {
     const result = await pickActiveTargetId({ accessible, preferTargetId: 't-chrome', preferUrl: '', tidOf });
     expect(result).toBe('t-chrome');
   });
+
+  it('prefers a blank tab over a browser-internal page in the final fallback', async () => {
+    const accessible = [pageWithUrl('chrome://settings/'), pageWithUrl('about:blank')];
+    const tids = new Map<Page, string>([
+      [accessible[0], 't-chrome'],
+      [accessible[1], 't-blank'],
+    ]);
+    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBe('t-blank');
+  });
+
+  it('returns null when every accessible page is browser-internal', async () => {
+    const accessible = [pageWithUrl('chrome://settings/'), pageWithUrl('devtools://devtools/')];
+    const tids = new Map<Page, string>([
+      [accessible[0], 't-chrome'],
+      [accessible[1], 't-devtools'],
+    ]);
+    const tidOf = (page: Page) => Promise.resolve(tids.get(page) ?? null);
+
+    const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+    expect(result).toBeNull();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
