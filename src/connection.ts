@@ -935,10 +935,6 @@ export async function getRestoredPageForTarget(opts: {
   return page;
 }
 
-function isBlankUrl(url: string): boolean {
-  return url === '' || url === 'about:blank' || url.startsWith('chrome://new-tab-page') || url === 'chrome://newtab/';
-}
-
 const BROWSER_INTERNAL_TARGET_URL_PREFIXES = [
   'chrome://',
   'chrome-untrusted://',
@@ -949,9 +945,24 @@ const BROWSER_INTERNAL_TARGET_URL_PREFIXES = [
   'opera://',
 ];
 
+function isVendorNewTabUrl(normalized: string): boolean {
+  for (const prefix of BROWSER_INTERNAL_TARGET_URL_PREFIXES) {
+    if (!normalized.startsWith(prefix)) continue;
+    const rest = normalized.slice(prefix.length);
+    if (rest === 'newtab' || rest === 'newtab/' || rest.startsWith('new-tab-page')) return true;
+  }
+  return false;
+}
+
+function isBlankUrl(url: string): boolean {
+  if (url === '' || url === 'about:blank') return true;
+  return isVendorNewTabUrl(url.trim().toLowerCase());
+}
+
 export function isBrowserInternalTargetUrl(url: string): boolean {
   const normalized = url.trim().toLowerCase();
-  if (isBlankUrl(normalized)) return false;
+  if (normalized === '' || normalized === 'about:blank') return false;
+  if (isVendorNewTabUrl(normalized)) return false;
   return BROWSER_INTERNAL_TARGET_URL_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 }
 

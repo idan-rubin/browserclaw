@@ -625,6 +625,21 @@ describe('pickActiveTargetId', () => {
     const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
     expect(result).toBe('t-newtab');
   });
+
+  it('keeps vendor new-tab pages eligible (edge, brave, vivaldi, opera)', async () => {
+    const cases: { url: string; expected: string }[] = [
+      { url: 'edge://newtab/', expected: 't-edge' },
+      { url: 'brave://newtab/', expected: 't-brave' },
+      { url: 'vivaldi://newtab', expected: 't-vivaldi' },
+      { url: 'opera://newtab/', expected: 't-opera' },
+    ];
+    for (const { url, expected } of cases) {
+      const accessible = [pageWithUrl(url)];
+      const tidOf = (page: Page) => Promise.resolve(page === accessible[0] ? expected : null);
+      const result = await pickActiveTargetId({ accessible, preferTargetId: '', preferUrl: '', tidOf });
+      expect(result).toBe(expected);
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
