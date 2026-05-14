@@ -951,6 +951,7 @@ const BROWSER_INTERNAL_TARGET_URL_PREFIXES = [
 
 export function isBrowserInternalTargetUrl(url: string): boolean {
   const normalized = url.trim().toLowerCase();
+  if (isBlankUrl(normalized)) return false;
   return BROWSER_INTERNAL_TARGET_URL_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 }
 
@@ -1030,8 +1031,7 @@ export async function pickActiveTargetId(opts: {
   }
 
   for (const page of accessible) {
-    const url = page.url();
-    if (isBrowserInternalTargetUrl(url) && !isBlankUrl(url)) continue;
+    if (isBrowserInternalTargetUrl(page.url())) continue;
     const tid = await tidOf(page);
     if (tid !== null && tid !== '') return tid;
   }

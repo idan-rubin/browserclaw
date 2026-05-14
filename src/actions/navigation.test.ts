@@ -250,6 +250,29 @@ describe('listPagesViaPlaywright browser-internal filter', () => {
     expect(tabs[0]?.url).toBe('https://example.test/');
   });
 
+  it('keeps default new-tab pages in the listing', async () => {
+    const newtab = pageWithUrl('chrome://newtab/');
+    const newTabPage = pageWithUrl('chrome://new-tab-page/');
+    const settings = pageWithUrl('chrome://settings/');
+    const real = pageWithUrl('https://example.test/');
+    const context = { pages: () => [newtab, newTabPage, settings, real] };
+    const browser = { contexts: () => [context] };
+    mockConnectBrowser.mockResolvedValue({
+      browser: browser as unknown as Browser,
+      cdpUrl: 'http://localhost:9222',
+    });
+    const calls = new Map<FakePage, string>([
+      [newtab, 't-newtab'],
+      [newTabPage, 't-ntp'],
+      [settings, 't-settings'],
+      [real, 't-real'],
+    ]);
+    mockPageTargetId.mockImplementation((p: FakePage) => Promise.resolve(calls.get(p) ?? ''));
+
+    const tabs = await listPagesViaPlaywright({ cdpUrl: 'http://localhost:9222' });
+    expect(tabs.map((t) => t.targetId)).toEqual(['t-newtab', 't-ntp', 't-real']);
+  });
+
   it('matches prefixes case-insensitively and after trimming', async () => {
     const upperChrome = pageWithUrl('  CHROME://VERSION  ');
     const realPage = pageWithUrl('https://example.test/');
