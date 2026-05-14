@@ -885,7 +885,17 @@ describe('security.ts', () => {
       expect(results[1]).toEqual({ address: '2001:db8::2', family: 6 });
     });
 
-    it('should return both families when family: 0 is explicitly requested but fallback hits IPv4-first', async () => {
+    it('should return both families when family: 0 is explicitly requested', async () => {
+      const lookup = createPinnedLookup({
+        hostname: 'test.com',
+        addresses: ['1.2.3.4', '5.6.7.8', '2001:db8::1'],
+      });
+      const results = await callPinnedAll(lookup, 'test.com', { family: 0 });
+      expect(results).toHaveLength(3);
+      expect(results.map((r) => r.address).sort()).toEqual(['1.2.3.4', '2001:db8::1', '5.6.7.8']);
+    });
+
+    it('should prefer IPv4 only when no family option is provided at all', async () => {
       const lookup = createPinnedLookup({
         hostname: 'test.com',
         addresses: ['1.2.3.4', '5.6.7.8', '2001:db8::1'],

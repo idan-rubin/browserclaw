@@ -470,12 +470,14 @@ export function createPinnedLookup(params: {
 
     const opts: { all?: boolean; family?: number } =
       typeof second === 'object' ? (second as { all?: boolean; family?: number }) : {};
-    const requestedFamily = typeof second === 'number' ? second : typeof opts.family === 'number' ? opts.family : 0;
+    const requestedFamily: number | undefined =
+      typeof second === 'number' ? second : typeof opts.family === 'number' ? opts.family : undefined;
+    const fallbackPool = requestedFamily === undefined ? automaticRecords : records;
     const candidates =
       requestedFamily === 4 || requestedFamily === 6
         ? records.filter((entry) => entry.family === requestedFamily)
-        : automaticRecords;
-    const usable = candidates.length > 0 ? candidates : automaticRecords;
+        : fallbackPool;
+    const usable = candidates.length > 0 ? candidates : fallbackPool;
 
     if (opts.all === true) {
       cb(null, usable);
