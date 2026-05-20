@@ -84,13 +84,17 @@ async function fetchJsonForCdp(url: string, timeoutMs: number): Promise<unknown>
   const t = setTimeout(() => {
     ctrl.abort();
   }, timeoutMs);
+  const headers = getHeadersWithAuth(url);
+  const fetchUrl = stripUrlCredentials(url);
   try {
-    const res = await fetch(url, { signal: ctrl.signal });
+    const res = await fetch(fetchUrl, { signal: ctrl.signal, headers });
     if (!res.ok) return null;
     return await res.json();
   } catch (err) {
     if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
-      console.warn(`[browserclaw] fetchJsonForCdp ${url} failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(
+        `[browserclaw] fetchJsonForCdp ${fetchUrl} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     return null;
   } finally {
     clearTimeout(t);
@@ -151,9 +155,22 @@ export async function withPageScopedCdpClient<T>(opts: {
 
 const LOOPBACK_ENTRIES = 'localhost,127.0.0.1,[::1]';
 
+function noProxyValueCoversLocalhost(value: string | undefined): boolean {
+  const entries = new Set(
+    (value ?? '')
+      .split(',')
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  return entries.has('localhost') && entries.has('127.0.0.1') && entries.has('[::1]');
+}
+
 function noProxyAlreadyCoversLocalhost(): boolean {
-  const current = process.env.NO_PROXY ?? process.env.no_proxy ?? '';
-  return current.includes('localhost') && current.includes('127.0.0.1') && current.includes('[::1]');
+  return noProxyValueCoversLocalhost(process.env.NO_PROXY) && noProxyValueCoversLocalhost(process.env.no_proxy);
+}
+
+function appendLoopbackEntries(value: string | undefined): string {
+  return value !== undefined && value !== '' ? `${value},${LOOPBACK_ENTRIES}` : LOOPBACK_ENTRIES;
 }
 
 function isLoopbackCdpUrl(url: string): boolean {
@@ -209,20 +226,22 @@ export async function withNoProxyForCdpUrl<T>(url: string, fn: () => Promise<T>)
 
   const savedNoProxy = process.env.NO_PROXY;
   const savedNoProxyLower = process.env.no_proxy;
-  const current = savedNoProxy ?? savedNoProxyLower ?? '';
-  const applied = current ? `${current},${LOOPBACK_ENTRIES}` : LOOPBACK_ENTRIES;
-  process.env.NO_PROXY = applied;
-  process.env.no_proxy = applied;
+  const baseUpper = savedNoProxy ?? savedNoProxyLower;
+  const baseLower = savedNoProxyLower ?? savedNoProxy;
+  const appliedNoProxy = appendLoopbackEntries(baseUpper);
+  const appliedNoProxyLower = appendLoopbackEntries(baseLower);
+  process.env.NO_PROXY = appliedNoProxy;
+  process.env.no_proxy = appliedNoProxyLower;
   envMutexDepth += 1;
   try {
     return await fn();
   } finally {
     envMutexDepth -= 1;
-    if (process.env.NO_PROXY === applied) {
+    if (process.env.NO_PROXY === appliedNoProxy) {
       if (savedNoProxy !== undefined) process.env.NO_PROXY = savedNoProxy;
       else delete process.env.NO_PROXY;
     }
-    if (process.env.no_proxy === applied) {
+    if (process.env.no_proxy === appliedNoProxyLower) {
       if (savedNoProxyLower !== undefined) process.env.no_proxy = savedNoProxyLower;
       else delete process.env.no_proxy;
     }
@@ -271,6 +290,23 @@ export function getHeadersWithAuth(endpoint: string, baseHeaders: Record<string,
     // endpoint is not a valid URL (e.g. a raw WebSocket path) — skip auth header injection
   }
   return headers;
+}
+
+/**
+ * Strip URL userinfo (user:pass@) so the URL can be safely logged or passed to
+ * fetch without leaking credentials. Pair with `getHeadersWithAuth` to move
+ * credentials into an Authorization header before issuing the request.
+ */
+export function stripUrlCredentials(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.username && !parsed.password) return url;
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
 }
 
 // ── Persistent Connection Cache ──
@@ -592,13 +628,16 @@ function cdpSocketNeedsAttach(wsUrl: string): boolean {
  */
 async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string): Promise<void> {
   const httpBase = normalizeCdpHttpBaseForJsonEndpoints(cdpUrl);
+  const listUrl = `${httpBase}/json/list`;
+  const headers = getHeadersWithAuth(listUrl);
+  const fetchUrl = stripUrlCredentials(listUrl);
   const ctrl = new AbortController();
   const t = setTimeout(() => {
     ctrl.abort();
   }, 2000);
   let targets: unknown;
   try {
-    const res = await fetch(`${httpBase}/json/list`, { signal: ctrl.signal });
+    const res = await fetch(fetchUrl, { signal: ctrl.signal, headers });
     if (!res.ok) return;
     targets = await res.json();
   } catch {
