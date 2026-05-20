@@ -8,6 +8,7 @@ import {
   BrowserTabNotFoundError,
   BlockedBrowserTargetError,
   getHeadersWithAuth,
+  stripUrlCredentials,
   getDirectAgentForCdp,
   isBlockedTarget,
   markTargetBlocked,
@@ -109,6 +110,32 @@ describe('getHeadersWithAuth', () => {
     const result = getHeadersWithAuth('http://user:pass@localhost:9222', base);
     expect(base).toEqual({ 'X-Foo': 'bar' });
     expect(result).not.toBe(base);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// stripUrlCredentials
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('stripUrlCredentials', () => {
+  it('removes userinfo from URL', () => {
+    expect(stripUrlCredentials('http://user:pass@localhost:9222/json/list')).toBe('http://localhost:9222/json/list');
+  });
+
+  it('returns URL unchanged when no credentials present', () => {
+    expect(stripUrlCredentials('http://localhost:9222/json/list')).toBe('http://localhost:9222/json/list');
+  });
+
+  it('strips username-only', () => {
+    expect(stripUrlCredentials('http://user@localhost:9222/')).toBe('http://localhost:9222/');
+  });
+
+  it('returns input unchanged when not a valid URL', () => {
+    expect(stripUrlCredentials('not-a-url')).toBe('not-a-url');
+  });
+
+  it('preserves query string and fragment', () => {
+    expect(stripUrlCredentials('https://u:p@host/path?q=1#frag')).toBe('https://host/path?q=1#frag');
   });
 });
 
@@ -300,9 +327,10 @@ describe('withNoProxyForCdpUrl', () => {
     expect(noProxyDuringFn).toContain('localhost');
   });
 
-  it('skips mutation when NO_PROXY already covers localhost', async () => {
+  it('skips mutation when both NO_PROXY casings already cover localhost', async () => {
     process.env.HTTP_PROXY = 'http://proxy:8080';
     process.env.NO_PROXY = 'foo,localhost,127.0.0.1,[::1],bar';
+    process.env.no_proxy = 'localhost,127.0.0.1,[::1]';
 
     let noProxyDuringFn: string | undefined;
     await withNoProxyForCdpUrl('ws://localhost:9222', () => {
@@ -310,6 +338,53 @@ describe('withNoProxyForCdpUrl', () => {
       return Promise.resolve();
     });
     expect(noProxyDuringFn).toBe('foo,localhost,127.0.0.1,[::1],bar');
+  });
+
+  it('mutates when only one NO_PROXY casing covers localhost', async () => {
+    process.env.HTTP_PROXY = 'http://proxy:8080';
+    process.env.NO_PROXY = 'localhost,127.0.0.1,[::1]';
+    delete process.env.no_proxy;
+
+    let noProxyLowerDuringFn: string | undefined;
+    await withNoProxyForCdpUrl('ws://localhost:9222', () => {
+      noProxyLowerDuringFn = process.env.no_proxy;
+      return Promise.resolve();
+    });
+    expect(noProxyLowerDuringFn).toContain('localhost');
+    expect(noProxyLowerDuringFn).toContain('127.0.0.1');
+    expect(noProxyLowerDuringFn).toContain('[::1]');
+  });
+
+  it('does not treat substring matches like "mylocalhost.com" as covering localhost', async () => {
+    process.env.HTTP_PROXY = 'http://proxy:8080';
+    process.env.NO_PROXY = 'mylocalhost.com,my127.0.0.1.com,[::1]';
+    process.env.no_proxy = 'mylocalhost.com,my127.0.0.1.com,[::1]';
+
+    let noProxyDuringFn: string | undefined;
+    await withNoProxyForCdpUrl('ws://localhost:9222', () => {
+      noProxyDuringFn = process.env.NO_PROXY;
+      return Promise.resolve();
+    });
+    expect(noProxyDuringFn).toContain('mylocalhost.com');
+    expect(noProxyDuringFn).toContain(',localhost,127.0.0.1,[::1]');
+  });
+
+  it('preserves distinct NO_PROXY and no_proxy base values when appending', async () => {
+    process.env.HTTP_PROXY = 'http://proxy:8080';
+    process.env.NO_PROXY = 'corp.example';
+    process.env.no_proxy = 'lowercase.example';
+
+    let upper: string | undefined;
+    let lower: string | undefined;
+    await withNoProxyForCdpUrl('ws://localhost:9222', () => {
+      upper = process.env.NO_PROXY;
+      lower = process.env.no_proxy;
+      return Promise.resolve();
+    });
+    expect(upper).toBe('corp.example,localhost,127.0.0.1,[::1]');
+    expect(lower).toBe('lowercase.example,localhost,127.0.0.1,[::1]');
+    expect(process.env.NO_PROXY).toBe('corp.example');
+    expect(process.env.no_proxy).toBe('lowercase.example');
   });
 
   it('deletes NO_PROXY if it was originally undefined', async () => {
