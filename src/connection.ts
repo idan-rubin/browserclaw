@@ -626,13 +626,16 @@ function cdpSocketNeedsAttach(wsUrl: string): boolean {
  */
 async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string): Promise<void> {
   const httpBase = normalizeCdpHttpBaseForJsonEndpoints(cdpUrl);
+  const listUrl = `${httpBase}/json/list`;
+  const headers = getHeadersWithAuth(listUrl);
+  const fetchUrl = stripUrlCredentials(listUrl);
   const ctrl = new AbortController();
   const t = setTimeout(() => {
     ctrl.abort();
   }, 2000);
   let targets: unknown;
   try {
-    const res = await fetch(`${httpBase}/json/list`, { signal: ctrl.signal });
+    const res = await fetch(fetchUrl, { signal: ctrl.signal, headers });
     if (!res.ok) return;
     targets = await res.json();
   } catch {
