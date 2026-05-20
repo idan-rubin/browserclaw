@@ -387,6 +387,42 @@ describe('withNoProxyForCdpUrl', () => {
     expect(process.env.no_proxy).toBe('lowercase.example');
   });
 
+  it('copies upper-case base into lower-case casing when no_proxy is unset', async () => {
+    process.env.HTTP_PROXY = 'http://proxy:8080';
+    process.env.NO_PROXY = 'internal.corp';
+    delete process.env.no_proxy;
+
+    let upper: string | undefined;
+    let lower: string | undefined;
+    await withNoProxyForCdpUrl('ws://localhost:9222', () => {
+      upper = process.env.NO_PROXY;
+      lower = process.env.no_proxy;
+      return Promise.resolve();
+    });
+    expect(upper).toBe('internal.corp,localhost,127.0.0.1,[::1]');
+    expect(lower).toBe('internal.corp,localhost,127.0.0.1,[::1]');
+    expect(process.env.NO_PROXY).toBe('internal.corp');
+    expect(process.env.no_proxy).toBeUndefined();
+  });
+
+  it('copies lower-case base into upper-case casing when NO_PROXY is unset', async () => {
+    process.env.HTTP_PROXY = 'http://proxy:8080';
+    delete process.env.NO_PROXY;
+    process.env.no_proxy = 'internal.corp';
+
+    let upper: string | undefined;
+    let lower: string | undefined;
+    await withNoProxyForCdpUrl('ws://localhost:9222', () => {
+      upper = process.env.NO_PROXY;
+      lower = process.env.no_proxy;
+      return Promise.resolve();
+    });
+    expect(upper).toBe('internal.corp,localhost,127.0.0.1,[::1]');
+    expect(lower).toBe('internal.corp,localhost,127.0.0.1,[::1]');
+    expect(process.env.NO_PROXY).toBeUndefined();
+    expect(process.env.no_proxy).toBe('internal.corp');
+  });
+
   it('deletes NO_PROXY if it was originally undefined', async () => {
     process.env.HTTP_PROXY = 'http://proxy:8080';
     delete process.env.NO_PROXY;

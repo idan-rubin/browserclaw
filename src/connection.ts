@@ -226,8 +226,10 @@ export async function withNoProxyForCdpUrl<T>(url: string, fn: () => Promise<T>)
 
   const savedNoProxy = process.env.NO_PROXY;
   const savedNoProxyLower = process.env.no_proxy;
-  const appliedNoProxy = appendLoopbackEntries(savedNoProxy);
-  const appliedNoProxyLower = appendLoopbackEntries(savedNoProxyLower);
+  const baseUpper = savedNoProxy ?? savedNoProxyLower;
+  const baseLower = savedNoProxyLower ?? savedNoProxy;
+  const appliedNoProxy = appendLoopbackEntries(baseUpper);
+  const appliedNoProxyLower = appendLoopbackEntries(baseLower);
   process.env.NO_PROXY = appliedNoProxy;
   process.env.no_proxy = appliedNoProxyLower;
   envMutexDepth += 1;
