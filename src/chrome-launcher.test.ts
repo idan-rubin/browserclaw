@@ -501,16 +501,11 @@ describe('buildChromeLaunchArgs', () => {
     expect(args).toContain('--disable-features=Translate,MediaRouter');
   });
 
-  it('adds --password-store=basic on linux always (avoid keyring hang)', () => {
-    expect(buildChromeLaunchArgs({ ...baseOpts, platform: 'linux' })).toContain('--password-store=basic');
-    expect(buildChromeLaunchArgs({ ...baseOpts, platform: 'linux', ciDefaults: true })).toContain(
-      '--password-store=basic',
-    );
-  });
-
-  it('does NOT add --password-store=basic on non-linux', () => {
-    expect(buildChromeLaunchArgs({ ...baseOpts, platform: 'darwin' })).not.toContain('--password-store=basic');
-    expect(buildChromeLaunchArgs({ ...baseOpts, platform: 'win32' })).not.toContain('--password-store=basic');
+  it('adds --password-store=basic on every platform (matches OpenClaw; avoids macOS Keychain hang)', () => {
+    for (const platform of ['linux', 'darwin', 'win32'] as const) {
+      expect(buildChromeLaunchArgs({ ...baseOpts, platform })).toContain('--password-store=basic');
+      expect(buildChromeLaunchArgs({ ...baseOpts, platform, ciDefaults: true })).toContain('--password-store=basic');
+    }
   });
 
   it('adds --ignore-certificate-errors when ignoreHTTPSErrors: true', () => {
@@ -542,6 +537,25 @@ describe('buildChromeLaunchArgs', () => {
   it('does not add --disable-dev-shm-usage on darwin', () => {
     const args = buildChromeLaunchArgs({ ...baseOpts, platform: 'darwin' });
     expect(args).not.toContain('--disable-dev-shm-usage');
+  });
+
+  it('adds --no-proxy-server by default so a managed Chrome ignores caller proxy env', () => {
+    expect(buildChromeLaunchArgs(baseOpts)).toContain('--no-proxy-server');
+  });
+
+  it('skips --no-proxy-server when the caller passed a proxy control arg in chromeArgs', () => {
+    for (const userArg of [
+      '--proxy-server=http://proxy.test:8080',
+      '--proxy-pac-url=http://wpad.test/proxy.pac',
+      '--proxy-auto-detect',
+      '--no-proxy-server',
+    ]) {
+      const args = buildChromeLaunchArgs({ ...baseOpts, chromeArgs: [userArg] });
+      const noProxyDefaults = args.filter((a) => a === '--no-proxy-server');
+      const userPassedNoProxy = userArg === '--no-proxy-server';
+      expect(noProxyDefaults.length).toBe(userPassedNoProxy ? 1 : 0);
+      expect(args).toContain(userArg);
+    }
   });
 
   it('appends extra chromeArgs after defaults but before about:blank', () => {

@@ -971,6 +971,21 @@ async function canRunCdpHealthCommand(wsUrl: string, timeoutMs = 800): Promise<b
   });
 }
 
+const PROXY_CONTROL_CHROME_ARGS = new Set([
+  '--no-proxy-server',
+  '--proxy-server',
+  '--proxy-pac-url',
+  '--proxy-auto-detect',
+]);
+
+function chromeArgName(arg: string): string {
+  return arg.trim().split('=', 1)[0]?.toLowerCase() ?? '';
+}
+
+function hasChromeProxyControlArg(args: readonly string[]): boolean {
+  return args.some((arg) => PROXY_CONTROL_CHROME_ARGS.has(chromeArgName(arg)));
+}
+
 export interface BuildChromeLaunchArgsOptions {
   cdpPort: number;
   userDataDir: string;
@@ -992,6 +1007,7 @@ export function buildChromeLaunchArgs(opts: BuildChromeLaunchArgsOptions): strin
     '--disable-blink-features=AutomationControlled',
     '--disable-session-crashed-bubble',
     '--hide-crash-restore-bubble',
+    '--password-store=basic',
   ];
   if (opts.ciDefaults) {
     args.push(
@@ -1001,7 +1017,6 @@ export function buildChromeLaunchArgs(opts: BuildChromeLaunchArgsOptions): strin
       '--disable-features=Translate,MediaRouter',
     );
   }
-  if (opts.platform === 'linux') args.push('--password-store=basic');
   if (opts.headless) {
     args.push('--headless=new', '--disable-gpu');
   }
@@ -1015,6 +1030,7 @@ export function buildChromeLaunchArgs(opts: BuildChromeLaunchArgsOptions): strin
   const extraArgs = Array.isArray(opts.chromeArgs)
     ? opts.chromeArgs.filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
     : [];
+  if (!hasChromeProxyControlArg(extraArgs)) args.push('--no-proxy-server');
   if (extraArgs.length) args.push(...extraArgs);
   args.push('about:blank');
   return args;
