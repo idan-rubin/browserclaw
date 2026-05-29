@@ -200,10 +200,8 @@ export async function snapshotAria(opts: {
           try {
             return await Promise.race([collectAxTree, timeout]);
           } catch (err) {
-            // Don't await: if detach rides the same wedged transport we'd re-block the caller.
-            if (activeSession) activeSession.detach().catch(() => {});
-            // Observe the orphan so its eventual late rejection isn't an unhandled rejection.
-            collectAxTree.catch(() => {});
+            if (activeSession) activeSession.detach().catch(() => undefined);
+            collectAxTree.catch(() => undefined);
             throw err;
           } finally {
             if (timer) clearTimeout(timer);
