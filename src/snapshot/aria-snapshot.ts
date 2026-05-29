@@ -200,16 +200,13 @@ export async function snapshotAria(opts: {
           try {
             return await Promise.race([collectAxTree, timeout]);
           } catch (err) {
-            // Detach the live session so the in-flight Accessibility.getFullAXTree
-            // rejects — without this, withPlaywrightPageCdpSession's finally never
-            // runs and the CDP session leaks until Chrome eventually responds.
             if (activeSession) {
-              await activeSession.detach().catch(() => {
+              activeSession.detach().catch(() => {
                 /* intentional no-op */
               });
             }
             collectAxTree.catch(() => {
-              /* intentional no-op: surfaced via the explicit detach above */
+              /* intentional no-op */
             });
             throw err;
           } finally {
