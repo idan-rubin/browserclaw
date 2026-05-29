@@ -149,9 +149,14 @@ export async function snapshotAria(opts: {
   cdpUrl: string;
   targetId?: string;
   limit?: number;
+  timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
 }): Promise<AriaSnapshotResult> {
   const limit = Math.max(1, Math.min(2000, Math.floor(opts.limit ?? 500)));
+  const ariaTimeoutMs =
+    typeof opts.timeoutMs === 'number' && Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
+      ? Math.max(500, Math.min(60_000, Math.floor(opts.timeoutMs)))
+      : undefined;
   const page = await getPageForTargetId({
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
@@ -171,7 +176,7 @@ export async function snapshotAria(opts: {
 
   const sourceUrl = page.url();
 
-  const res = await withPlaywrightPageCdpSession(page, async (session) => {
+  const collectAxTree = withPlaywrightPageCdpSession(page, async (session) => {
     await session.send('Accessibility.enable' as unknown as Parameters<typeof session.send>[0]).catch(() => {
       /* intentional no-op */
     });
@@ -179,6 +184,23 @@ export async function snapshotAria(opts: {
       nodes?: CdpAXNode[];
     };
   });
+  const res =
+    ariaTimeoutMs === undefined
+      ? await collectAxTree
+      : await (async () => {
+          let timer: NodeJS.Timeout | undefined;
+          const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              reject(new Error(`Aria snapshot via Playwright timed out after ${String(ariaTimeoutMs)}ms.`));
+            }, ariaTimeoutMs);
+            timer.unref?.();
+          });
+          try {
+            return await Promise.race([collectAxTree, timeout]);
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        })();
 
   const formatted = formatAriaNodes(Array.isArray(res.nodes) ? res.nodes : [], limit);
   const markedRefs = await markBackendDomRefsOnPage(page, formatted);

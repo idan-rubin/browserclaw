@@ -301,11 +301,12 @@ export class CrawlPage {
    * @param opts - Options (limit: max nodes to return, default 500)
    * @returns Array of accessibility tree nodes
    */
-  async ariaSnapshot(opts?: { limit?: number }): Promise<AriaSnapshotResult> {
+  async ariaSnapshot(opts?: { limit?: number; timeoutMs?: number }): Promise<AriaSnapshotResult> {
     return snapshotAria({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       limit: opts?.limit,
+      timeoutMs: opts?.timeoutMs,
       ssrfPolicy: this.ssrfPolicy,
     });
   }
