@@ -193,7 +193,7 @@ export async function snapshotAria(opts: {
             timer = setTimeout(() => {
               reject(new Error(`Aria snapshot via Playwright timed out after ${String(ariaTimeoutMs)}ms.`));
             }, ariaTimeoutMs);
-            timer.unref?.();
+            timer.unref();
           });
           try {
             return await Promise.race([collectAxTree, timeout]);
