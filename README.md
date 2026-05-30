@@ -616,6 +616,10 @@ Contributions welcome! Please:
 4. Run `npm run typecheck && npm run build` to verify
 5. Submit a pull request
 
+## Related Projects
+
+- **[chrome-relay](https://chrome-relay.kushalsm.com/)** — A native messaging host that exposes your already-running, logged-in Chrome over CDP, so any harness (a local CLI, Claude Code, Codex, a remote machine) can drive that same session. browserclaw is the snapshot + ref layer; chrome-relay handles the transport. In principle a browserclaw-style snapshot+refs loop can run over chrome-relay as the underlying CDP surface.
+
 ## Acknowledgments
 
 browserclaw was born from the browser automation module in [OpenClaw](https://github.com/openclaw/openclaw), built by [Peter Steinberger](https://github.com/steipete) and an [amazing community of contributors](https://github.com/openclaw/openclaw?tab=readme-ov-file#community). The snapshot + ref system, CDP connection management, and Playwright integration originate from that project.
