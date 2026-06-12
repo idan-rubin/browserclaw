@@ -244,6 +244,7 @@ export async function clickViaPlaywright(opts: {
         cdpUrl: opts.cdpUrl,
         targetId: opts.targetId,
         reason: 'click aborted',
+        ssrfPolicy: opts.ssrfPolicy,
       }).catch(() => {
         /* best-effort disconnect */
       });

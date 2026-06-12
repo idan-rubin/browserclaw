@@ -626,7 +626,8 @@ function cdpSocketNeedsAttach(wsUrl: string): boolean {
  * Bypasses Playwright entirely — important because Playwright may be stuck.
  * If the wsUrl is a browser-level endpoint, attaches to the target first.
  */
-async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string): Promise<void> {
+async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string, ssrfPolicy?: SsrfPolicy): Promise<void> {
+  await assertCdpEndpointAllowed(cdpUrl, ssrfPolicy);
   const httpBase = normalizeCdpHttpBaseForJsonEndpoints(cdpUrl);
   const listUrl = `${httpBase}/json/list`;
   const headers = getHeadersWithAuth(listUrl);
@@ -655,6 +656,7 @@ async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string): Pr
   if (wsUrlRaw === '') return;
 
   const wsUrl = normalizeCdpWsUrl(wsUrlRaw, httpBase);
+  await assertCdpEndpointAllowed(wsUrl, ssrfPolicy);
   const needsAttach = cdpSocketNeedsAttach(wsUrl);
 
   await new Promise<void>((resolve) => {
@@ -730,6 +732,7 @@ export async function forceDisconnectPlaywrightConnection(opts: {
   cdpUrl: string;
   targetId?: string;
   reason?: string;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const normalized = normalizeCdpUrl(opts.cdpUrl);
   const cur = cachedByCdpUrl.get(normalized);
@@ -744,7 +747,7 @@ export async function forceDisconnectPlaywrightConnection(opts: {
 
   const targetId = opts.targetId?.trim() ?? '';
   if (targetId !== '') {
-    await tryTerminateExecutionViaCdp(normalized, targetId).catch(() => {
+    await tryTerminateExecutionViaCdp(normalized, targetId, opts.ssrfPolicy).catch(() => {
       /* noop */
     });
   }

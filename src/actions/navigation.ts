@@ -522,6 +522,7 @@ export async function navigateViaPlaywright(opts: {
       cdpUrl: opts.cdpUrl,
       targetId: opts.targetId,
       reason: 'retry navigate after detached frame',
+      ssrfPolicy: policy,
     }).catch(() => {
       /* intentional no-op */
     });
