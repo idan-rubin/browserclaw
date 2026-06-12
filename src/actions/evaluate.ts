@@ -188,7 +188,7 @@ export async function evaluateViaPlaywright(opts: {
       const targetId = opts.targetId?.trim() ?? '';
       if (targetId !== '') {
         // Targeted: only terminate execution on this target, preserving the shared connection
-        tryTerminateExecutionViaCdp(opts.cdpUrl, targetId).catch(() => {
+        tryTerminateExecutionViaCdp(opts.cdpUrl, targetId, opts.ssrfPolicy).catch(() => {
           /* intentional no-op */
         });
       } else {
@@ -197,6 +197,7 @@ export async function evaluateViaPlaywright(opts: {
         forceDisconnectPlaywrightConnection({
           cdpUrl: opts.cdpUrl,
           reason: 'evaluate aborted (no targetId)',
+          ssrfPolicy: opts.ssrfPolicy,
         }).catch(() => {
           /* intentional no-op */
         });
