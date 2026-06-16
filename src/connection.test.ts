@@ -831,7 +831,7 @@ describe('tryTerminateExecutionViaCdp SSRF validation', () => {
   });
 
   it('rejects a crafted /json/list webSocketDebuggerUrl pointing at a policy-blocked host', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => craftedList });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(craftedList) });
     const webSocketMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('WebSocket', webSocketMock);
@@ -854,7 +854,7 @@ describe('tryTerminateExecutionViaCdp SSRF validation', () => {
   });
 
   it('dials the discovered webSocketDebuggerUrl when no policy is provided', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => craftedList });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(craftedList) });
     const webSocketMock = vi.fn().mockImplementation(() => {
       throw new Error('socket unavailable in test');
     });
