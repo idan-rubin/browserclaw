@@ -2,7 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 
 import type { Browser, Page } from 'playwright-core';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import {
   BrowserTabNotFoundError,
@@ -19,7 +19,9 @@ import {
   pickActiveTargetId,
   isRecoverablePlaywrightDisconnectError,
   isRecoverableStalePageSelectionError,
+  tryTerminateExecutionViaCdp,
 } from './connection.js';
+import { BrowserCdpEndpointBlockedError } from './security.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error classes
@@ -818,5 +820,48 @@ describe('isRecoverablePlaywrightDisconnectError', () => {
   it('handles non-Error inputs', () => {
     expect(isRecoverablePlaywrightDisconnectError('target closed')).toBe(true);
     expect(isRecoverablePlaywrightDisconnectError(null)).toBe(false);
+  });
+});
+
+describe('tryTerminateExecutionViaCdp SSRF validation', () => {
+  const craftedList = [{ id: 'T1', webSocketDebuggerUrl: 'ws://192.168.1.100:9222/devtools/page/T1' }];
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('rejects a crafted /json/list webSocketDebuggerUrl pointing at a policy-blocked host', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(craftedList) });
+    const webSocketMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('WebSocket', webSocketMock);
+
+    await expect(tryTerminateExecutionViaCdp('http://127.0.0.1:9222', 'T1', {})).rejects.toThrow(
+      BrowserCdpEndpointBlockedError,
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(webSocketMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks a policy-violating cdpUrl at entry, before /json/list is fetched', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(tryTerminateExecutionViaCdp('http://192.168.1.100:9222', 'T1', {})).rejects.toThrow(
+      BrowserCdpEndpointBlockedError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('dials the discovered webSocketDebuggerUrl when no policy is provided', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(craftedList) });
+    const webSocketMock = vi.fn().mockImplementation(() => {
+      throw new Error('socket unavailable in test');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('WebSocket', webSocketMock);
+
+    await expect(tryTerminateExecutionViaCdp('http://127.0.0.1:9222', 'T1')).resolves.toBeUndefined();
+    expect(webSocketMock).toHaveBeenCalledWith('ws://192.168.1.100:9222/devtools/page/T1');
   });
 });
