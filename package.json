@@ -61,6 +61,9 @@
   "engines": {
     "node": ">=18"
   },
+  "overrides": {
+    "esbuild": "^0.28.1"
+  },
   "dependencies": {
     "ipaddr.js": "^2.3.0",
     "playwright-core": "^1.50.0"
