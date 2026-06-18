@@ -10,9 +10,13 @@
   <a href="https://github.com/idan-rubin/browserclaw/stargazers"><img src="https://img.shields.io/github/stars/idan-rubin/browserclaw" alt="GitHub stars" /></a>
 </p>
 
-> **DISCLAIMER: This project is NOT affiliated with browserclaw.com in any form. We have no connection to that site and recommend treating it with caution.**
+**The browser tool, not the agent. You bring the brain.**
 
-The AI-native browser automation library — born from [OpenClaw](https://github.com/openclaw/openclaw), built for agents. **Snapshot + ref targeting** — no CSS selectors, no XPath, no vision, just numbered refs that map to interactive elements.
+The AI-native browser automation library — born from [OpenClaw](https://github.com/openclaw/openclaw), built on [Playwright](https://playwright.dev), embeddable in any TS/Node agent loop. **Snapshot + ref targeting**: no CSS selectors, no XPath, no vision model — just numbered refs that map to interactive elements.
+
+Most other tools in this space ship a complete AI agent: they take your task, own the LLM loop, decide what to click, and click it. Great — until you already _have_ an agent. Then you've got two brains fighting over who's in charge.
+
+browserclaw is just the eyes and hands. Call `snapshot()` and get an AI-readable text tree where every interactive element carries a numbered ref (`e1`, `e2`, …). The model reads text — the thing it's best at — and hands back a ref ID. browserclaw resolves that ref to one exact element through a Playwright locator and acts. Same page state → same ref → same result: deterministic targeting, no coordinate guessing, no LLM re-interpreting which element it meant. The reasoning stays in _your_ code.
 
 ```typescript
 import { BrowserClaw } from 'browserclaw';
@@ -30,62 +34,56 @@ await page.click('e2'); // Click by ref
 await browser.stop();
 ```
 
+### Bring your own agent loop
+
+The pitch in one snippet: browserclaw never calls an LLM or decides anything — you do. The whole integration is snapshot in, ref out, act.
+
+```typescript
+while (!done) {
+  const { snapshot } = await page.snapshot();
+  const action = await yourLLM(snapshot); // your model, your reasoning, your loop
+  if (action.type === 'type') await page.type(action.ref, action.text);
+  if (action.type === 'click') await page.click(action.ref);
+  done = action.done;
+}
+```
+
 ## Why browserclaw?
 
-Most browser automation tools were built for humans writing test scripts. AI agents need something different:
+Most browser automation was built for humans writing test scripts; the rest are full agents that own the loop. An agent you've already built needs neither:
 
-- **Vision-based tools** (screenshot → click coordinates) are slow, expensive, and probabilistic
-- **Selector-based tools** (CSS/XPath) are brittle and meaningless to an LLM
-- **browserclaw** gives the AI a **text snapshot** with numbered refs — the AI reads text (what it's best at) and returns a ref ID (deterministic targeting)
+- **Deterministic** — refs resolve to exact elements via Playwright locators (`aria-ref` or `getByRole()`), one ref → one element. No coordinate guessing, no LLM re-interpreting targets between calls.
+- **Cheap & fast** — a text snapshot is a fraction of the tokens of a screenshot, and there's no vision API round-trip in the targeting loop.
+- **Reliable** — built on Playwright's auto-wait and locator engine, not homegrown DOM poking.
+- **Yours to compose** — no framework opinions, no agent loop, no hosted platform. Drop it into whatever architecture you already have.
 
-The snapshot + ref pattern means:
+## How browserclaw compares
 
-1. **Deterministic** — refs resolve to exact elements via Playwright locators, no guessing
-2. **Fast** — text snapshots are tiny compared to screenshots
-3. **Cheap** — no vision API calls, just text in/text out
-4. **Reliable** — built on Playwright, the most robust browser automation engine
+There's no single "best" tool here — it depends on whether you're _building_ an agent or _embedding_ a browser tool into one you already own. Here's an honest map (competitor details last verified June 2026).
 
-## Comparison with Other Tools
-
-The AI browser automation space is moving fast. Here's how browserclaw compares to the major alternatives.
-
-|                                          | [browserclaw](https://github.com/idan-rubin/browserclaw) | [browser-use](https://github.com/browser-use/browser-use) | [Stagehand](https://github.com/browserbase/stagehand) | [Playwright MCP](https://github.com/microsoft/playwright-mcp) |
-| :--------------------------------------- | :------------------------------------------------------: | :-------------------------------------------------------: | :---------------------------------------------------: | :-----------------------------------------------------------: |
-| Ref → exact element, no guessing         |                    :white_check_mark:                    |                    :heavy_minus_sign:                     |                          :x:                          |                      :white_check_mark:                       |
-| No vision model in the loop              |                    :white_check_mark:                    |                    :heavy_minus_sign:                     |                  :white_check_mark:                   |                      :white_check_mark:                       |
-| Survives redesigns (semantic, not pixel) |                    :white_check_mark:                    |                    :heavy_minus_sign:                     |                  :white_check_mark:                   |                      :white_check_mark:                       |
-| Fill 10 form fields in one call          |                    :white_check_mark:                    |                            :x:                            |                          :x:                          |                              :x:                              |
-| Interact with cross-origin iframes       |                    :white_check_mark:                    |                    :white_check_mark:                     |                          :x:                          |                              :x:                              |
-| Playwright engine (auto-wait, locators)  |                    :white_check_mark:                    |                            :x:                            |                  :white_check_mark:                   |                      :white_check_mark:                       |
-| Embeddable in your own JS/TS agent loop  |                    :white_check_mark:                    |                            :x:                            |                  :heavy_minus_sign:                   |                              :x:                              |
+|                                                    | [browserclaw](https://github.com/idan-rubin/browserclaw) | [browser-use](https://github.com/browser-use/browser-use) | [Stagehand](https://github.com/browserbase/stagehand) | [Playwright MCP](https://github.com/microsoft/playwright-mcp) |
+| :------------------------------------------------- | :------------------------------------------------------: | :-------------------------------------------------------: | :---------------------------------------------------: | :-----------------------------------------------------------: |
+| Ref → exact element, no guessing                   |                    :white_check_mark:                    |                    :heavy_minus_sign:                     |                          :x:                          |                      :white_check_mark:                       |
+| No vision model in the loop                        |                    :white_check_mark:                    |                    :heavy_minus_sign:                     |                  :white_check_mark:                   |                      :white_check_mark:                       |
+| Survives redesigns (semantic, not pixel)           |                    :white_check_mark:                    |                    :heavy_minus_sign:                     |                  :white_check_mark:                   |                      :white_check_mark:                       |
+| Interact with cross-origin iframes                 |                    :white_check_mark:                    |                    :white_check_mark:                     |                          :x:                          |                              :x:                              |
+| Playwright engine (auto-wait, locators)            |                    :white_check_mark:                    |                            :x:                            |                  :white_check_mark:                   |                      :white_check_mark:                       |
+| Embeddable in your own JS/TS agent loop            |                    :white_check_mark:                    |                            :x:                            |                  :heavy_minus_sign:                   |                              :x:                              |
+| Batteries-included agent (give it a task, it runs) |                           :x:                            |                    :white_check_mark:                     |                  :heavy_minus_sign:                   |                              :x:                              |
+| Hosted / managed browser infrastructure            |                           :x:                            |                    :white_check_mark:                     |                  :white_check_mark:                   |                              :x:                              |
 
 :white_check_mark: = Yes&ensp; :heavy_minus_sign: = Partial&ensp; :x: = No
 
-**browserclaw is the only tool that checks every box.** It combines the precision of accessibility snapshots with Playwright's battle-tested engine, batch operations, cross-origin iframe access, and zero framework lock-in — in a single embeddable library.
+> **If you already own your agent loop, browserclaw is the only one of these you can embed without inheriting someone else's agent.** browser-use and Stagehand shine when you want a batteries-included agent; Playwright MCP is the move when your agent speaks MCP. browserclaw is for when the brain is already yours and you just need reliable, deterministic eyes and hands.
 
-### The key distinction: browser tool vs. AI agent
-
-Most tools in this space are **AI agents that happen to control a browser**. They own the intelligence layer: they take a task, call an LLM, decide what actions to take, and execute them. That's a complete agent.
-
-browserclaw is different. It's a **browser tool** — just the eyes and hands. It takes a snapshot and returns refs. It executes actions on refs. The LLM, the reasoning, the task planning — that all lives in your code, in your agent, wherever you want it. browserclaw doesn't have opinions about any of that.
-
-This distinction matters if you're building an agent platform, a product with its own AI layer, or anything where you need to control the intelligence loop. You can't compose an agent-first tool into a system that already has an agent. You end up with two brains fighting over who's in charge.
+browserclaw is deliberately _not_ a complete agent, ships no hosted infrastructure, and is JS/TS only. If your stack is Python or you want a managed cloud browser, browser-use is the more natural fit — that's the trade: you give up batteries-included convenience to keep full control of the loop.
 
 ### How each tool works under the hood
 
 - **browserclaw** — Accessibility snapshot with numbered refs → Playwright locator (`aria-ref` in default mode, `getByRole()` in role mode). One ref, one element. No vision model, no LLM in the targeting loop. You bring the brain.
-- **browser-use** — A complete AI agent: takes a task, calls an LLM, decides actions, executes them. The LLM loop is inside the library. Great for standalone automation scripts; incompatible with platforms that already own the agent loop. Python-only.
+- **browser-use** — An AI agent framework: takes a task, calls an LLM, decides actions, and executes them over raw CDP (it dropped Playwright for its own index-based engine in 2025). The agent loop is the marketed path, so it's hard to compose into a platform that already owns that loop. The open-source library is Python; an official TypeScript SDK drives its hosted cloud API.
 - **Stagehand** — Accessibility tree + natural language primitives (`page.act("click login")`). Convenient, but the LLM re-interprets which element to target on every single call — non-deterministic by design.
 - **Playwright MCP** — Same snapshot philosophy as browserclaw, but locked to the MCP protocol. Great for chat-based agents, but not embeddable as a library — you can't compose it into your own agent loop or call it from application code.
-
-### Why this matters for repeated complex UI tasks
-
-When you're running the same multi-step workflow hundreds of times — filling forms, navigating dashboards, processing queues — the differences compound:
-
-- **Cost**: ~4x fewer tokens per run than vision-based tools. A 20-step task repeated 100 times: ~3M tokens vs ~12M+.
-- **Speed**: No vision API round-trips. A 20-step workflow finishes in seconds, not minutes.
-- **Reliability**: Ref-based targeting is deterministic. Same page state → same refs → same result. No coordinate guessing, no LLM re-interpretation.
-- **Simplicity**: No framework opinions, no agent loop, no hosted platform. Just `snapshot()` → read refs → act. Compose it into whatever agent architecture you want.
 
 ## Try It Live — Or On Your Machine
 
@@ -146,10 +144,16 @@ const browser = await BrowserClaw.launch({
   profileColor: '#FF4500', // profile accent color (hex)
   chromeArgs: ['--start-maximized'], // additional Chrome flags
   isolated: true, // fresh per-run profile, auto-cleaned on stop()
+  stealth: false, // default: false — inject JS patches (navigator.webdriver, plugins, WebGL vendor, …)
+  ciDefaults: false, // default: false — adds CI-deterministic Chrome flags (may fingerprint as automation)
+  recordVideo: { dir: './videos' }, // optional: record every page; videos flushed on page/context close
 });
 
 // Connect to an already-running Chrome instance
 const browser = await BrowserClaw.connect('http://localhost:9222');
+
+// Connect to an auth-protected CDP endpoint (e.g. an OpenClaw gateway)
+const browser = await BrowserClaw.connect('http://host:9222', { authToken: '…', stealth: true });
 
 // Auto-discovery: scans common CDP ports (9222-9226, 9229)
 const browser = await BrowserClaw.connect();
@@ -161,6 +165,23 @@ const browser = await BrowserClaw.connect();
 `connect()` attaches to an already-running Chrome, so it cannot add launch flags retroactively. To inject JavaScript
 stealth patches for `navigator.webdriver`, plugins, WebGL vendor, and related browser signals, pass `stealth: true` to
 `launch()` or `connect()`.
+
+#### Anti-bot / challenge detection
+
+Detect — and optionally wait out — Cloudflare and CAPTCHA interstitials, so your agent can react instead of acting on a challenge page.
+
+```typescript
+const challenge = await page.detectChallenge();
+// null, or { kind, message }. kind ∈ 'cloudflare-js' | 'cloudflare-block' | 'cloudflare-turnstile'
+//                                  | 'hcaptcha' | 'recaptcha' | 'blocked' | 'rate-limited'
+
+if (challenge?.kind === 'cloudflare-js') {
+  const { resolved } = await page.waitForChallenge({ timeoutMs: 20000 }); // pollMs default 500
+  if (!resolved) throw new Error('challenge did not clear');
+}
+```
+
+`waitForChallenge()` polls until the page clears or the timeout elapses. JS challenges usually auto-resolve in a few seconds; CAPTCHAs only clear when a human solves them in a visible window — browserclaw detects them but cannot solve them.
 
 #### Isolated profiles (per-run, per-process)
 
@@ -185,6 +206,8 @@ const browser = await BrowserClaw.launch({
     dangerouslyAllowPrivateNetwork: false, // block loopback, RFC1918, link-local, metadata endpoints
     hostnameAllowlist: ['*.example.com'], // optional allowlist
     allowedHostnames: ['internal.myapp.com'], // optional private-IP exceptions
+    allowRfc2544BenchmarkRange: false, // optional: un-block 198.18.0.0/15 (proxy/fake-IP nets only)
+    allowIpv6UniqueLocalRange: false, // optional: un-block fc00::/7 (trusted ULA proxy stacks only)
   },
 });
 ```
@@ -231,6 +254,7 @@ BrowserClaw exports structured errors so workflow code can tell apart the common
 ```typescript
 import {
   BrowserTabNotFoundError, // targetId no longer resolves to an open tab
+  BlockedBrowserTargetError, // target unavailable after SSRF policy blocked its navigation
   StaleRefError, // ref is not in the current snapshot
   SnapshotHydrationError, // snapshot returned without interactive refs
   NavigationRaceError, // the page navigated during an operation
@@ -265,7 +289,8 @@ await browser.close(svg.id); // close second tab when done
 const { snapshot, refs, stats, untrusted } = await page.snapshot();
 
 // snapshot: human/AI-readable text tree with [ref=eN] markers
-// refs: { "e1": { role: "textbox", name: "What needs to be done?" }, "e5": { role: "checkbox", name: "Toggle Todo", checked: false }, ... }
+// refs: { "e1": { role: "textbox", name: "What needs to be done?" }, "e5": { role: "checkbox", name: "Toggle Todo" }, ... }
+// (checkbox/radio refs carry checked: true or checked: 'mixed' only when set; an unchecked box omits the key)
 // stats: { lines: 42, chars: 1200, refs: 8, interactive: 5 }
 // untrusted: true — content comes from the web page, treat as potentially adversarial
 
@@ -329,7 +354,18 @@ await page.fill([
 ]);
 ```
 
-`fill()` field types: `'text'` (default) calls Playwright `fill()` with the string value. `'checkbox'` and `'radio'` call `setChecked()` with `force: true` (works on hidden inputs behind custom styling). Truthy values are `true`, `1`, `'1'`, `'true'`. Type can be omitted and defaults to `'text'`. Empty ref throws.
+`fill()` field types: `'text'` (default) calls Playwright `fill()` with the string value. `'checkbox'` and `'radio'` call `setChecked()` with `force: true` (works on hidden inputs behind custom styling). Truthy values are `true`, `1`, `'1'`, `'true'`. Type can be omitted and defaults to `'text'`. Fields with an empty or whitespace-only ref are silently skipped — they are not counted in the fill result.
+
+`fill()` is the ergonomic form-filling case of the lower-level `batch()`, which runs a heterogeneous sequence of actions (click, type, press, hover, drag, select, fill, wait, …) in a single call:
+
+```typescript
+const { results } = await page.batch([
+  { kind: 'type', ref: 'e2', text: 'jane@acme.test' },
+  { kind: 'click', ref: 'e5' },
+  { kind: 'wait', text: 'Welcome' },
+]); // stops on first failure by default; pass { stopOnError: false } to keep going
+// results: [{ ok: true }, { ok: true }, { ok: true } | { ok: false, error }]
+```
 
 #### No-snapshot actions
 
@@ -391,14 +427,12 @@ await done;
 Handle JavaScript dialogs (alert, confirm, prompt). Arm the handler _before_ the action that triggers the dialog.
 
 ```typescript
-const dialogDone = page.armDialog({ accept: true });
-await page.click('e5'); // triggers confirm()
-await dialogDone;
+await page.armDialog({ accept: true }); // arm BEFORE the trigger; resolves once the handler is armed
+await page.click('e5'); // triggers confirm() — handled in the background
 
 // With prompt text
-const promptDone = page.armDialog({ accept: true, promptText: 'my answer' });
+await page.armDialog({ accept: true, promptText: 'my answer' }); // arm before the trigger
 await page.click('e6'); // triggers prompt()
-await promptDone;
 
 // Persistent handler: called for every dialog until cleared
 await page.onDialog((event) => {
@@ -438,6 +472,7 @@ const fullPage = await page.screenshot({ fullPage: true }); // full scrollable p
 const element = await page.screenshot({ ref: 'e1' }); // specific element by ref
 const bySelector = await page.screenshot({ element: '.hero' }); // by CSS selector
 const jpeg = await page.screenshot({ type: 'jpeg' }); // JPEG format
+const noTimeout = await page.screenshot({ timeoutMs: 0 }); // disable the default 30s screenshot timeout
 
 // PDF
 const pdf = await page.pdf(); // PDF export (headless only)
@@ -456,7 +491,7 @@ Both `screenshot()` and `pdf()` return a `Buffer`. Write to file with `fs.writeF
 Capture Playwright traces (screenshots, DOM snapshots, network) for debugging.
 
 ```typescript
-await page.traceStart({ screenshots: true, snapshots: true });
+await page.traceStart({ screenshots: true, snapshots: true, sources: true }); // sources defaults to false
 // ... perform actions ...
 await page.traceStop('trace.zip');
 // Open with: npx playwright show-trace trace.zip
@@ -543,6 +578,12 @@ await page.emulateMedia({ colorScheme: 'dark' });
 
 // Geolocation
 await page.setGeolocation({ latitude: 48.8566, longitude: 2.3522 }); // Paris
+await page.setGeolocation({
+  latitude: 48.8566,
+  longitude: 2.3522,
+  accuracy: 50,
+  origin: 'https://demo.playwright.dev',
+}); // grant to a specific origin
 await page.setGeolocation({ clear: true }); // reset
 
 // Locale & timezone
@@ -564,6 +605,7 @@ Run JavaScript directly in the browser page context.
 const title = await page.evaluate('() => document.title');
 const text = await page.evaluate('(el) => el.textContent', { ref: 'e1' });
 const count = await page.evaluate('() => document.querySelectorAll("img").length');
+const slow = await page.evaluate('() => document.readyState', { timeoutMs: 5000 }); // bounded (default 20s); pass an AbortSignal to cancel
 ```
 
 #### `evaluateInAllFrames(fn)`
@@ -583,6 +625,42 @@ const results = await page.evaluateInAllFrames(`() => {
 ```typescript
 await page.resize(1280, 720);
 ```
+
+### Escape hatch: raw Playwright
+
+When you need something browserclaw doesn't wrap, drop down to Playwright directly — same underlying page, full API (custom locators, `route()` interception, frame manipulation).
+
+```typescript
+const pwPage = await page.playwrightPage(); // the raw Playwright Page
+await pwPage.route('**/api/**', (r) => r.fulfill({ body: '{}' }));
+
+const loc = await page.locator('.modal button.confirm'); // a Playwright Locator, no Page round-trip
+await loc.click();
+```
+
+> **Note:** mutations made through the raw Playwright page can conflict with browserclaw's internal ref tracking — re-snapshot after using it.
+
+### Session health: auth checks & telemetry
+
+Built for cron / unattended runs: assert a session is logged in, and read structured timing + exit telemetry for diagnostics.
+
+```typescript
+// All rules must pass. Rule kinds: url, cookie, selector, text, textGone, fn.
+const auth = await page.isAuthenticated([{ url: '/dashboard' }, { textGone: 'Sign in' }]);
+if (!auth.authenticated)
+  console.log(
+    'failed checks:',
+    auth.checks.filter((c) => !c.passed),
+  );
+
+browser.recordAuthResult(auth.authenticated);
+await browser.stop(auth.authenticated ? 'success' : 'auth_failed'); // exitReason recorded in telemetry
+
+console.log(browser.telemetry());
+// { launchMs, connectMs, navMs, authOk, exitReason, cleanupOk, timestamps: { startedAt, … } }
+```
+
+`stop()` accepts an `ExitReason`: `'success' | 'auth_failed' | 'nav_failed' | 'timeout' | 'crash' | 'disconnected' | 'manual' | 'error'`.
 
 ## Examples
 
@@ -616,10 +694,6 @@ Contributions welcome! Please:
 4. Run `npm run typecheck && npm run build` to verify
 5. Submit a pull request
 
-## Related Projects
-
-- **[chrome-relay](https://chrome-relay.kushalsm.com/)** — A native messaging host that exposes your already-running, logged-in Chrome over CDP, so any harness (a local CLI, Claude Code, Codex, a remote machine) can drive that same session. browserclaw is the snapshot + ref layer; chrome-relay handles the transport. In principle a browserclaw-style snapshot+refs loop can run over chrome-relay as the underlying CDP surface.
-
 ## Acknowledgments
 
 browserclaw was born from the browser automation module in [OpenClaw](https://github.com/openclaw/openclaw), built by [Peter Steinberger](https://github.com/steipete) and an [amazing community of contributors](https://github.com/openclaw/openclaw?tab=readme-ov-file#community). The snapshot + ref system, CDP connection management, and Playwright integration originate from that project.
@@ -627,3 +701,7 @@ browserclaw was born from the browser automation module in [OpenClaw](https://gi
 ## License
 
 [MIT](./LICENSE)
+
+---
+
+_Not affiliated with browserclaw.com in any way — no connection to that site; we recommend treating it with caution._
