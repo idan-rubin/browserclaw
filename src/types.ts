@@ -5,13 +5,13 @@ import type { lookup as dnsLookup } from 'node:dns';
 
 /**
  * Policy for controlling which URLs browser navigation is allowed to reach.
- * Defaults to trusted-network mode (private/internal addresses allowed).
- * Set `dangerouslyAllowPrivateNetwork: false` to enforce strict public-only checks.
+ * Secure by default: private/internal/loopback addresses are blocked.
+ * Set `dangerouslyAllowPrivateNetwork: true` to allow them.
  */
 export interface SsrfPolicy {
   /**
    * Allow navigation to private/internal network addresses.
-   * Default: `true` (trusted-network mode). Set to `false` for strict public-only enforcement.
+   * Default: `false` — private/internal/loopback addresses are blocked. Set to `true` to allow them.
    */
   dangerouslyAllowPrivateNetwork?: boolean;
   /**
@@ -131,8 +131,8 @@ export interface LaunchOptions {
   isolated?: boolean | string;
   /**
    * SSRF policy controlling which URLs navigation is allowed to reach.
-   * Defaults to trusted-network mode (private/internal addresses allowed).
-   * Set `dangerouslyAllowPrivateNetwork: false` to enforce strict public-only checks.
+   * Secure by default: private/internal/loopback addresses are blocked.
+   * Set `dangerouslyAllowPrivateNetwork: true` to allow them.
    */
   ssrfPolicy?: SsrfPolicy;
   /**
@@ -151,8 +151,8 @@ export interface LaunchOptions {
 export interface ConnectOptions {
   /**
    * SSRF policy controlling which URLs navigation is allowed to reach.
-   * Defaults to trusted-network mode (private/internal addresses allowed).
-   * Set `dangerouslyAllowPrivateNetwork: false` to enforce strict public-only checks.
+   * Secure by default: private/internal/loopback addresses are blocked.
+   * Set `dangerouslyAllowPrivateNetwork: true` to allow them.
    */
   ssrfPolicy?: SsrfPolicy;
   /**
