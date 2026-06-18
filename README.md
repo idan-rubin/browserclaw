@@ -34,19 +34,36 @@ await page.click('e2'); // Click by ref
 await browser.stop();
 ```
 
-### Bring your own agent loop
+### Bring your own agent loop — or use ours
 
-The pitch in one snippet: browserclaw never calls an LLM or decides anything — you do. The whole integration is snapshot in, ref out, act.
+browserclaw never calls an LLM or decides anything; you do. The whole integration is snapshot in, ref out, act — here it is wired to a real model:
 
 ```typescript
-while (!done) {
+import { BrowserClaw } from 'browserclaw';
+import Anthropic from '@anthropic-ai/sdk';
+
+const llm = new Anthropic();
+const browser = await BrowserClaw.launch({ url: 'https://news.ycombinator.com' });
+const page = await browser.currentPage();
+
+for (let step = 0; step < 20; step++) {
   const { snapshot } = await page.snapshot();
-  const action = await yourLLM(snapshot); // your model, your reasoning, your loop
-  if (action.type === 'type') await page.type(action.ref, action.text);
-  if (action.type === 'click') await page.click(action.ref);
-  done = action.done;
+  const res = await llm.messages.create({
+    model: 'claude-opus-4-8',
+    max_tokens: 1024,
+    system: 'You drive a browser. Reply with JSON: { "action": "click" | "type" | "done", "ref"?, "text"? }.',
+    messages: [{ role: 'user', content: `Task: open the top story.\n\n${snapshot}` }],
+  });
+  const block = res.content[0];
+  const action = JSON.parse(block.type === 'text' ? block.text : '{}');
+  if (action.action === 'done') break;
+  if (action.action === 'type') await page.type(action.ref, action.text);
+  if (action.action === 'click') await page.click(action.ref);
 }
+await browser.stop();
 ```
+
+Swap Anthropic for any model — the snapshot is plain text in, a ref is plain text out. **Layered, not bundled:** the LLM, this library, and the agent are three independent pieces. Don't want to write the loop? Use [browserclaw-agent](https://github.com/idan-rubin/browserclaw-agent) — the open-source driver that adds obstacle recovery and learns a reusable skill per site. Bring your own brain, or use ours.
 
 ## Why browserclaw?
 
@@ -87,7 +104,7 @@ browserclaw is deliberately _not_ a complete agent, ships no hosted infrastructu
 
 ## Try It Live — Or On Your Machine
 
-[browserclaw.org](https://browserclaw.org) is an open-source playground where you can type a prompt and watch an AI agent use browserclaw in a real browser — live. No setup, no API keys, just a text box and a browser stream.
+[browserclaw.org](https://browserclaw.org) is an open-source playground — type a prompt and watch an AI agent drive a real browser with browserclaw, live. No setup, no API keys, just a text box and a browser stream. It runs on this library in production, and browserclaw stays current by syncing with the upstream [OpenClaw](https://github.com/openclaw/openclaw) browser SDK.
 
 Want to run it yourself? The source is at [github.com/idan-rubin/browserclaw-agent](https://github.com/idan-rubin/browserclaw-agent) — spin it up with Docker or Node.js. Supports Groq, Gemini, OpenAI, and Anthropic out of the box.
 
@@ -181,7 +198,7 @@ if (challenge?.kind === 'cloudflare-js') {
 }
 ```
 
-`waitForChallenge()` polls until the page clears or the timeout elapses. JS challenges usually auto-resolve in a few seconds; CAPTCHAs only clear when a human solves them in a visible window — browserclaw detects them but cannot solve them.
+`waitForChallenge()` polls until the page clears or the timeout elapses. JS challenges usually auto-resolve in a few seconds. The library's job is **detection** — CAPTCHAs (hCaptcha / reCAPTCHA / Turnstile) don't clear on their own. Pair detection with your own solver, a human in a visible window, or [browserclaw-agent](https://github.com/idan-rubin/browserclaw-agent), whose built-in skills clear press-and-hold and Turnstile challenges via CDP.
 
 #### Isolated profiles (per-run, per-process)
 
@@ -196,23 +213,27 @@ For a stable, shared profile across runs (persistent login state, preserved hist
 
 #### SSRF policy (navigating agent-supplied URLs)
 
-By default, browserclaw permits navigation to **any** address — including private/loopback ranges such as `127.0.0.1`, `10.0.0.0/8`, and cloud metadata endpoints like `169.254.169.254`. This "trusted-network" default is convenient for local development and dev-tunnel workflows.
+**Secure by default.** browserclaw blocks navigation to private and loopback addresses — `127.0.0.1`, `10.0.0.0/8` and the rest of RFC 1918, link-local, the RFC 2544 range, IPv6 ULA, and cloud metadata endpoints like `169.254.169.254`. Public addresses resolve normally; internal ones are refused. Because an agent's target URLs often come from untrusted sources (LLM output, user input, an external API), blocking internal targets is the right default — and DNS is resolved and pinned up front, so a hostname can't pass the check as a public IP and then be fetched as a private one.
 
-If your agent navigates to URLs it received from an untrusted source (LLM output, user input, external API), you should opt into strict public-only enforcement:
+To reach private or loopback hosts on purpose (local development, a dev tunnel, an internal dashboard), opt out explicitly:
 
 ```typescript
 const browser = await BrowserClaw.launch({
   ssrfPolicy: {
-    dangerouslyAllowPrivateNetwork: false, // block loopback, RFC1918, link-local, metadata endpoints
-    hostnameAllowlist: ['*.example.com'], // optional allowlist
-    allowedHostnames: ['internal.myapp.com'], // optional private-IP exceptions
-    allowRfc2544BenchmarkRange: false, // optional: un-block 198.18.0.0/15 (proxy/fake-IP nets only)
-    allowIpv6UniqueLocalRange: false, // optional: un-block fc00::/7 (trusted ULA proxy stacks only)
+    dangerouslyAllowPrivateNetwork: true, // allow loopback, RFC1918, link-local, metadata endpoints
+    allowRfc2544BenchmarkRange: true, // optional: also un-block 198.18.0.0/15 (proxy/fake-IP nets)
+    allowIpv6UniqueLocalRange: true, // optional: also un-block fc00::/7 (trusted ULA proxy stacks)
+  },
+});
+
+// Or keep the secure default and carve out only what you need:
+const browser2 = await BrowserClaw.launch({
+  ssrfPolicy: {
+    allowedHostnames: ['internal.myapp.com'], // exempt one named host from the private-IP block
+    hostnameAllowlist: ['*.example.com'], // restrict navigation to matching hostnames only
   },
 });
 ```
-
-Under strict mode browserclaw resolves DNS up front, pins the result, validates every resolved address against the policy, and re-checks redirect chains. The DNS cache is keyed by policy, so a permissive call does not leak cached private IPs to a later strict call.
 
 ### Pages & Tabs
 
@@ -284,6 +305,25 @@ await browser.close(svg.id); // close second tab when done
 ```
 
 ### Snapshot (Core Feature)
+
+Here's a real snapshot of a signup page — the exact text the model reads (trimmed to the interactive rows), with the `[ref=eN]` markers it points back at:
+
+```text
+- navigation "Primary" [ref=e3]:
+  - link "Features" [ref=e4]
+  - link "Pricing" [ref=e5]
+  - link "Docs" [ref=e6]
+  - link "Sign in" [ref=e7]
+- heading "Create your workspace" [level=1] [ref=e9]
+- textbox "Full name" [ref=e12]
+- textbox "Work email" [ref=e14]
+- textbox "Password" [ref=e16]
+- combobox "Plan" [ref=e18]
+- checkbox "I agree to the Terms of Service" [ref=e20]
+- button "Create workspace" [ref=e21]
+```
+
+That whole page — 14 interactive elements — is **1,371 characters** (`stats: { refs: 26, interactive: 14 }`). A screenshot of the same page is tens of kilobytes per step and needs a vision model to read; the text snapshot needs neither.
 
 ```typescript
 const { snapshot, refs, stats, untrusted } = await page.snapshot();
