@@ -285,7 +285,9 @@ function buildAriaSnapshotRefs(nodes: AriaNode[], markedRefs: Set<string>): Role
     const key = `${role}:${name ?? ''}`;
     const nth = counts.get(key) ?? 0;
     counts.set(key, nth + 1);
-    refsByKey.set(key, [...(refsByKey.get(key) ?? []), node.ref]);
+    const refsForKey = refsByKey.get(key);
+    if (refsForKey) refsForKey.push(node.ref);
+    else refsByKey.set(key, [node.ref]);
     refs[node.ref] = {
       role,
       ...(name !== undefined ? { name } : {}),

@@ -135,31 +135,40 @@ function removeNthFromNonDuplicates(refs: RoleRefs, tracker: ReturnType<typeof c
   }
 }
 
+interface CompactTreeEntry {
+  line: string;
+  keep: boolean;
+  hasRef: boolean;
+  indent: number;
+}
+
 function compactTree(tree: string): string {
   const lines = tree.split('\n');
-  const result: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.includes('[ref=')) {
-      result.push(line);
-      continue;
-    }
-    if (line.includes(':') && !line.trimEnd().endsWith(':')) {
-      result.push(line);
-      continue;
-    }
-    const currentIndent = getIndentLevel(line);
-    let hasRelevantChildren = false;
-    for (let j = i + 1; j < lines.length; j++) {
-      if (getIndentLevel(lines[j]) <= currentIndent) break;
-      if (lines[j]?.includes('[ref=')) {
-        hasRelevantChildren = true;
-        break;
-      }
-    }
-    if (hasRelevantChildren) result.push(line);
+  const entries: CompactTreeEntry[] = [];
+  const stack: { entry: CompactTreeEntry; indent: number }[] = [];
+  const finishEntry = (): void => {
+    const current = stack.pop();
+    if (!current) return;
+    current.entry.keep ||= current.entry.hasRef;
+    if (current.entry.hasRef && stack.length > 0) stack[stack.length - 1].entry.hasRef = true;
+  };
+  for (const line of lines) {
+    const indent = getIndentLevel(line);
+    while (stack.length > 0 && stack[stack.length - 1].indent >= indent) finishEntry();
+    const entry: CompactTreeEntry = {
+      line,
+      keep: line.includes('[ref=') || (line.includes(':') && !line.trimEnd().endsWith(':')),
+      hasRef: line.includes('[ref='),
+      indent,
+    };
+    entries.push(entry);
+    stack.push({ entry, indent });
   }
-  return result.join('\n');
+  while (stack.length > 0) finishEntry();
+  return entries
+    .filter((entry) => entry.keep)
+    .map((entry) => entry.line)
+    .join('\n');
 }
 
 export interface SnapshotBuildOptions {
