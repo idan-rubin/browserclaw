@@ -17,6 +17,7 @@ import {
   withPageScopedCdpClient,
   forceDisconnectPlaywrightConnection,
 } from '../connection.js';
+import { NavigationRaceError } from '../errors.js';
 import { resolveStrictExistingPathsWithinRoot, DEFAULT_UPLOAD_DIR } from '../security.js';
 import type { FormField, SsrfPolicy } from '../types.js';
 
@@ -500,8 +501,12 @@ export async function fillFormViaPlaywright(opts: {
   await assertInteractionNavigationCompletedSafely({
     action: async () => {
       let filledCount = 0;
+      let navigated = false;
       for (const field of opts.fields) {
-        if (didCrossDocumentUrlChange(page, previousUrl)) break;
+        if (didCrossDocumentUrlChange(page, previousUrl)) {
+          navigated = true;
+          break;
+        }
         const ref = field.ref.trim();
         const type = (typeof field.type === 'string' ? field.type.trim() : '') || 'text';
         const rawValue = field.value;
@@ -546,6 +551,7 @@ export async function fillFormViaPlaywright(opts: {
         }
         filledCount += 1;
       }
+      if (navigated) throw new NavigationRaceError({ fromUrl: previousUrl, toUrl: page.url() });
     },
     cdpUrl: opts.cdpUrl,
     page,
