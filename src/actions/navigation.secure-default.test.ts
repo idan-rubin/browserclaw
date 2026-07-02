@@ -36,6 +36,23 @@ describe('assertInteractionNavigationCompletedSafely — secure by default', () 
     ).rejects.toThrow();
   });
 
+  it('blocks a delayed (setTimeout) interaction navigation to a private address with no policy', async () => {
+    const page = makeFakePage();
+    await expect(
+      assertInteractionNavigationCompletedSafely({
+        action: () => {
+          setTimeout(() => {
+            page.setUrl('http://169.254.169.254/latest/meta-data/');
+          }, 10);
+          return Promise.resolve();
+        },
+        cdpUrl: 'http://localhost:9222',
+        page,
+        previousUrl: START_URL,
+      }),
+    ).rejects.toThrow();
+  });
+
   it('allows an interaction-triggered navigation to a public address (non-vacuous control)', async () => {
     const page = makeFakePage();
     await expect(

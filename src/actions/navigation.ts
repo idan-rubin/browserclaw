@@ -366,36 +366,36 @@ export async function assertInteractionNavigationCompletedSafely<T>(opts: {
   } catch (err) {
     subframeError = err instanceof Error ? err : new Error(formatThrown(err));
   }
+  // `?? {}` enforces block-private even with no caller policy (secure by
+  // default) — for observed, delayed, and error-path navigations alike.
+  const effectivePolicy = opts.ssrfPolicy ?? {};
   if (navigationObserved) {
-    // `?? {}` blocks private even with no caller policy (secure by default).
     await assertPageNavigationCompletedSafely({
       cdpUrl: opts.cdpUrl,
       page: opts.page,
       response: null,
-      ssrfPolicy: opts.ssrfPolicy ?? {},
+      ssrfPolicy: effectivePolicy,
       targetId: opts.targetId,
     });
-  } else if (opts.ssrfPolicy) {
-    if (actionError !== undefined) {
-      const observed = await observeDelayedInteractionNavigation(opts.page, opts.previousUrl);
-      if (observed.mainFrameNavigated || observed.subframes.length > 0) {
-        await assertObservedDelayedNavigations({
-          cdpUrl: opts.cdpUrl,
-          page: opts.page,
-          ssrfPolicy: opts.ssrfPolicy,
-          targetId: opts.targetId,
-          observed,
-        });
-      }
-    } else {
-      await scheduleDelayedInteractionNavigationGuard({
+  } else if (actionError !== undefined) {
+    const observed = await observeDelayedInteractionNavigation(opts.page, opts.previousUrl);
+    if (observed.mainFrameNavigated || observed.subframes.length > 0) {
+      await assertObservedDelayedNavigations({
         cdpUrl: opts.cdpUrl,
         page: opts.page,
-        previousUrl: opts.previousUrl,
-        ssrfPolicy: opts.ssrfPolicy,
+        ssrfPolicy: effectivePolicy,
         targetId: opts.targetId,
+        observed,
       });
     }
+  } else {
+    await scheduleDelayedInteractionNavigationGuard({
+      cdpUrl: opts.cdpUrl,
+      page: opts.page,
+      previousUrl: opts.previousUrl,
+      ssrfPolicy: effectivePolicy,
+      targetId: opts.targetId,
+    });
   }
   // Precedence: SSRF block > action error. The security signal wins.
   if (subframeError !== undefined) throw subframeError;
