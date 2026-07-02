@@ -211,6 +211,10 @@ Pass `isolated: true` (or `isolated: 'some-label'`) to launch in a dedicated per
 
 For a stable, shared profile across runs (persistent login state, preserved history), omit `isolated` and use `profileName` / `userDataDir` instead.
 
+#### Stale-lock recovery (persistent profiles)
+
+When a launch fails because Chrome reports the profile is in use by another process, browserclaw removes the `Singleton*` lock files and retries once — unless the lock is held by a live process on the same machine, in which case the launch fails so the running browser is left alone. A lock recorded under a different hostname is treated as stale: that's the normal state after a container restart with a persisted profile volume, where each run gets a fresh hostname and the old lock would otherwise block launches forever. The trade-off is deliberate and worth knowing: sharing one **live** profile directory across machines or containers (e.g. over a network filesystem) is unsupported — cross-host liveness can't be verified, so recovery will usurp the other session's lock. A warning is logged whenever locks are removed.
+
 #### SSRF policy (navigating agent-supplied URLs)
 
 **Secure by default.** browserclaw blocks navigation to private and loopback addresses — `127.0.0.1`, `10.0.0.0/8` and the rest of RFC 1918, link-local, the RFC 2544 range, IPv6 ULA, and cloud metadata endpoints like `169.254.169.254`. Public addresses resolve normally; internal ones are refused. Because an agent's target URLs often come from untrusted sources (LLM output, user input, an external API), blocking internal targets is the right default — and DNS is resolved and pinned up front, so a hostname can't pass the check as a public IP and then be fetched as a private one.
