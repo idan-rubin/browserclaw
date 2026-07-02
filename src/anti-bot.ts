@@ -22,18 +22,16 @@ const DETECT_CHALLENGE_SCRIPT = `(function() {
     return { kind: 'cloudflare-block', message: 'Cloudflare block page' };
   }
 
-  // Cloudflare Turnstile
-  if (document.querySelector('.cf-turnstile, iframe[src*="challenges.cloudflare.com"]')) {
+  // Widget-only challenges count only when they dominate a sparse page (interstitial), not embedded in a usable one
+  if (document.querySelector('.cf-turnstile, iframe[src*="challenges.cloudflare.com"]') && getBody().length < 2000) {
     return { kind: 'cloudflare-turnstile', message: 'Cloudflare Turnstile challenge' };
   }
 
-  // hCaptcha
-  if (document.querySelector('.h-captcha, iframe[src*="hcaptcha.com"]')) {
+  if (document.querySelector('.h-captcha, iframe[src*="hcaptcha.com"]') && getBody().length < 2000) {
     return { kind: 'hcaptcha', message: 'hCaptcha challenge' };
   }
 
-  // reCAPTCHA
-  if (document.querySelector('.g-recaptcha, iframe[src*="google.com/recaptcha"]')) {
+  if (document.querySelector('.g-recaptcha, iframe[src*="google.com/recaptcha"]') && getBody().length < 2000) {
     return { kind: 'recaptcha', message: 'reCAPTCHA challenge' };
   }
 

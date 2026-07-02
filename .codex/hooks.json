@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd=$(jq -r '.tool_input.command // empty'); case \"$cmd\" in *\"git push\"*) ;; *) exit 0 ;; esac; case \"$cmd\" in *claude-skills-internal*) exit 0 ;; esac; if printf '%s' \"$cmd\" | grep -qE '(^|[^A-Za-z0-9_-])main($|[^A-Za-z0-9_-])'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"Push may target main - user rule: NEVER push to main unless explicitly approved\"}}'; elif printf '%s' \"$cmd\" | grep -qE 'git push( +--?[A-Za-z][A-Za-z0-9=-]*)*( +origin)? *($|[;&|])'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"Bare git push - target branch unspecified, confirm it does not touch main\"}}'; fi"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; npx prettier --write \"$f\"; } 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

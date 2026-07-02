@@ -17,10 +17,11 @@ import {
   withPageScopedCdpClient,
   forceDisconnectPlaywrightConnection,
 } from '../connection.js';
+import { NavigationRaceError } from '../errors.js';
 import { resolveStrictExistingPathsWithinRoot, DEFAULT_UPLOAD_DIR } from '../security.js';
 import type { FormField, SsrfPolicy } from '../types.js';
 
-import { assertInteractionNavigationCompletedSafely } from './navigation.js';
+import { assertInteractionNavigationCompletedSafely, didCrossDocumentUrlChange } from './navigation.js';
 
 type MouseButton = 'left' | 'right' | 'middle';
 type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
@@ -491,56 +492,73 @@ export async function fillFormViaPlaywright(opts: {
   targetId?: string;
   fields: FormField[];
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const page = await getRestoredPageForTarget(opts);
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
+  const previousUrl = page.url();
 
-  let filledCount = 0;
-  for (const field of opts.fields) {
-    const ref = field.ref.trim();
-    const type = (typeof field.type === 'string' ? field.type.trim() : '') || 'text';
-    const rawValue = field.value;
-    const value =
-      typeof rawValue === 'string'
-        ? rawValue
-        : typeof rawValue === 'number' || typeof rawValue === 'boolean'
-          ? String(rawValue)
-          : '';
+  await assertInteractionNavigationCompletedSafely({
+    action: async () => {
+      let filledCount = 0;
+      let navigated = false;
+      for (const field of opts.fields) {
+        if (didCrossDocumentUrlChange(page, previousUrl)) {
+          navigated = true;
+          break;
+        }
+        const ref = field.ref.trim();
+        const type = (typeof field.type === 'string' ? field.type.trim() : '') || 'text';
+        const rawValue = field.value;
+        const value =
+          typeof rawValue === 'string'
+            ? rawValue
+            : typeof rawValue === 'number' || typeof rawValue === 'boolean'
+              ? String(rawValue)
+              : '';
 
-    if (!ref) continue;
-    const locator = refLocator(page, ref);
+        if (!ref) continue;
+        const locator = refLocator(page, ref);
 
-    if (type === 'checkbox' || type === 'radio') {
-      const checked = rawValue === true || rawValue === 1 || rawValue === '1' || rawValue === 'true';
-      try {
-        await locator.setChecked(checked, { timeout, force: true });
-      } catch (setCheckedErr) {
-        console.warn(
-          `[browserclaw] setChecked fallback for ref "${ref}": ${setCheckedErr instanceof Error ? setCheckedErr.message : String(setCheckedErr)}`,
-        );
+        if (type === 'checkbox' || type === 'radio') {
+          const checked = rawValue === true || rawValue === 1 || rawValue === '1' || rawValue === 'true';
+          try {
+            await locator.setChecked(checked, { timeout, force: true });
+          } catch (setCheckedErr) {
+            console.warn(
+              `[browserclaw] setChecked fallback for ref "${ref}": ${setCheckedErr instanceof Error ? setCheckedErr.message : String(setCheckedErr)}`,
+            );
+            try {
+              await setCheckedViaEvaluate(locator, checked);
+            } catch (err) {
+              const friendly = toAIFriendlyError(err, ref);
+              throw new Error(
+                `Failed at field "${ref}" (${String(filledCount)}/${String(opts.fields.length)} filled): ${friendly.message}`,
+              );
+            }
+          }
+          filledCount += 1;
+          continue;
+        }
+
         try {
-          await setCheckedViaEvaluate(locator, checked);
+          await locator.fill(value, { timeout });
         } catch (err) {
           const friendly = toAIFriendlyError(err, ref);
           throw new Error(
             `Failed at field "${ref}" (${String(filledCount)}/${String(opts.fields.length)} filled): ${friendly.message}`,
           );
         }
+        filledCount += 1;
       }
-      filledCount += 1;
-      continue;
-    }
-
-    try {
-      await locator.fill(value, { timeout });
-    } catch (err) {
-      const friendly = toAIFriendlyError(err, ref);
-      throw new Error(
-        `Failed at field "${ref}" (${String(filledCount)}/${String(opts.fields.length)} filled): ${friendly.message}`,
-      );
-    }
-    filledCount += 1;
-  }
+      if (navigated) throw new NavigationRaceError({ fromUrl: previousUrl, toUrl: page.url() });
+    },
+    cdpUrl: opts.cdpUrl,
+    page,
+    previousUrl,
+    ssrfPolicy: opts.ssrfPolicy,
+    targetId: opts.targetId,
+  });
 }
 
 export async function scrollIntoViewViaPlaywright(opts: {
