@@ -11,6 +11,7 @@ import type { SnapshotResult, SnapshotOptions, SsrfPolicy } from '../types.js';
 
 import { enrichSnapshotFromDom, mergeSnapshotWithEnrichment, nextRefCounter } from './dom-enrichment.js';
 import { buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
+import { appendSnapshotUrls, collectSnapshotUrls } from './snapshot-urls.js';
 
 const DEFAULT_HYDRATION_BUDGET_MS = 5000;
 const HYDRATION_POLL_INTERVAL_MS = 250;
@@ -91,6 +92,10 @@ export async function snapshotAi(opts: {
     const built = buildRoleSnapshotFromAiSnapshot(snapshot, opts.options);
     const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs));
     const merged = mergeSnapshotWithEnrichment(built, enriched);
+    const finalSnapshot =
+      opts.options?.urls === true
+        ? appendSnapshotUrls(merged.snapshot, await collectSnapshotUrls(page))
+        : merged.snapshot;
 
     // The AI snapshot (above) and the DOM enrichment (just now) each read from
     // whatever document was loaded at the moment they ran. If the page
@@ -103,10 +108,10 @@ export async function snapshotAi(opts: {
       throw new NavigationRaceError({ fromUrl: snapshotUrl, toUrl: postEnrichUrl });
     }
 
-    const stats = getRoleSnapshotStats(merged.snapshot, merged.refs);
+    const stats = getRoleSnapshotStats(finalSnapshot, merged.refs);
 
     const result: SnapshotResult = {
-      snapshot: merged.snapshot,
+      snapshot: finalSnapshot,
       refs: merged.refs,
       stats,
       ...(truncated ? { truncated } : {}),

@@ -48,8 +48,7 @@ export function clearStaleChromeSingletonLocks(userDataDir: string, hostname: st
   if (!match?.groups) return false;
   const lockHost = match.groups.lockHost;
   const pid = Number.parseInt(match.groups.pid, 10);
-  if (lockHost !== hostname) return false;
-  if (processExists(pid)) return false;
+  if (lockHost === hostname && processExists(pid)) return false;
   clearChromeSingletonArtifacts(userDataDir);
   return true;
 }
@@ -1067,7 +1066,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
       platform: process.platform,
     });
     return spawn(exe.path, args, {
-      stdio: 'pipe',
+      stdio: ['ignore', 'ignore', 'pipe'],
       env: { ...process.env, HOME: os.homedir() },
       ...spawnOpts,
     });
