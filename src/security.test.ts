@@ -710,6 +710,26 @@ describe('security.ts', () => {
       ).rejects.toThrow(InvalidBrowserNavigationUrlError);
     });
 
+    it('blocks an allow-listed hostname that resolves to a cloud-metadata/link-local address', async () => {
+      const metadataLookup = (() =>
+        Promise.resolve([{ address: '169.254.169.254', family: 4 }])) as unknown as LookupFn;
+      await expect(
+        resolvePinnedHostnameWithPolicy('bastion.example', {
+          lookupFn: metadataLookup,
+          policy: { allowedHostnames: ['bastion.example'] },
+        }),
+      ).rejects.toThrow(InvalidBrowserNavigationUrlError);
+    });
+
+    it('still allows an allow-listed hostname that resolves to a normal private IP', async () => {
+      const rfc1918Lookup = (() => Promise.resolve([{ address: '10.0.0.5', family: 4 }])) as unknown as LookupFn;
+      const result = await resolvePinnedHostnameWithPolicy('bastion.example', {
+        lookupFn: rfc1918Lookup,
+        policy: { allowedHostnames: ['bastion.example'] },
+      });
+      expect(result.addresses).toContain('10.0.0.5');
+    });
+
     it('should allow localhost with permissive policy', async () => {
       const result = await resolvePinnedHostnameWithPolicy('localhost', {
         lookupFn: mockLoopbackLookup(),

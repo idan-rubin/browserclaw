@@ -138,7 +138,7 @@ export async function assertPageNavigationCompletedSafely(opts: {
 const INTERACTION_NAVIGATION_GRACE_MS = 250;
 const pendingInteractionNavigationGuardCleanup = new WeakMap<Page, () => void>();
 
-function didCrossDocumentUrlChange(page: Page, previousUrl: string): boolean {
+export function didCrossDocumentUrlChange(page: Page, previousUrl: string): boolean {
   const currentUrl = page.url();
   if (currentUrl === previousUrl) return false;
   try {
@@ -439,13 +439,6 @@ async function gotoPageWithNavigationGuard(opts: {
     if (!isTopLevel && !isSubframeDocument) {
       await safeContinue(route);
       return;
-    }
-    if (isTopLevel) {
-      const isRedirect = request.redirectedFrom() !== null;
-      if (!isRedirect && request.url() !== opts.url) {
-        await safeContinue(route);
-        return;
-      }
     }
     try {
       await assertBrowserNavigationAllowed({ url: request.url(), ...navigationPolicy });

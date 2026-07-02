@@ -6,9 +6,10 @@ import {
   forceDisconnectPlaywrightConnection,
   tryTerminateExecutionViaCdp,
 } from '../connection.js';
+import { assertBrowserNavigationResultAllowed } from '../security.js';
 import type { SsrfPolicy } from '../types.js';
 
-import { assertInteractionNavigationCompletedSafely } from './navigation.js';
+import { assertInteractionNavigationCompletedSafely, assertPageNavigationCompletedSafely } from './navigation.js';
 
 export interface FrameEvalResult {
   frameUrl: string;
@@ -35,10 +36,27 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
     targetId: opts.targetId,
     ssrfPolicy: opts.ssrfPolicy,
   });
+  if (opts.ssrfPolicy) {
+    await assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page,
+      response: null,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
+  }
   const frames = page.frames();
   const results: FrameEvalResult[] = [];
 
   for (const frame of frames) {
+    if (opts.ssrfPolicy) {
+      try {
+        await assertBrowserNavigationResultAllowed({ url: frame.url(), ssrfPolicy: opts.ssrfPolicy });
+      } catch {
+        console.warn(`[browserclaw] skipping SSRF-blocked frame: ${frame.url()}`);
+        continue;
+      }
+    }
     try {
       // Runs in the frame's browser context (sandboxed), not in Node.js
       const result: unknown = await frame.evaluate((fnBody: string) => {
@@ -163,6 +181,16 @@ export async function evaluateViaPlaywright(opts: {
     ssrfPolicy: opts.ssrfPolicy,
   });
   ensurePageState(page);
+
+  if (opts.ssrfPolicy) {
+    await assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page,
+      response: null,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
+  }
 
   const outerTimeout = normalizeTimeoutMs(opts.timeoutMs, 20000);
   // Browser-side timeout must be strictly less than outer timeout so Playwright

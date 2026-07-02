@@ -362,6 +362,26 @@ function isPrivateIpAddress(address: string, policy?: SsrfPolicy): boolean {
   return false;
 }
 
+// Addresses that are never a legitimate target even for an explicitly
+// allow-listed hostname (DNS-rebinding defense): link-local ranges and known
+// cloud-metadata endpoints (AWS/GCP 169.254.169.254, AWS IPv6 fd00:ec2::254,
+// Alibaba 100.100.100.200).
+const CLOUD_METADATA_IPV4 = ['169.254.169.254', '100.100.100.200'];
+const CLOUD_METADATA_IPV6 = ['fd00:ec2::254'];
+
+function isCloudMetadataOrLinkLocalAddress(address: string): boolean {
+  const parsed = parseCanonicalIpAddress(address);
+  if (!parsed) return false;
+  if (parsed.kind() === 'ipv4') {
+    const v4 = parsed as ipaddr.IPv4;
+    if (v4.range() === 'linkLocal') return true;
+    return CLOUD_METADATA_IPV4.some((m) => v4.toNormalizedString() === ipaddr.IPv4.parse(m).toNormalizedString());
+  }
+  const v6 = parsed as ipaddr.IPv6;
+  if (v6.range() === 'linkLocal') return true;
+  return CLOUD_METADATA_IPV6.some((m) => v6.toNormalizedString() === ipaddr.IPv6.parse(m).toNormalizedString());
+}
+
 // ── URL-level checks ──
 
 /**
@@ -596,6 +616,15 @@ export async function resolvePinnedHostnameWithPolicy(
       if (isBlockedHostnameOrIp(r.address, params.policy)) {
         throw new InvalidBrowserNavigationUrlError(
           `Navigation to internal/loopback address blocked: "${hostname}" resolves to "${r.address}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`,
+        );
+      }
+    }
+  } else if (isExplicitlyAllowed && !allowPrivateNetwork) {
+    // An allow-listed host may resolve to a private IP on purpose, but never to a metadata/link-local one.
+    for (const r of results) {
+      if (isCloudMetadataOrLinkLocalAddress(r.address)) {
+        throw new InvalidBrowserNavigationUrlError(
+          `Navigation blocked: allow-listed hostname "${hostname}" resolves to a cloud-metadata/link-local address "${r.address}".`,
         );
       }
     }
