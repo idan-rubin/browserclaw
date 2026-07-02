@@ -38,6 +38,7 @@ const {
   processExists,
   clearChromeSingletonArtifacts,
   clearStaleChromeSingletonLocks,
+  CHROME_SINGLETON_IN_USE_PATTERN,
   buildChromeLaunchArgs,
   wipeChromeSessionState,
   reserveFreePortFromList,
@@ -423,8 +424,9 @@ describe('clearStaleChromeSingletonLocks', () => {
     }
   });
 
-  itUnix('clears artifacts when lock pid is dead', () => {
+  itUnix('clears artifacts when lock pid is dead and warns', () => {
     const dir = makeTempDir();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const target = `${os.hostname()}-2147483646`;
       fs.symlinkSync(target, path.join(dir, 'SingletonLock'));
@@ -432,13 +434,16 @@ describe('clearStaleChromeSingletonLocks', () => {
       expect(clearStaleChromeSingletonLocks(dir, os.hostname())).toBe(true);
       expect(() => fs.lstatSync(path.join(dir, 'SingletonLock'))).toThrow();
       expect(fs.existsSync(path.join(dir, 'SingletonSocket'))).toBe(false);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('process no longer running'));
     } finally {
+      warnSpy.mockRestore();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  itUnix('clears a foreign-host lock (cross-host liveness cannot be verified)', () => {
+  itUnix('clears a foreign-host lock (cross-host liveness cannot be verified) and warns', () => {
     const dir = makeTempDir();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const target = `some-other-host-${String(process.pid)}`;
       fs.symlinkSync(target, path.join(dir, 'SingletonLock'));
@@ -446,7 +451,9 @@ describe('clearStaleChromeSingletonLocks', () => {
       expect(clearStaleChromeSingletonLocks(dir, os.hostname())).toBe(true);
       expect(() => fs.lstatSync(path.join(dir, 'SingletonLock'))).toThrow();
       expect(fs.existsSync(path.join(dir, 'SingletonSocket'))).toBe(false);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('lock is from another host'));
     } finally {
+      warnSpy.mockRestore();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -459,6 +466,38 @@ describe('clearStaleChromeSingletonLocks', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('CHROME_SINGLETON_IN_USE_PATTERN', () => {
+  it('matches the Chromium-branded message', () => {
+    expect(
+      CHROME_SINGLETON_IN_USE_PATTERN.test(
+        'The profile appears to be in use by another Chromium process (123) on another computer (abc).',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches the Google-Chrome-branded message', () => {
+    expect(
+      CHROME_SINGLETON_IN_USE_PATTERN.test(
+        'The profile appears to be in use by another Google Chrome process (123) on another computer (abc).',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches the Microsoft-Edge-branded message', () => {
+    expect(
+      CHROME_SINGLETON_IN_USE_PATTERN.test(
+        'The profile appears to be in use by another Microsoft Edge process (123) on another computer (abc).',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not match unrelated stderr output', () => {
+    expect(
+      CHROME_SINGLETON_IN_USE_PATTERN.test('Failed to create a ProcessSingleton for your profile directory.'),
+    ).toBe(false);
   });
 });
 

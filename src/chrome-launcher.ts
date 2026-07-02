@@ -13,7 +13,8 @@ import type { ChromeExecutable, ChromeKind, LaunchOptions, RunningChrome, SsrfPo
 // ── Singleton Lock Recovery ──
 
 const CHROME_SINGLETON_LOCK_PATHS = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
-const CHROME_SINGLETON_IN_USE_PATTERN = /profile appears to be in use by another chromium process/i;
+// Brand-agnostic: stderr says "Chromium", "Google Chrome", "Microsoft Edge", ... per build; localized (non-English) messages won't match.
+export const CHROME_SINGLETON_IN_USE_PATTERN = /profile appears to be in use by another .{1,40} process/i;
 
 export function processExists(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -49,6 +50,12 @@ export function clearStaleChromeSingletonLocks(userDataDir: string, hostname: st
   const lockHost = match.groups.lockHost;
   const pid = Number.parseInt(match.groups.pid, 10);
   if (lockHost === hostname && processExists(pid)) return false;
+  console.warn(
+    `[browserclaw] Removing Chrome Singleton* locks in ${userDataDir} held by "${lockHost}" (pid ${String(pid)})` +
+      (lockHost === hostname
+        ? ' — process no longer running.'
+        : ' — lock is from another host; if this profile is live on another machine or container, that session may be disrupted.'),
+  );
   clearChromeSingletonArtifacts(userDataDir);
   return true;
 }
