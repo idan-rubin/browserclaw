@@ -8,7 +8,7 @@ import {
 } from '../connection.js';
 import type { SsrfPolicy } from '../types.js';
 
-import { assertInteractionNavigationCompletedSafely } from './navigation.js';
+import { assertInteractionNavigationCompletedSafely, assertPageNavigationCompletedSafely } from './navigation.js';
 
 export interface FrameEvalResult {
   frameUrl: string;
@@ -35,6 +35,15 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
     targetId: opts.targetId,
     ssrfPolicy: opts.ssrfPolicy,
   });
+  if (opts.ssrfPolicy) {
+    await assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page,
+      response: null,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
+  }
   const frames = page.frames();
   const results: FrameEvalResult[] = [];
 
@@ -163,6 +172,16 @@ export async function evaluateViaPlaywright(opts: {
     ssrfPolicy: opts.ssrfPolicy,
   });
   ensurePageState(page);
+
+  if (opts.ssrfPolicy) {
+    await assertPageNavigationCompletedSafely({
+      cdpUrl: opts.cdpUrl,
+      page,
+      response: null,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
+  }
 
   const outerTimeout = normalizeTimeoutMs(opts.timeoutMs, 20000);
   // Browser-side timeout must be strictly less than outer timeout so Playwright

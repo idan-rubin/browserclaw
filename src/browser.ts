@@ -614,6 +614,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       fields,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 

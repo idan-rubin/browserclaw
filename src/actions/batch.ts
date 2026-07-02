@@ -180,6 +180,7 @@ export async function executeSingleAction(
         targetId: effectiveTargetId,
         fields: action.fields,
         timeoutMs: action.timeoutMs,
+        ssrfPolicy,
       });
       break;
     case 'resize':

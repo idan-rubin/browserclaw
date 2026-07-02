@@ -440,13 +440,6 @@ async function gotoPageWithNavigationGuard(opts: {
       await safeContinue(route);
       return;
     }
-    if (isTopLevel) {
-      const isRedirect = request.redirectedFrom() !== null;
-      if (!isRedirect && request.url() !== opts.url) {
-        await safeContinue(route);
-        return;
-      }
-    }
     try {
       await assertBrowserNavigationAllowed({ url: request.url(), ...navigationPolicy });
     } catch (err) {
