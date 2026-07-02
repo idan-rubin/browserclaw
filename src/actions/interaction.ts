@@ -280,13 +280,27 @@ export async function clickViaPlaywright(opts: {
           await awaitActionWithAbort(new Promise<void>((resolve) => setTimeout(resolve, delayMs)), abortPromise);
         }
 
-        // For checkable roles, capture aria-checked before the click.
-        let ariaCheckedBefore: string | null | undefined;
-        if (checkableRole && opts.doubleClick !== true) {
-          ariaCheckedBefore = await awaitActionWithAbort(
-            locator.getAttribute('aria-checked', { timeout }).catch(() => undefined),
+        // Native <input> checkbox/radio expose no aria-checked attr — read .checked.
+        const readCheckedState = (readTimeout: number): Promise<string | null | undefined> =>
+          awaitActionWithAbort(
+            locator
+              .evaluate(
+                (el: Element) => {
+                  const input = el as HTMLInputElement;
+                  if (input.tagName === 'INPUT' && (input.type === 'checkbox' || input.type === 'radio')) {
+                    return input.checked ? 'true' : 'false';
+                  }
+                  return el.getAttribute('aria-checked');
+                },
+                undefined,
+                { timeout: readTimeout },
+              )
+              .catch(() => undefined),
             abortPromise,
           );
+        let checkedBefore: string | null | undefined;
+        if (checkableRole && opts.doubleClick !== true) {
+          checkedBefore = await readCheckedState(timeout);
         }
 
         if (opts.doubleClick === true) {
@@ -301,19 +315,17 @@ export async function clickViaPlaywright(opts: {
           );
         }
 
-        // If this is a checkable role and aria-checked didn't change, fall back to JS click.
+        // If this is a checkable role and the checked state didn't change, fall back to JS click.
         // Poll briefly to give async frameworks time to update the DOM before concluding
         // the click didn't work — otherwise we'd fire a second click that un-toggles it.
-        if (checkableRole && opts.doubleClick !== true && ariaCheckedBefore !== undefined) {
+        if (checkableRole && opts.doubleClick !== true && checkedBefore !== undefined) {
           const POLL_INTERVAL_MS = 50;
           const POLL_TIMEOUT_MS = 500;
           const ATTR_TIMEOUT_MS = Math.min(timeout, POLL_TIMEOUT_MS);
           let changed = false;
           for (let elapsed = 0; elapsed < POLL_TIMEOUT_MS; elapsed += POLL_INTERVAL_MS) {
-            const current = await locator
-              .getAttribute('aria-checked', { timeout: ATTR_TIMEOUT_MS })
-              .catch(() => undefined);
-            if (current === undefined || current !== ariaCheckedBefore) {
+            const current = await readCheckedState(ATTR_TIMEOUT_MS);
+            if (current === undefined || current !== checkedBefore) {
               changed = true;
               break;
             }

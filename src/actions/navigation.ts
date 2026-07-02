@@ -336,7 +336,6 @@ export async function assertInteractionNavigationCompletedSafely<T>(opts: {
   ssrfPolicy?: SsrfPolicy;
   targetId?: string;
 }): Promise<T> {
-  if (!opts.ssrfPolicy) return await opts.action();
   const navPage = opts.page;
   const navState: { observed: boolean } = { observed: false };
   const subframeNavigationsDuringAction: string[] = [];
@@ -362,17 +361,20 @@ export async function assertInteractionNavigationCompletedSafely<T>(opts: {
   let subframeError: Error | undefined;
   try {
     for (const frameUrl of subframeNavigationsDuringAction) {
-      await assertSubframeNavigationAllowed(frameUrl, opts.ssrfPolicy);
+      await assertSubframeNavigationAllowed(frameUrl, opts.ssrfPolicy ?? {});
     }
   } catch (err) {
     subframeError = err instanceof Error ? err : new Error(formatThrown(err));
   }
+  // `?? {}` enforces block-private even with no caller policy (secure by
+  // default) — for observed, delayed, and error-path navigations alike.
+  const effectivePolicy = opts.ssrfPolicy ?? {};
   if (navigationObserved) {
     await assertPageNavigationCompletedSafely({
       cdpUrl: opts.cdpUrl,
       page: opts.page,
       response: null,
-      ssrfPolicy: opts.ssrfPolicy,
+      ssrfPolicy: effectivePolicy,
       targetId: opts.targetId,
     });
   } else if (actionError !== undefined) {
@@ -381,7 +383,7 @@ export async function assertInteractionNavigationCompletedSafely<T>(opts: {
       await assertObservedDelayedNavigations({
         cdpUrl: opts.cdpUrl,
         page: opts.page,
-        ssrfPolicy: opts.ssrfPolicy,
+        ssrfPolicy: effectivePolicy,
         targetId: opts.targetId,
         observed,
       });
@@ -391,7 +393,7 @@ export async function assertInteractionNavigationCompletedSafely<T>(opts: {
       cdpUrl: opts.cdpUrl,
       page: opts.page,
       previousUrl: opts.previousUrl,
-      ssrfPolicy: opts.ssrfPolicy,
+      ssrfPolicy: effectivePolicy,
       targetId: opts.targetId,
     });
   }

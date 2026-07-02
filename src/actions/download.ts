@@ -27,30 +27,31 @@ function createPageDownloadWaiter(page: Page, timeoutMs: number) {
     }
   };
 
-  let rejectPromise: ((reason: Error) => void) | undefined;
+  const promise = new Promise<Download>((resolve, reject) => {
+    handler = (download: Download) => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve(download);
+    };
+    page.on('download', handler);
+    timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(new Error('Timeout waiting for download'));
+    }, timeoutMs);
+  });
+  // Keep a handler attached so a timeout rejection before the caller awaits
+  // the promise cannot surface as an unhandledRejection.
+  promise.catch(() => undefined);
+
   return {
-    promise: new Promise<Download>((resolve, reject) => {
-      rejectPromise = reject;
-      handler = (download: Download) => {
-        if (done) return;
-        done = true;
-        cleanup();
-        resolve(download);
-      };
-      page.on('download', handler);
-      timer = setTimeout(() => {
-        if (done) return;
-        done = true;
-        cleanup();
-        reject(new Error('Timeout waiting for download'));
-      }, timeoutMs);
-    }),
+    promise,
     cancel: () => {
       if (done) return;
       done = true;
       cleanup();
-      // Reject the pending promise so callers awaiting it don't hang
-      rejectPromise?.(new Error('Download waiter cancelled'));
     },
   };
 }

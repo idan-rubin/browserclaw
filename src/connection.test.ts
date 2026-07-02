@@ -74,6 +74,13 @@ describe('getHeadersWithAuth', () => {
     expect(decoded).toBe('us@er:p#ss');
   });
 
+  it('preserves credentials containing a stray percent that is not a valid escape', () => {
+    const headers = getHeadersWithAuth('ws://user:aB3%kQ@localhost:9222/');
+    expect(headers.Authorization).toBeDefined();
+    const decoded = Buffer.from(headers.Authorization.replace('Basic ', ''), 'base64').toString();
+    expect(decoded).toBe('user:aB3%kQ');
+  });
+
   it('handles username without password', () => {
     const headers = getHeadersWithAuth('http://user@localhost:9222');
     expect(headers.Authorization).toBeDefined();
