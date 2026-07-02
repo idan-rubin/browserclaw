@@ -6,6 +6,7 @@ import {
   forceDisconnectPlaywrightConnection,
   tryTerminateExecutionViaCdp,
 } from '../connection.js';
+import { assertBrowserNavigationResultAllowed } from '../security.js';
 import type { SsrfPolicy } from '../types.js';
 
 import { assertInteractionNavigationCompletedSafely, assertPageNavigationCompletedSafely } from './navigation.js';
@@ -48,6 +49,14 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
   const results: FrameEvalResult[] = [];
 
   for (const frame of frames) {
+    if (opts.ssrfPolicy) {
+      try {
+        await assertBrowserNavigationResultAllowed({ url: frame.url(), ssrfPolicy: opts.ssrfPolicy });
+      } catch {
+        console.warn(`[browserclaw] skipping SSRF-blocked frame: ${frame.url()}`);
+        continue;
+      }
+    }
     try {
       // Runs in the frame's browser context (sandboxed), not in Node.js
       const result: unknown = await frame.evaluate((fnBody: string) => {

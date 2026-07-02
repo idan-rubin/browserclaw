@@ -138,7 +138,7 @@ export async function assertPageNavigationCompletedSafely(opts: {
 const INTERACTION_NAVIGATION_GRACE_MS = 250;
 const pendingInteractionNavigationGuardCleanup = new WeakMap<Page, () => void>();
 
-function didCrossDocumentUrlChange(page: Page, previousUrl: string): boolean {
+export function didCrossDocumentUrlChange(page: Page, previousUrl: string): boolean {
   const currentUrl = page.url();
   if (currentUrl === previousUrl) return false;
   try {

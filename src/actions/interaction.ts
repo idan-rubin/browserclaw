@@ -20,7 +20,7 @@ import {
 import { resolveStrictExistingPathsWithinRoot, DEFAULT_UPLOAD_DIR } from '../security.js';
 import type { FormField, SsrfPolicy } from '../types.js';
 
-import { assertInteractionNavigationCompletedSafely } from './navigation.js';
+import { assertInteractionNavigationCompletedSafely, didCrossDocumentUrlChange } from './navigation.js';
 
 type MouseButton = 'left' | 'right' | 'middle';
 type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
@@ -501,6 +501,7 @@ export async function fillFormViaPlaywright(opts: {
     action: async () => {
       let filledCount = 0;
       for (const field of opts.fields) {
+        if (didCrossDocumentUrlChange(page, previousUrl)) break;
         const ref = field.ref.trim();
         const type = (typeof field.type === 'string' ? field.type.trim() : '') || 'text';
         const rawValue = field.value;
