@@ -5,7 +5,7 @@ function matchUrlPattern(pattern: string, url: string): boolean {
   if (!pattern || !url) return false;
   if (pattern === url) return true;
   if (pattern.includes('*')) {
-    const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+    const escaped = pattern.replace(/[.+^${}()|[\]\\?]/g, '\\$&').replace(/\*/g, '.*');
     try {
       return new RegExp(`^${escaped}$`).test(url);
     } catch {

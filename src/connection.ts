@@ -281,9 +281,14 @@ export function getHeadersWithAuth(endpoint: string, baseHeaders: Record<string,
     const parsed = new URL(endpoint);
     if (Object.keys(headers).some((k) => k.toLowerCase() === 'authorization')) return headers;
     if (parsed.username || parsed.password) {
-      const credentials = Buffer.from(
-        `${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`,
-      ).toString('base64');
+      const decode = (value: string): string => {
+        try {
+          return decodeURIComponent(value);
+        } catch {
+          return value;
+        }
+      };
+      const credentials = Buffer.from(`${decode(parsed.username)}:${decode(parsed.password)}`).toString('base64');
       headers.Authorization = `Basic ${credentials}`;
     }
   } catch {
