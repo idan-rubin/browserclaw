@@ -287,7 +287,6 @@ export class CrawlPage {
         maxDepth: opts?.maxDepth,
         waitForHydration: opts?.waitForHydration,
         minInteractiveRefs: opts?.minInteractiveRefs,
-        urls: opts?.urls,
       },
       ssrfPolicy: this.ssrfPolicy,
     });

@@ -301,8 +301,6 @@ export interface SnapshotOptions {
    * hydrated when `waitForHydration` is enabled. Default: 1.
    */
   minInteractiveRefs?: number;
-  /** Append a numbered `Links:` block of unique `a[href]` destinations (text -> url, up to 100) so an agent can read link targets without clicking. Default: off. */
-  urls?: boolean;
 }
 
 /** A node in the raw ARIA accessibility tree. */
@@ -362,12 +360,7 @@ export interface ClickOptions {
   timeoutMs?: number;
   /** Force click even if element is hidden or covered. Dispatches the event regardless of visibility. */
   force?: boolean;
-  /**
-   * AbortSignal to cancel the click mid-flight. Aborting closes the shared
-   * Playwright connection for this browser's CDP endpoint, so in-flight actions
-   * on OTHER tabs of the same browser will fail with "Target closed" and must be
-   * retried; the connection reconnects transparently on the next call.
-   */
+  /** AbortSignal to cancel the click mid-flight. Aborts tear down the Playwright connection to unblock the in-flight action. */
   signal?: AbortSignal;
 }
 
