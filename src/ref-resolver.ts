@@ -172,7 +172,8 @@ export function refLocator(page: Page, ref: string) {
     // Warn if refs are stale
     if (state?.roleRefsStoredAt !== undefined) {
       const ageMs = Date.now() - state.roleRefsStoredAt;
-      if (ageMs > REFS_STALENESS_THRESHOLD_MS) {
+      if (ageMs > REFS_STALENESS_THRESHOLD_MS && state.roleRefsStaleWarned !== state.roleRefsStoredAt) {
+        state.roleRefsStaleWarned = state.roleRefsStoredAt;
         console.warn(
           `[browserclaw] refs are ${String(Math.round(ageMs / 1000))}s old — consider re-snapshotting for fresh refs`,
         );

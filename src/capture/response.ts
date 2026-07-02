@@ -30,7 +30,14 @@ export async function responseBodyViaPlaywright(opts: {
   if (!pattern) throw new Error('url is required');
 
   const response = await page.waitForResponse((resp) => matchUrlPattern(pattern, resp.url()), { timeout });
-  let body = await response.text();
+  let body: string;
+  try {
+    body = await response.text();
+  } catch (err) {
+    throw new Error(
+      `Failed to read response body for "${pattern}": ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
   let truncated = false;
 
   const maxChars =

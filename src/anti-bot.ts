@@ -92,7 +92,28 @@ export async function waitForChallengeViaPlaywright(opts: {
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 15000);
   const poll = Math.max(250, Math.min(5000, opts.pollMs ?? 500));
 
-  const detect = async () => parseChallengeResult(await page.evaluate(DETECT_CHALLENGE_SCRIPT));
+  const isNavigationRaceError = (err: unknown): boolean =>
+    err instanceof Error &&
+    /execution context was destroyed|because of a navigation|frame was detached/i.test(err.message);
+
+  const detect = async (): Promise<ChallengeInfo | null> => {
+    try {
+      return parseChallengeResult(await page.evaluate(DETECT_CHALLENGE_SCRIPT));
+    } catch (err) {
+      // Only a navigation race (context destroyed by a redirect) is treated as
+      // "re-check"; a closed tab, crash, or CDP disconnect must propagate.
+      if (!isNavigationRaceError(err)) throw err;
+      await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {
+        /* best-effort settle */
+      });
+      try {
+        return parseChallengeResult(await page.evaluate(DETECT_CHALLENGE_SCRIPT));
+      } catch (retryErr) {
+        if (isNavigationRaceError(retryErr)) return null;
+        throw retryErr;
+      }
+    }
+  };
 
   // Check if there's actually a challenge present
   const initial = await detect();

@@ -164,5 +164,24 @@ describe('buildRoleSnapshotFromAiSnapshot', () => {
       expect(refs.e11).toBeDefined();
       expect(refs.e11.name).toBe('B');
     });
+
+    it('does not store an undefined name for a ref line with no accessible name', () => {
+      const { refs } = buildRoleSnapshotFromAiSnapshot('- button [ref=e5]');
+      expect(refs.e5).toBeDefined();
+      expect('name' in refs.e5).toBe(false);
+    });
+  });
+});
+
+describe('unnamed content/landmark roles do not get refs', () => {
+  it('assigns no ref to an unnamed landmark role', () => {
+    const { snapshot, refs } = buildRoleSnapshotFromAriaSnapshot('- navigation');
+    expect(snapshot).not.toContain('[ref=');
+    expect(Object.keys(refs)).toHaveLength(0);
+  });
+
+  it('assigns a ref to a named landmark role', () => {
+    const { refs } = buildRoleSnapshotFromAriaSnapshot('- navigation "Primary"');
+    expect(Object.values(refs).some((r) => r.role === 'navigation' && r.name === 'Primary')).toBe(true);
   });
 });

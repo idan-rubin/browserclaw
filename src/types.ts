@@ -275,7 +275,7 @@ export interface SnapshotOptions {
    * - `'role'` — uses Playwright's `ariaSnapshot()` + `getByRole()` resolution
    */
   mode?: 'role' | 'aria';
-  /** Timeout in milliseconds for the snapshot operation (role mode only, default: 5000) */
+  /** Timeout in milliseconds for the snapshot operation (default: 5000) */
   timeoutMs?: number;
   /**
    * How refs are stored for role-mode snapshots.
@@ -618,9 +618,8 @@ export interface HttpCredentials {
   clear?: boolean;
 }
 
-// ── Context State (internal) ──
+// ── Context State ──
 
-/** @internal */
 export interface ContextState {
   traceActive: boolean;
 }
@@ -638,6 +637,7 @@ export interface PageState {
   roleRefsFrameSelector?: string;
   roleRefsMode?: 'role' | 'aria';
   roleRefsStoredAt?: number;
+  roleRefsStaleWarned?: number;
   armIdUpload: number;
   armIdDialog: number;
   armIdDownload: number;
