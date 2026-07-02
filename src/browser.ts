@@ -1669,7 +1669,7 @@ export class CrawlPage {
             fn: rule.fn,
             ssrfPolicy: this.ssrfPolicy,
           });
-          const passed = result !== null && result !== undefined && result !== false && result !== 0 && result !== '';
+          const passed = Boolean(result);
           checks.push({
             rule: 'fn',
             passed,
