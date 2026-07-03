@@ -900,11 +900,7 @@ export async function resolveExistingPathsWithinRoot(params: {
   return { ok: true, paths: resolved };
 }
 
-/**
- * The escape checks compare realpath'd files against the root, so the root itself
- * must be realpath'd too — otherwise a symlinked temp dir (macOS /tmp ->
- * /private/tmp) rejects every legitimate path inside it.
- */
+/** Escape checks compare realpath'd files, so the root must be realpath'd too (macOS /tmp -> /private/tmp). */
 async function realRootOf(rootDir: string): Promise<string> {
   const lexical = resolve(rootDir);
   try {
