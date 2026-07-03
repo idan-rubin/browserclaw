@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile, symlink, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve, join } from 'node:path';
+import { basename, dirname, resolve, join } from 'node:path';
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
@@ -1543,6 +1543,24 @@ describe('security.ts', () => {
       });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.paths[0]).toBe(filePath);
+    });
+
+    it('should accept files under a symlinked root', async () => {
+      const linkedRoot = join(dirname(tempRoot), `link-root-${basename(tempRoot)}`);
+      await symlink(tempRoot, linkedRoot);
+      try {
+        const filePath = join(tempRoot, 'file.txt');
+        await writeFile(filePath, 'data');
+        const result = await resolveStrictExistingPathsWithinRoot({
+          rootDir: linkedRoot,
+          requestedPaths: ['file.txt'],
+          scopeLabel: 'test',
+        });
+        expect(result.ok).toBe(true);
+        if (result.ok) expect(result.paths[0]).toBe(filePath);
+      } finally {
+        await rm(linkedRoot, { force: true });
+      }
     });
 
     it('should reject missing files', async () => {

@@ -863,7 +863,7 @@ export async function resolveExistingPathsWithinRoot(params: {
   requestedPaths: string[];
   scopeLabel: string;
 }): Promise<PathsResult> {
-  const root = resolve(params.rootDir);
+  const root = await realRootOf(params.rootDir);
   const resolved: string[] = [];
 
   for (const raw of params.requestedPaths) {
@@ -901,6 +901,20 @@ export async function resolveExistingPathsWithinRoot(params: {
 }
 
 /**
+ * The escape checks compare realpath'd files against the root, so the root itself
+ * must be realpath'd too — otherwise a symlinked temp dir (macOS /tmp ->
+ * /private/tmp) rejects every legitimate path inside it.
+ */
+async function realRootOf(rootDir: string): Promise<string> {
+  const lexical = resolve(rootDir);
+  try {
+    return await realpath(lexical);
+  } catch {
+    return lexical;
+  }
+}
+
+/**
  * Same as resolveExistingPathsWithinRoot but missing files are NOT allowed.
  */
 export async function resolveStrictExistingPathsWithinRoot(params: {
@@ -908,7 +922,7 @@ export async function resolveStrictExistingPathsWithinRoot(params: {
   requestedPaths: string[];
   scopeLabel: string;
 }): Promise<PathsResult> {
-  const root = resolve(params.rootDir);
+  const root = await realRootOf(params.rootDir);
   const resolved: string[] = [];
 
   for (const raw of params.requestedPaths) {
