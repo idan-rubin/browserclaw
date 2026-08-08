@@ -96,6 +96,19 @@ describe('parseRoleRef', () => {
     expect(parseRoleRef('   ')).toBeNull();
   });
 
+  it('parses frame-scoped refs "f1e5"', () => {
+    expect(parseRoleRef('f1e5')).toBe('f1e5');
+    expect(parseRoleRef('@f1e5')).toBe('f1e5');
+    expect(parseRoleRef('ref=f12e34')).toBe('f12e34');
+  });
+
+  it('returns null for malformed frame-scoped refs', () => {
+    expect(parseRoleRef('f1')).toBeNull();
+    expect(parseRoleRef('fe5')).toBeNull();
+    expect(parseRoleRef('f1e')).toBeNull();
+    expect(parseRoleRef('f1e5x')).toBeNull();
+  });
+
   it('returns null for non-ref strings', () => {
     expect(parseRoleRef('button')).toBeNull();
     expect(parseRoleRef('abc')).toBeNull();
@@ -506,6 +519,24 @@ describe('refLocator', () => {
     state.roleRefs = { e1: { role: 'button' } };
     const loc = refLocator(page, 'e1') as unknown as { _selector: string };
     expect(loc._selector).toBe('aria-ref=e1');
+  });
+
+  it('returns aria-ref locator for frame-scoped refs in aria mode', () => {
+    const page = mockPage();
+    const state = ensurePageState(page);
+    state.roleRefsMode = 'aria';
+    state.roleRefs = { f1e5: { role: 'textbox', name: 'Email' } };
+    const loc = refLocator(page, 'f1e5') as unknown as { _selector: string };
+    expect(loc._selector).toBe('aria-ref=f1e5');
+  });
+
+  it('throws StaleRefError in aria mode for a ref absent from the stored snapshot', () => {
+    const page = mockPage();
+    const state = ensurePageState(page);
+    state.roleRefsMode = 'aria';
+    state.roleRefs = { e1: { role: 'button' } };
+    expect(() => refLocator(page, 'e999')).toThrow('Unknown ref "e999"');
+    expect(() => refLocator(page, 'f1e999')).toThrow('Unknown ref "f1e999"');
   });
 
   it('returns aria-ref locator for non-e-ref strings', () => {

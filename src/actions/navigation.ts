@@ -459,6 +459,11 @@ async function gotoPageWithNavigationGuard(opts: {
     await safeContinue(route);
   };
   await opts.page.route('**', handler);
+  const removeRoute = async () => {
+    await opts.page.unroute('**', handler).catch((e: unknown) => {
+      console.warn('[browserclaw] route unroute failed', e);
+    });
+  };
   try {
     const response = await opts.page.goto(opts.url, { timeout: opts.timeoutMs, waitUntil: 'commit' });
     if (state.blocked !== null) throw state.blocked;
@@ -467,11 +472,22 @@ async function gotoPageWithNavigationGuard(opts: {
     if (state.blocked !== null) throw state.blocked;
     throw err;
   } finally {
-    await opts.page.unroute('**', handler).catch((e: unknown) => {
-      console.warn('[browserclaw] route unroute failed', e);
-    });
-    if (state.blocked !== null)
+    if (state.blocked !== null) {
+      await removeRoute();
       await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page: opts.page, targetId: opts.targetId });
+    } else {
+      // goto() resolves at 'commit', while the document is still streaming and
+      // subresources are in flight. Removing the route at that point strands
+      // requests paused at the CDP Fetch layer — a parser-blocking script that
+      // never completes freezes the document mid-body and `load` never fires
+      // (observed on SPA pages: the bundle downloads but never executes).
+      // Defer the teardown until the page reaches `load` (or a bounded grace
+      // period), without delaying the navigation result.
+      void opts.page
+        .waitForLoadState('load', { timeout: Math.max(opts.timeoutMs, 10_000) })
+        .catch(() => undefined)
+        .then(removeRoute);
+    }
   }
 }
 

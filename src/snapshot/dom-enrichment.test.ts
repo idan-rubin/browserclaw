@@ -382,4 +382,13 @@ describe('nextRefCounter', () => {
     // ax1 → parseInt('x1') = NaN → skipped; max is 3
     expect(nextRefCounter(refs)).toBe(4);
   });
+
+  it('counts frame-scoped refs (playwright-core >= 1.62) toward the maximum', () => {
+    const refs = {
+      e2: { role: 'button' },
+      f1e9: { role: 'textbox' },
+      f2e4: { role: 'link' },
+    };
+    expect(nextRefCounter(refs)).toBe(10);
+  });
 });

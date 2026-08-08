@@ -95,7 +95,14 @@ export function clearRoleRefsForCdpUrl(cdpUrl: string): void {
 // ── Ref Parsing ──
 
 /**
- * Parse a role ref string (e.g. "e1", "@e1", "ref=e1") to a normalized ref ID.
+ * Pattern for Playwright aria refs: `eN` for the main frame, `fMeN` for
+ * frame-scoped refs. Since playwright-core 1.62 the main frame itself emits
+ * `fMeN` refs after any navigation past the first, so both shapes are valid.
+ */
+export const PLAYWRIGHT_ARIA_REF_PATTERN = /^(?:f\d+)?e\d+$/;
+
+/**
+ * Parse a role ref string (e.g. "e1", "@e1", "ref=e1", "f1e5") to a normalized ref ID.
  * Returns null if the string is not a valid role ref.
  */
 export function parseRoleRef(raw: string): string | null {
@@ -106,7 +113,7 @@ export function parseRoleRef(raw: string): string | null {
     : trimmed.startsWith('ref=')
       ? trimmed.slice(4)
       : trimmed;
-  return /^e\d+$/.test(normalized) ? normalized : null;
+  return PLAYWRIGHT_ARIA_REF_PATTERN.test(normalized) ? normalized : null;
 }
 
 /**
@@ -166,7 +173,7 @@ export function refLocator(page: Page, ref: string) {
     return info.nth !== undefined ? locator.nth(info.nth) : locator;
   }
 
-  if (/^e\d+$/.test(normalized)) {
+  if (PLAYWRIGHT_ARIA_REF_PATTERN.test(normalized)) {
     const state = getPageState(page);
 
     // Warn if refs are stale
@@ -191,6 +198,10 @@ export function refLocator(page: Page, ref: string) {
     }
 
     if (state?.roleRefsMode === 'aria') {
+      // A ref absent from the last snapshot can never resolve — the aria-ref
+      // registry only knows refs from the snapshot that created them. Fail
+      // fast with a typed error instead of letting the locator time out.
+      if (state.roleRefs !== undefined && info === undefined) throw new StaleRefError(normalized);
       return (
         state.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''
           ? page.frameLocator(state.roleRefsFrameSelector)

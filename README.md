@@ -141,7 +141,7 @@ Requires a Chromium-based browser installed on the system (Chrome, Brave, Edge, 
 2. **AI reads** the snapshot text and picks a ref to act on
 3. **Actions target refs** → browserclaw resolves each ref to a Playwright locator and executes the action
 
-> **Note:** Refs are scoped to the snapshot that created them. After navigation or DOM changes, old refs become invalid — actions will fail with an error (timeout in aria mode, `"Unknown ref"` in role mode). Always re-snapshot before acting on a changed page.
+> **Note:** Refs are scoped to the snapshot that created them. After navigation or DOM changes, old refs become invalid — actions on a ref that is not part of the latest snapshot throw a typed `StaleRefError`. Always re-snapshot before acting on a changed page. Depending on the playwright-core version and navigation history, refs may be plain (`e5`) or frame-scoped (`f1e5`) — both resolve the same way; treat them as opaque IDs.
 
 ## API
 
@@ -161,6 +161,7 @@ const browser = await BrowserClaw.launch({
   profileColor: '#FF4500', // profile accent color (hex)
   chromeArgs: ['--start-maximized'], // additional Chrome flags
   isolated: true, // fresh per-run profile, auto-cleaned on stop()
+  keepAliveOnExit: false, // default: false — launched Chrome is killed when this process exits (crashes included)
   stealth: false, // default: false — inject JS patches (navigator.webdriver, plugins, WebGL vendor, …)
   ciDefaults: false, // default: false — adds CI-deterministic Chrome flags (may fingerprint as automation)
   recordVideo: { dir: './videos' }, // optional: record every page; videos flushed on page/context close
@@ -205,7 +206,7 @@ if (challenge?.kind === 'cloudflare-js') {
 Pass `isolated: true` (or `isolated: 'some-label'`) to launch in a dedicated per-run profile under `$TMPDIR/browserclaw/isolated/`:
 
 - A run-scoped random suffix is **always** appended — including when you pass a label string. Two concurrent launches with the same label (`isolated: 'my-run'`) each get a unique directory and never collide on Chrome's SingletonLock. The label is for identification only; it does not produce a stable profile across runs.
-- `stop()` removes the isolated user-data directory on exit (best-effort; silent on failure). If the process crashes before `stop()`, leftover directories remain under `$TMPDIR/browserclaw/isolated/` and can be deleted safely when no Chrome process is using them.
+- `stop()` removes the isolated user-data directory on exit (best-effort; silent on failure). If the process exits before `stop()` — including crashes and unhandled exceptions — an exit hook kills the launched Chrome and removes the isolated directory (best-effort; pass `keepAliveOnExit: true` to opt out). Directories left behind by a hard kill (`SIGKILL` of the Node process itself) remain under `$TMPDIR/browserclaw/isolated/` and can be deleted safely when no Chrome process is using them.
 - When `isolated` is set, `profileName` and `userDataDir` options are ignored.
 - Any cookies, logins, extensions, or localStorage from prior runs are not available — by design.
 

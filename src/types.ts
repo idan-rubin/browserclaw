@@ -130,6 +130,21 @@ export interface LaunchOptions {
    */
   isolated?: boolean | string;
   /**
+   * Keep the launched Chrome running after this Node.js process exits.
+   *
+   * By default, browsers started with `launch()` are killed when the process
+   * exits — including crashes and unhandled exceptions — so a run that never
+   * reached `stop()` does not leak headless Chrome processes and isolated
+   * profile directories. Set to `true` for keep-alive workflows where the
+   * browser should outlive the script (e.g. launching a visible window with a
+   * persistent profile for a human to keep using).
+   *
+   * Browsers attached with `connect()` are never killed on exit.
+   *
+   * Default: `false` (launched Chrome dies with the process).
+   */
+  keepAliveOnExit?: boolean;
+  /**
    * SSRF policy controlling which URLs navigation is allowed to reach.
    * Secure by default: private/internal/loopback addresses are blocked.
    * Set `dangerouslyAllowPrivateNetwork: true` to allow them.

@@ -67,6 +67,7 @@ interface FakePage {
   off: ReturnType<typeof vi.fn>;
   once: ReturnType<typeof vi.fn>;
   waitForEvent: ReturnType<typeof vi.fn>;
+  waitForLoadState: ReturnType<typeof vi.fn>;
   mainFrame: () => unknown;
   isClosed: () => boolean;
 }
@@ -83,6 +84,7 @@ function buildFakePage(overrides: Partial<FakePage> = {}): FakePage {
     off: vi.fn(),
     once: vi.fn(),
     waitForEvent: vi.fn(),
+    waitForLoadState: vi.fn().mockResolvedValue(undefined),
     mainFrame: () => ({}),
     isClosed: () => false,
     ...overrides,

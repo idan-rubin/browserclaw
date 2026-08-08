@@ -171,6 +171,54 @@ describe('buildRoleSnapshotFromAiSnapshot', () => {
       expect('name' in refs.e5).toBe(false);
     });
   });
+
+  describe('frame-scoped refs (playwright-core >= 1.62)', () => {
+    // Since playwright-core 1.62 the main frame emits `fMeN` refs after any
+    // navigation past the first. These must be preserved verbatim, not
+    // shadowed by generated `eN` refs (regression: double [ref=] markers).
+    const frameScopedInput = [
+      '- generic [ref=f1e1]:',
+      '  - link "Docs" [ref=f1e3] [cursor=pointer]',
+      '  - textbox "Email" [ref=f1e5]',
+      '  - button "Go" [ref=f1e6]',
+    ].join('\n');
+
+    it('preserves frame-scoped ref IDs verbatim', () => {
+      const { refs } = buildRoleSnapshotFromAiSnapshot(frameScopedInput);
+      expect(refs.f1e3).toEqual({ role: 'link', name: 'Docs' });
+      expect(refs.f1e5).toEqual({ role: 'textbox', name: 'Email' });
+      expect(refs.f1e6).toEqual({ role: 'button', name: 'Go' });
+    });
+
+    it('does not add a second generated [ref=] marker to lines that already carry one', () => {
+      const { snapshot } = buildRoleSnapshotFromAiSnapshot(frameScopedInput);
+      for (const line of snapshot.split('\n')) {
+        expect(line.match(/\[ref=/g)?.length ?? 0).toBeLessThanOrEqual(1);
+      }
+      expect(snapshot).toContain('link "Docs" [ref=f1e3]');
+    });
+
+    it('preserves frame-scoped refs in interactive-only mode', () => {
+      const { snapshot, refs } = buildRoleSnapshotFromAiSnapshot(frameScopedInput, { interactive: true });
+      expect(Object.keys(refs).sort()).toEqual(['f1e3', 'f1e5', 'f1e6']);
+      expect(snapshot).toContain('[ref=f1e5]');
+      expect(snapshot).not.toMatch(/\[ref=e\d+\]/);
+    });
+
+    it('numbers generated refs above the frame-scoped maximum', () => {
+      const input = ['- button "A" [ref=f2e10]', '- button "B"'].join('\n');
+      const { refs } = buildRoleSnapshotFromAiSnapshot(input);
+      expect(refs.f2e10).toBeDefined();
+      expect(refs.e11).toEqual({ role: 'button', name: 'B' });
+    });
+
+    it('handles iframe content refs alongside main-frame refs', () => {
+      const input = ['- button "Outer" [ref=e4]', '- iframe [ref=e5]:', '  - button "Inner" [ref=f1e2]'].join('\n');
+      const { refs } = buildRoleSnapshotFromAiSnapshot(input);
+      expect(refs.e4).toEqual({ role: 'button', name: 'Outer' });
+      expect(refs.f1e2).toEqual({ role: 'button', name: 'Inner' });
+    });
+  });
 });
 
 describe('unnamed content/landmark roles do not get refs', () => {

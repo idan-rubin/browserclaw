@@ -280,15 +280,19 @@ export function buildRoleSnapshotFromAiSnapshot(
   const lines = aiSnapshot.split('\n');
   const refs: RoleRefs = {};
 
+  // Playwright emits `eN` refs for the main frame and frame-scoped `fMeN`
+  // refs for iframes. Since playwright-core 1.62, the main frame itself gets
+  // an `fMeN` prefix after any navigation past the first (its frame `seq`
+  // increments), so both shapes must be recognized as Playwright-owned refs.
   function parseAiSnapshotRef(suffix: string): string | null {
-    const match = /\[ref=(e\d+)\]/i.exec(suffix);
+    const match = /\[ref=((?:f\d+)?e\d+)\]/i.exec(suffix);
     return match ? match[1] : null;
   }
 
   if (options.interactive === true) {
     let interactiveMaxRef = 0;
     for (const line of lines) {
-      const refMatch = /\[ref=e(\d+)\]/.exec(line);
+      const refMatch = /\[ref=(?:f\d+)?e(\d+)\]/.exec(line);
       if (refMatch) interactiveMaxRef = Math.max(interactiveMaxRef, Number.parseInt(refMatch[1], 10));
     }
     let interactiveCounter = interactiveMaxRef;
@@ -324,7 +328,7 @@ export function buildRoleSnapshotFromAiSnapshot(
 
   let maxRef = 0;
   for (const line of lines) {
-    const refMatch = /\[ref=e(\d+)\]/.exec(line);
+    const refMatch = /\[ref=(?:f\d+)?e(\d+)\]/.exec(line);
     if (refMatch) maxRef = Math.max(maxRef, Number.parseInt(refMatch[1], 10));
   }
   let generatedCounter = maxRef;

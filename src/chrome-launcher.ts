@@ -109,6 +109,70 @@ function killProcessTree(proc: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
+// ── Process-Exit Cleanup ──
+
+/**
+ * Launched (owned) Chrome instances that are still alive. Killed when the
+ * Node.js process exits so crashed runs don't leak headless Chromes and
+ * isolated profile directories. `connect()`-attached browsers never enter
+ * this registry.
+ */
+const liveLaunchedChromes = new Set<RunningChrome>();
+let exitCleanupInstalled = false;
+
+/** @internal Exported for testing. */
+export function killLaunchedChromesSync(): void {
+  for (const running of liveLaunchedChromes) {
+    if (running.proc.exitCode === null && running.proc.signalCode === null) {
+      // SIGKILL: 'exit' handlers must be synchronous, so there is no time to
+      // wait out a graceful SIGTERM. Stale singleton locks left behind are
+      // handled by the existing stale-lock recovery on the next launch.
+      killProcessTree(running.proc, 'SIGKILL');
+    }
+    if (running.isolated === true) {
+      try {
+        fs.rmSync(running.userDataDir, { recursive: true, force: true });
+      } catch {
+        /* best-effort — directory may still be held by dying Chrome */
+      }
+    }
+  }
+  liveLaunchedChromes.clear();
+}
+
+function installExitCleanupOnce(): void {
+  if (exitCleanupInstalled) return;
+  exitCleanupInstalled = true;
+  process.once('exit', killLaunchedChromesSync);
+  // 'exit' does not fire when the process dies from a signal. Handle the
+  // common fatal signals — but only when nobody else does: if the host app
+  // has its own handler, it owns the shutdown sequence and our 'exit' hook
+  // will run when the process eventually terminates.
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+    const handler = (): void => {
+      if (process.listenerCount(signal) > 1) return;
+      killLaunchedChromesSync();
+      process.removeListener(signal, handler);
+      process.kill(process.pid, signal);
+    };
+    process.on(signal, handler);
+  }
+}
+
+/** @internal Exported for testing. */
+export function trackLaunchedChrome(running: RunningChrome): void {
+  installExitCleanupOnce();
+  liveLaunchedChromes.add(running);
+  running.proc.once('exit', () => {
+    liveLaunchedChromes.delete(running);
+  });
+}
+
+/** @internal Exported for testing. */
+export function untrackLaunchedChrome(running: RunningChrome): void {
+  liveLaunchedChromes.delete(running);
+}
+
 // ── Executable Detection ──
 
 const CHROMIUM_BUNDLE_IDS = new Set([
@@ -1164,7 +1228,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
 
   const { proc } = await launchOnceAndWait(true);
 
-  return {
+  const running: RunningChrome = {
     pid: proc.pid ?? -1,
     exe,
     userDataDir,
@@ -1174,9 +1238,12 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
     proc,
     ...(isolatedResolved !== null ? { isolated: true } : {}),
   };
+  if (opts.keepAliveOnExit !== true) trackLaunchedChrome(running);
+  return running;
 }
 
 export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Promise<void> {
+  untrackLaunchedChrome(running);
   const proc = running.proc;
   const cleanupIsolated = () => {
     if (running.isolated !== true) return;

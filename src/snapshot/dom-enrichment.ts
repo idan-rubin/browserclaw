@@ -295,8 +295,9 @@ export async function enrichSnapshotFromDom(
 export function nextRefCounter(refs: RoleRefs): number {
   let max = 0;
   for (const key of Object.keys(refs)) {
-    if (!/^e\d+$/.test(key)) continue;
-    const n = Number.parseInt(key.slice(1), 10);
+    const match = /^(?:f\d+)?e(\d+)$/.exec(key);
+    if (!match) continue;
+    const n = Number.parseInt(match[1], 10);
     if (!Number.isNaN(n) && n > max) max = n;
   }
   return max + 1;

@@ -631,12 +631,10 @@ export async function setInputFilesViaPlaywright(opts: {
 
   try {
     const handle = await locator.elementHandle();
-    if (handle) {
-      await handle.evaluate((el: Element) => {
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-      });
-    }
+    await handle.evaluate((el: Element) => {
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    });
   } catch {
     /* intentional no-op */
   }

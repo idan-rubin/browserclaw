@@ -1,10 +1,13 @@
 import type * as ChildProcess from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import type * as Net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+import type { RunningChrome } from './types.js';
 
 const { execFileMock } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
@@ -43,6 +46,9 @@ const {
   wipeChromeSessionState,
   reserveFreePortFromList,
   activateMacOsWindowByPid,
+  trackLaunchedChrome,
+  untrackLaunchedChrome,
+  killLaunchedChromesSync,
 } = await import('./chrome-launcher.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -736,5 +742,81 @@ describe('activateMacOsWindowByPid', () => {
       throw new Error('osascript not found');
     });
     await expect(activateMacOsWindowByPid(99)).resolves.toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// process-exit cleanup (trackLaunchedChrome / killLaunchedChromesSync)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function fakeRunningChrome(overrides: { isolated?: boolean; userDataDir?: string } = {}): {
+  running: RunningChrome;
+  kill: ReturnType<typeof vi.fn>;
+  proc: EventEmitter;
+} {
+  const kill = vi.fn();
+  const proc = new EventEmitter() as EventEmitter & {
+    pid: number | undefined;
+    exitCode: number | null;
+    signalCode: string | null;
+    kill: typeof kill;
+  };
+  // pid deliberately undefined so killProcessTree can't reach a real process
+  proc.pid = undefined;
+  proc.exitCode = null;
+  proc.signalCode = null;
+  proc.kill = kill;
+  const running = {
+    pid: -1,
+    exe: { kind: 'chrome', path: '/dev/null' },
+    userDataDir: overrides.userDataDir ?? path.join(os.tmpdir(), 'bc-exit-test-nonexistent'),
+    cdpPort: 0,
+    startedAt: 0,
+    launchMs: 0,
+    proc,
+    ...(overrides.isolated === true ? { isolated: true } : {}),
+  } as unknown as RunningChrome;
+  return { running, kill, proc };
+}
+
+describe('process-exit cleanup', () => {
+  it('kills tracked live Chrome processes with SIGKILL', () => {
+    const { running, kill } = fakeRunningChrome();
+    trackLaunchedChrome(running);
+    killLaunchedChromesSync();
+    expect(kill).toHaveBeenCalledWith('SIGKILL');
+  });
+
+  it('does not kill untracked processes', () => {
+    const { running, kill } = fakeRunningChrome();
+    trackLaunchedChrome(running);
+    untrackLaunchedChrome(running);
+    killLaunchedChromesSync();
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('stops tracking a process that exits on its own', () => {
+    const { running, kill, proc } = fakeRunningChrome();
+    trackLaunchedChrome(running);
+    proc.emit('exit', 0, null);
+    killLaunchedChromesSync();
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('skips already-dead processes', () => {
+    const { running, kill, proc } = fakeRunningChrome();
+    (proc as unknown as { exitCode: number | null }).exitCode = 1;
+    trackLaunchedChrome(running);
+    killLaunchedChromesSync();
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('removes the isolated profile directory of a tracked instance', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bc-exit-cleanup-'));
+    fs.writeFileSync(path.join(dir, 'marker'), 'x');
+    const { running } = fakeRunningChrome({ isolated: true, userDataDir: dir });
+    trackLaunchedChrome(running);
+    killLaunchedChromesSync();
+    expect(fs.existsSync(dir)).toBe(false);
   });
 });

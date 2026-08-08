@@ -1,5 +1,6 @@
 import type { Page, BrowserContext, Browser } from 'playwright-core';
 
+import { BrowserTabNotFoundError, NavigationRaceError, StaleRefError } from './errors.js';
 import { STEALTH_SCRIPT } from './stealth.js';
 import type { PageState, ContextState, NetworkRequest, DialogHandler } from './types.js';
 
@@ -281,6 +282,10 @@ export async function observeBrowser(browser: Browser, opts?: ObserveOptions): P
 // ── Error Helpers ──
 
 export function toAIFriendlyError(error: unknown, selector: string): Error {
+  // Typed browserclaw errors already carry an actionable message and a type
+  // workflow code matches on with instanceof — pass them through untouched.
+  if (error instanceof StaleRefError || error instanceof BrowserTabNotFoundError || error instanceof NavigationRaceError)
+    return error;
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes('strict mode violation')) {
     const countMatch = /resolved to (\d+) elements/.exec(message);
