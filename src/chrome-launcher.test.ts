@@ -819,4 +819,13 @@ describe('process-exit cleanup', () => {
     killLaunchedChromesSync();
     expect(fs.existsSync(dir)).toBe(false);
   });
+
+  it('removes the isolated profile directory when Chrome exits on its own', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bc-exit-self-'));
+    fs.writeFileSync(path.join(dir, 'marker'), 'x');
+    const { running, proc } = fakeRunningChrome({ isolated: true, userDataDir: dir });
+    trackLaunchedChrome(running);
+    proc.emit('exit', 1, null);
+    expect(fs.existsSync(dir)).toBe(false);
+  });
 });

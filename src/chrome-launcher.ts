@@ -165,6 +165,17 @@ export function trackLaunchedChrome(running: RunningChrome): void {
   liveLaunchedChromes.add(running);
   running.proc.once('exit', () => {
     liveLaunchedChromes.delete(running);
+    // Chrome died on its own (crash, external kill) — the process-exit hook
+    // will no longer see this instance, so remove its isolated profile now.
+    // Redundant with stopChrome()'s cleanup on the normal path; rmSync with
+    // force is a no-op on an already-removed directory.
+    if (running.isolated === true) {
+      try {
+        fs.rmSync(running.userDataDir, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup of isolated profile directory */
+      }
+    }
   });
 }
 

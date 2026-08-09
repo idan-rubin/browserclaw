@@ -413,12 +413,17 @@ async function gotoPageWithNavigationGuard(opts: {
 }): Promise<Awaited<ReturnType<Page['goto']>>> {
   const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy);
   const state: { blocked: Error | null } = { blocked: null };
-  const safeContinue = async (route: Route): Promise<void> => {
+  // fallback() instead of continue(): continue() finalizes the request, which
+  // would silently bypass any route handlers the embedding application has
+  // registered on the same page/context (Playwright dispatches to the newest
+  // matching handler first). fallback() defers to the next handler, and
+  // Playwright continues the request when no other handler exists.
+  const safeFallback = async (route: Route): Promise<void> => {
     try {
-      await route.continue();
+      await route.fallback();
     } catch (e) {
       if (e instanceof Error && /already handled/i.test(e.message)) return;
-      console.warn('[browserclaw] route continue failed', e);
+      console.warn('[browserclaw] route fallback failed', e);
     }
   };
   const safeAbort = async (route: Route): Promise<void> => {
@@ -437,7 +442,7 @@ async function gotoPageWithNavigationGuard(opts: {
     const isTopLevel = isTopLevelNavigationRequest(opts.page, request);
     const isSubframeDocument = !isTopLevel && isSubframeDocumentNavigationRequest(opts.page, request);
     if (!isTopLevel && !isSubframeDocument) {
-      await safeContinue(route);
+      await safeFallback(route);
       return;
     }
     try {
@@ -456,7 +461,7 @@ async function gotoPageWithNavigationGuard(opts: {
       }
       throw err;
     }
-    await safeContinue(route);
+    await safeFallback(route);
   };
   await opts.page.route('**', handler);
   const removeRoute = async () => {
