@@ -5,6 +5,7 @@ import {
   storeRoleRefsForTarget,
   normalizeTimeoutMs,
   takeAiSnapshotText,
+  truncateUtf16Safe,
 } from '../connection.js';
 import { NavigationRaceError, SnapshotHydrationError } from '../errors.js';
 import type { SnapshotResult, SnapshotOptions, SsrfPolicy } from '../types.js';
@@ -74,7 +75,7 @@ export async function snapshotAi(opts: {
     if (limit !== undefined && snapshot.length > limit) {
       const lastNewline = snapshot.lastIndexOf('\n', limit);
       const cutoff = lastNewline > 0 ? lastNewline : limit;
-      snapshot = `${snapshot.slice(0, cutoff)}\n\n[...TRUNCATED - page too large]`;
+      snapshot = `${truncateUtf16Safe(snapshot, cutoff)}\n\n[...TRUNCATED - page too large]`;
       truncated = true;
     }
 

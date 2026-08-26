@@ -1,5 +1,11 @@
-import { getPageForTargetId, ensurePageState, normalizeTimeoutMs } from '../connection.js';
+import { getPageForTargetId, ensurePageState, normalizeTimeoutMs, truncateUtf16Safe } from '../connection.js';
 import type { RequestResult, ResponseBodyResult } from '../types.js';
+
+function resolveMaxChars(maxChars: number | undefined): number {
+  return typeof maxChars === 'number' && Number.isFinite(maxChars)
+    ? Math.max(1, Math.min(5_000_000, Math.floor(maxChars)))
+    : 200000;
+}
 
 function matchUrlPattern(pattern: string, url: string): boolean {
   if (!pattern || !url) return false;
@@ -30,22 +36,23 @@ export async function responseBodyViaPlaywright(opts: {
   if (!pattern) throw new Error('url is required');
 
   const response = await page.waitForResponse((resp) => matchUrlPattern(pattern, resp.url()), { timeout });
+  const maxChars = resolveMaxChars(opts.maxChars);
+  // Decode at most maxBytes so an oversized body cannot force an unbounded string.
+  const maxBytes = maxChars * 4;
   let body: string;
+  let bodyByteLength = 0;
   try {
-    body = await response.text();
+    const buf = await response.body();
+    bodyByteLength = buf.byteLength;
+    body = new TextDecoder('utf-8').decode(buf.subarray(0, maxBytes));
   } catch (err) {
     throw new Error(
       `Failed to read response body for "${pattern}": ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-  let truncated = false;
-
-  const maxChars =
-    typeof opts.maxChars === 'number' && Number.isFinite(opts.maxChars)
-      ? Math.max(1, Math.min(5_000_000, Math.floor(opts.maxChars)))
-      : 200000;
+  let truncated = bodyByteLength > maxBytes;
   if (body.length > maxChars) {
-    body = body.slice(0, maxChars);
+    body = truncateUtf16Safe(body, maxChars);
     truncated = true;
   }
 
@@ -91,13 +98,13 @@ export async function waitForRequestViaPlaywright(opts: {
   let truncated = false;
 
   try {
-    responseBody = await response.text();
-    const maxChars =
-      typeof opts.maxChars === 'number' && Number.isFinite(opts.maxChars)
-        ? Math.max(1, Math.min(5_000_000, Math.floor(opts.maxChars)))
-        : 200000;
+    const maxChars = resolveMaxChars(opts.maxChars);
+    const maxBytes = maxChars * 4;
+    const buf = await response.body();
+    responseBody = new TextDecoder('utf-8').decode(buf.subarray(0, maxBytes));
+    if (buf.byteLength > maxBytes) truncated = true;
     if (responseBody.length > maxChars) {
-      responseBody = responseBody.slice(0, maxChars);
+      responseBody = truncateUtf16Safe(responseBody, maxChars);
       truncated = true;
     }
   } catch (err) {

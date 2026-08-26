@@ -11,6 +11,7 @@ import {
   resolvePinnedHostnameWithPolicy,
   assertBrowserNavigationAllowed,
   assertCdpEndpointAllowed,
+  scopeCdpPolicyToConfiguredEndpoint,
   BrowserCdpEndpointBlockedError,
   assertSafeOutputPath,
   assertSafeUploadPaths,
@@ -50,6 +51,16 @@ function mockPublicLookup(): LookupFn {
 /** Mock DNS lookup that resolves a hostname to a loopback IP */
 function mockLoopbackLookup(): LookupFn {
   return (() => Promise.resolve([{ address: '127.0.0.1', family: 4 }])) as unknown as LookupFn;
+}
+
+/** Mock DNS lookup that resolves a hostname to a private (non-loopback) IP */
+function mockPrivateLookup(): LookupFn {
+  return (() => Promise.resolve([{ address: '10.0.0.5', family: 4 }])) as unknown as LookupFn;
+}
+
+/** Mock DNS lookup that resolves a hostname to a caller-chosen address */
+function mockLookupOf(address: string, family = 4): LookupFn {
+  return (() => Promise.resolve([{ address, family }])) as unknown as LookupFn;
 }
 
 /** Mock DNS lookup that throws (simulating failed resolution) */
@@ -565,6 +576,21 @@ describe('security.ts', () => {
       );
     });
 
+    it('rejects URL-embedded credentials and points at the credentials API', async () => {
+      await expect(assertBrowserNavigationAllowed({ url: 'https://user:pass@example.com/' })).rejects.toThrow(
+        'URL-embedded credentials are not supported',
+      );
+      await expect(assertBrowserNavigationAllowed({ url: 'https://user@example.com/' })).rejects.toThrow(
+        'URL-embedded credentials are not supported',
+      );
+    });
+
+    it('redacts credential-bearing text from invalid-URL errors', async () => {
+      await expect(assertBrowserNavigationAllowed({ url: 'http://user:pass@' })).rejects.toThrow(
+        '[redacted credential-bearing URL]',
+      );
+    });
+
     it('should reject file: protocol', async () => {
       await expect(assertBrowserNavigationAllowed({ url: 'file:///etc/passwd' })).rejects.toThrow(
         'unsupported protocol',
@@ -830,10 +856,52 @@ describe('security.ts', () => {
 
     it('should allow explicitly allowedHostnames even with private IPs', async () => {
       const result = await resolvePinnedHostnameWithPolicy('internal.myapp.com', {
-        lookupFn: mockLoopbackLookup(),
+        lookupFn: mockPrivateLookup(),
         policy: { ...STRICT_POLICY, allowedHostnames: ['internal.myapp.com'] },
       });
       expect(result.hostname).toBe('internal.myapp.com');
+    });
+
+    it('blocks an allow-listed hostname that resolves to a loopback address (DNS rebinding)', async () => {
+      await expect(
+        resolvePinnedHostnameWithPolicy('rebind-loopback.myapp.com', {
+          lookupFn: mockLoopbackLookup(),
+          policy: { ...STRICT_POLICY, allowedHostnames: ['rebind-loopback.myapp.com'] },
+        }),
+      ).rejects.toThrow('resolves to a loopback address');
+    });
+
+    it('blocks an allow-listed hostname that resolves to an IPv6-embedded loopback address', async () => {
+      await expect(
+        resolvePinnedHostnameWithPolicy('rebind-embedded.myapp.com', {
+          lookupFn: mockLookupOf('::ffff:127.0.0.1', 6),
+          policy: { ...STRICT_POLICY, allowedHostnames: ['rebind-embedded.myapp.com'] },
+        }),
+      ).rejects.toThrow('resolves to a loopback address');
+    });
+
+    it('blocks an allow-listed hostname that resolves to an unspecified address', async () => {
+      for (const [hostname, address] of [
+        ['rebind-unspec4.myapp.com', '0.0.0.0'],
+        ['rebind-unspec6.myapp.com', '::'],
+      ] as const) {
+        await expect(
+          resolvePinnedHostnameWithPolicy(hostname, {
+            lookupFn: mockLookupOf(address, address.includes(':') ? 6 : 4),
+            policy: { ...STRICT_POLICY, allowedHostnames: [hostname] },
+          }),
+        ).rejects.toThrow('resolves to an unspecified address');
+      }
+    });
+
+    it('allows an allow-listed explicit loopback hostname to resolve to loopback', async () => {
+      for (const hostname of ['localhost', '127.0.0.1', 'dev.localhost']) {
+        const result = await resolvePinnedHostnameWithPolicy(hostname, {
+          lookupFn: mockLoopbackLookup(),
+          policy: { ...STRICT_POLICY, allowedHostnames: [hostname] },
+        });
+        expect(result.hostname).toBe(hostname);
+      }
     });
 
     it('should normalize hostname (case, trailing dot) before checking', async () => {
@@ -1846,6 +1914,52 @@ describe('security.ts', () => {
     it('is a no-op when no policy is provided', async () => {
       await expect(assertCdpEndpointAllowed('http://localhost:9222')).resolves.toBeUndefined();
       await expect(assertCdpEndpointAllowed('http://169.254.169.254/')).resolves.toBeUndefined();
+    });
+
+    it('blocks a discovered endpoint whose authority differs from the configured endpoint', async () => {
+      await expect(
+        assertCdpEndpointAllowed('ws://192.168.1.100:9222/devtools/browser/abc', STRICT_POLICY, {
+          source: 'discovered',
+          configuredUrl: 'http://127.0.0.1:9222',
+        }),
+      ).rejects.toThrow('discovered CDP endpoint changed configured authority');
+    });
+
+    it('blocks a discovered endpoint that keeps the hostname but changes the port', async () => {
+      await expect(
+        assertCdpEndpointAllowed('ws://127.0.0.1:6379/devtools/browser/abc', STRICT_POLICY, {
+          source: 'discovered',
+          configuredUrl: 'http://127.0.0.1:9222',
+        }),
+      ).rejects.toThrow('discovered CDP endpoint changed configured authority');
+    });
+
+    it('allows a discovered endpoint with the same authority under a scoped policy', async () => {
+      const scoped = scopeCdpPolicyToConfiguredEndpoint('http://127.0.0.1:9222', STRICT_POLICY);
+      await expect(
+        assertCdpEndpointAllowed('ws://127.0.0.1:9222/devtools/browser/abc', scoped, {
+          source: 'discovered',
+          configuredUrl: 'http://127.0.0.1:9222',
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('does not enforce discovered-authority matching without a policy', async () => {
+      await expect(
+        assertCdpEndpointAllowed('ws://192.168.1.100:9222/devtools/browser/abc', undefined, {
+          source: 'discovered',
+          configuredUrl: 'http://127.0.0.1:9222',
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('does not enforce discovered-authority matching when private network is allowed', async () => {
+      await expect(
+        assertCdpEndpointAllowed('ws://192.168.1.100:9222/devtools/browser/abc', PERMISSIVE_POLICY, {
+          source: 'discovered',
+          configuredUrl: 'http://127.0.0.1:9222',
+        }),
+      ).resolves.toBeUndefined();
     });
 
     it('is a no-op when policy is undefined explicitly', async () => {

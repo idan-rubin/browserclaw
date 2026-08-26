@@ -844,7 +844,7 @@ export class CrawlPage {
    * @param opts - Timeout options
    * @returns The final URL after navigation (may differ due to redirects)
    */
-  async goto(url: string, opts?: { timeoutMs?: number }): Promise<{ url: string }> {
+  async goto(url: string, opts?: { timeoutMs?: number }): Promise<{ url: string; download?: DownloadResult }> {
     return navigateViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
@@ -1332,6 +1332,7 @@ export class CrawlPage {
       path,
       timeoutMs: opts?.timeoutMs,
       allowedOutputRoots: opts?.allowedOutputRoots,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1354,6 +1355,7 @@ export class CrawlPage {
       path: opts?.path,
       timeoutMs: opts?.timeoutMs,
       allowedOutputRoots: opts?.allowedOutputRoots,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 

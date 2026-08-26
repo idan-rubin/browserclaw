@@ -11,6 +11,7 @@ import {
   ensurePageState,
   ensureContextState,
   observeContext,
+  truncateUtf16Safe,
 } from './page-utils.js';
 import type { PageState, NetworkRequest } from './types.js';
 
@@ -70,6 +71,31 @@ describe('normalizeTimeoutMs', () => {
   it('accepts exact boundary values', () => {
     expect(normalizeTimeoutMs(500, 5000)).toBe(500);
     expect(normalizeTimeoutMs(120000, 5000)).toBe(120000);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// truncateUtf16Safe
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('truncateUtf16Safe', () => {
+  it('returns short strings unchanged', () => {
+    expect(truncateUtf16Safe('abc', 5)).toBe('abc');
+    expect(truncateUtf16Safe('abc', 3)).toBe('abc');
+  });
+
+  it('truncates to the limit', () => {
+    expect(truncateUtf16Safe('abcdef', 4)).toBe('abcd');
+  });
+
+  it('backs off one unit rather than splitting a surrogate pair', () => {
+    // 'aaa😀' is 5 UTF-16 units; cutting at 4 would leave a lone high surrogate.
+    expect(truncateUtf16Safe('aaa\u{1F600}', 4)).toBe('aaa');
+    expect(truncateUtf16Safe('aaa\u{1F600}', 5)).toBe('aaa\u{1F600}');
+  });
+
+  it('handles a zero limit', () => {
+    expect(truncateUtf16Safe('abc', 0)).toBe('');
   });
 });
 
@@ -154,6 +180,7 @@ describe('arm ID bumping', () => {
       nextArmIdUpload: 0,
       nextArmIdDialog: 0,
       nextArmIdDownload: 0,
+      downloadWaiterDepth: 0,
     };
   }
 
@@ -207,6 +234,7 @@ describe('findNetworkRequestById', () => {
       nextArmIdUpload: 0,
       nextArmIdDialog: 0,
       nextArmIdDownload: 0,
+      downloadWaiterDepth: 0,
     };
   }
 

@@ -7,7 +7,12 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-import { assertCdpEndpointAllowed } from './security.js';
+import {
+  assertCdpEndpointAllowed,
+  getHeadersWithAuth,
+  scopeCdpPolicyToConfiguredEndpoint,
+  stripUrlCredentials,
+} from './security.js';
 import type { ChromeExecutable, ChromeKind, LaunchOptions, RunningChrome, SsrfPolicy } from './types.js';
 
 // ── Singleton Lock Recovery ──
@@ -566,6 +571,7 @@ function safeWriteJson(filePath: string, data: Record<string, unknown>): void {
 }
 
 function setDeep(obj: Record<string, unknown>, keys: string[], value: unknown): void {
+  if (keys.length === 0) return;
   let node: Record<string, unknown> = obj;
   for (const key of keys.slice(0, -1)) {
     if (key === '__proto__' || key === 'constructor' || key === 'prototype') return;
@@ -579,6 +585,24 @@ function setDeep(obj: Record<string, unknown>, keys: string[], value: unknown): 
   node[lastKey] = value;
 }
 
+function readNestedRecord(value: unknown, key: string): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const next = (value as Record<string, unknown>)[key];
+  if (typeof next !== 'object' || next === null || Array.isArray(next)) return undefined;
+  return next as Record<string, unknown>;
+}
+
+function readDefaultProfileInfo(localState: Record<string, unknown> | null): Record<string, unknown> | undefined {
+  return readNestedRecord(readNestedRecord(localState?.profile, 'info_cache'), 'Default');
+}
+
+/** Mock-keychain marker must stay consistent across launches or Chrome cannot decrypt stored cookies. */
+function usesBrowserclawMockKeychain(userDataDir: string): boolean {
+  return (
+    readDefaultProfileInfo(safeReadJson(path.join(userDataDir, 'Local State')))?.browserclaw_mock_keychain === true
+  );
+}
+
 function parseHexRgbToSignedArgbInt(hex: string): number | null {
   const cleaned = hex.trim().replace(/^#/, '');
   if (!/^[0-9a-fA-F]{6}$/.test(cleaned)) return null;
@@ -586,12 +610,13 @@ function parseHexRgbToSignedArgbInt(hex: string): number | null {
   return argbUnsigned > 2147483647 ? argbUnsigned - 4294967296 : argbUnsigned;
 }
 
-function decorateProfile(userDataDir: string, name: string, color: string): void {
+function decorateProfile(userDataDir: string, name: string, color: string, opts?: { mockKeychain?: boolean }): void {
   const colorInt = parseHexRgbToSignedArgbInt(color);
   const localStatePath = path.join(userDataDir, 'Local State');
   const preferencesPath = path.join(userDataDir, 'Default', 'Preferences');
 
   const localState = safeReadJson(localStatePath) ?? {};
+  if (opts?.mockKeychain) setDeep(localState, ['profile', 'info_cache', 'Default', 'browserclaw_mock_keychain'], true);
   setDeep(localState, ['profile', 'info_cache', 'Default', 'name'], name);
   setDeep(localState, ['profile', 'info_cache', 'Default', 'shortcut_name'], name);
   setDeep(localState, ['profile', 'info_cache', 'Default', 'user_name'], name);
@@ -757,6 +782,7 @@ export function normalizeCdpWsUrl(wsUrl: string, cdpUrl: string): string {
     ws.protocol = cdp.protocol === 'https:' ? 'wss:' : 'ws:';
   } else if (isLoopbackHost(ws.hostname) && isLoopbackHost(cdp.hostname)) {
     ws.hostname = cdp.hostname;
+    if (!ws.port && cdp.port) ws.port = cdp.port;
   }
   if (cdp.protocol === 'https:' && ws.protocol === 'ws:') ws.protocol = 'wss:';
   if (!ws.username && !ws.password && (cdp.username || cdp.password)) {
@@ -830,11 +856,56 @@ async function canOpenWebSocket(url: string, timeoutMs: number): Promise<boolean
   });
 }
 
+/** Cap on CDP `/json/*` response sizes so a hostile endpoint cannot force an unbounded buffer. */
+export const CDP_JSON_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
+
+/** Read a fetch Response body as JSON, failing once it exceeds `maxBytes`. */
+export async function readJsonResponseBounded(
+  res: Response,
+  label: string,
+  maxBytes: number = CDP_JSON_RESPONSE_MAX_BYTES,
+): Promise<unknown> {
+  const reader = res.body?.getReader();
+  let bytes: Uint8Array;
+  if (reader === undefined) {
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.byteLength > maxBytes) throw new Error(`${label}: JSON response exceeds ${String(maxBytes)} bytes`);
+    bytes = buf;
+  } else {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {
+          /* noop */
+        });
+        throw new Error(`${label}: JSON response exceeds ${String(maxBytes)} bytes`);
+      }
+      chunks.push(value);
+    }
+    bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch (cause) {
+    throw new Error(`${label}: malformed JSON response`, { cause });
+  }
+}
+
 async function fetchChromeVersion(
   cdpUrl: string,
   timeoutMs = 500,
   authToken?: string,
   ssrfPolicy?: SsrfPolicy,
+  versionPath = '/json/version',
 ): Promise<Record<string, unknown> | null> {
   try {
     await assertCdpEndpointAllowed(cdpUrl, ssrfPolicy);
@@ -847,11 +918,13 @@ async function fetchChromeVersion(
   }, timeoutMs);
   try {
     const httpBase = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
-    const headers: Record<string, string> = {};
-    if (authToken !== undefined && authToken !== '') headers.Authorization = `Bearer ${authToken}`;
-    const res = await fetch(appendCdpPath(httpBase, '/json/version'), { signal: ctrl.signal, headers });
+    const versionUrl = appendCdpPath(httpBase, versionPath);
+    const headers: Record<string, string> = getHeadersWithAuth(versionUrl);
+    if (authToken !== undefined && authToken !== '' && !headers.Authorization)
+      headers.Authorization = `Bearer ${authToken}`;
+    const res = await fetch(stripUrlCredentials(versionUrl), { signal: ctrl.signal, headers });
     if (!res.ok) return null;
-    const data: unknown = await res.json();
+    const data: unknown = await readJsonResponseBounded(res, 'cdp-version');
     if (data === null || data === undefined || typeof data !== 'object') return null;
     return data as Record<string, unknown>;
   } catch {
@@ -859,6 +932,22 @@ async function fetchChromeVersion(
   } finally {
     clearTimeout(t);
   }
+}
+
+/** Retry `/json/version/` for credentialed endpoints whose proxy only serves the trailing-slash form. */
+async function fetchChromeVersionWithCredentialFallback(
+  cdpUrl: string,
+  timeoutMs = 500,
+  authToken?: string,
+  ssrfPolicy?: SsrfPolicy,
+): Promise<Record<string, unknown> | null> {
+  const primary = await fetchChromeVersion(cdpUrl, timeoutMs, authToken, ssrfPolicy);
+  const hasCredentials = stripUrlCredentials(cdpUrl) !== cdpUrl;
+  if (!hasCredentials) return primary;
+  const primaryWsUrl = typeof primary?.webSocketDebuggerUrl === 'string' ? primary.webSocketDebuggerUrl.trim() : '';
+  if (primaryWsUrl !== '') return primary;
+  const fallback = await fetchChromeVersion(cdpUrl, timeoutMs, authToken, ssrfPolicy, '/json/version/');
+  return fallback ?? primary;
 }
 
 export async function discoverChromeCdpUrl(timeoutMs = 500): Promise<string | null> {
@@ -883,8 +972,9 @@ export async function isChromeReachable(
     return false;
   }
   if (isDirectCdpWebSocketEndpoint(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs);
+  const cdpControlPolicy = scopeCdpPolicyToConfiguredEndpoint(cdpUrl, ssrfPolicy);
   const discoveryUrl = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
-  const version = await fetchChromeVersion(discoveryUrl, timeoutMs, authToken, ssrfPolicy);
+  const version = await fetchChromeVersion(discoveryUrl, timeoutMs, authToken, cdpControlPolicy);
   if (version !== null) return true;
   if (isWebSocketUrl(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs);
   return false;
@@ -898,8 +988,9 @@ export async function getChromeWebSocketUrl(
 ): Promise<string | null> {
   await assertCdpEndpointAllowed(cdpUrl, ssrfPolicy);
   if (isDirectCdpWebSocketEndpoint(cdpUrl)) return cdpUrl;
+  const cdpControlPolicy = scopeCdpPolicyToConfiguredEndpoint(cdpUrl, ssrfPolicy);
   const discoveryUrl = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
-  const version = await fetchChromeVersion(discoveryUrl, timeoutMs, authToken, ssrfPolicy);
+  const version = await fetchChromeVersionWithCredentialFallback(discoveryUrl, timeoutMs, authToken, cdpControlPolicy);
   const rawWsUrl = version?.webSocketDebuggerUrl;
   const wsUrl = typeof rawWsUrl === 'string' ? rawWsUrl.trim() : '';
   if (wsUrl === '') {
@@ -907,7 +998,7 @@ export async function getChromeWebSocketUrl(
     return null;
   }
   const normalized = normalizeCdpWsUrl(wsUrl, discoveryUrl);
-  await assertCdpEndpointAllowed(normalized, ssrfPolicy);
+  await assertCdpEndpointAllowed(normalized, cdpControlPolicy, { source: 'discovered', configuredUrl: cdpUrl });
   return normalized;
 }
 
@@ -1001,6 +1092,7 @@ export interface BuildChromeLaunchArgsOptions {
   ciDefaults: boolean;
   chromeArgs?: string[];
   platform: NodeJS.Platform;
+  useMockKeychain?: boolean;
 }
 
 export function buildChromeLaunchArgs(opts: BuildChromeLaunchArgsOptions): string[] {
@@ -1032,6 +1124,7 @@ export function buildChromeLaunchArgs(opts: BuildChromeLaunchArgsOptions): strin
   if (opts.ignoreHTTPSErrors) {
     args.push('--ignore-certificate-errors');
   }
+  if (opts.platform === 'darwin' && opts.useMockKeychain === true) args.push('--use-mock-keychain');
   if (opts.platform === 'linux') args.push('--disable-dev-shm-usage');
   const extraArgs = Array.isArray(opts.chromeArgs)
     ? opts.chromeArgs.filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
@@ -1061,6 +1154,13 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   const userDataDir = isolatedResolved?.userDataDir ?? opts.userDataDir ?? resolveUserDataDir(profileName);
   fs.mkdirSync(userDataDir, { recursive: true });
 
+  const localStatePath = path.join(userDataDir, 'Local State');
+  const preferencesPath = path.join(userDataDir, 'Default', 'Preferences');
+  const profileIsNew = !fileExists(localStatePath);
+  const useMockKeychain =
+    process.platform === 'darwin' &&
+    (usesBrowserclawMockKeychain(userDataDir) || (profileIsNew && opts.headless === true));
+
   const spawnChrome = (spawnOpts?: { detached?: boolean }, runOpts?: { forceHeadless?: boolean }) => {
     const args = buildChromeLaunchArgs({
       cdpPort,
@@ -1071,6 +1171,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
       ciDefaults: opts.ciDefaults === true,
       chromeArgs: opts.chromeArgs,
       platform: process.platform,
+      useMockKeychain,
     });
     return spawn(exe.path, args, {
       stdio: ['ignore', 'ignore', 'pipe'],
@@ -1080,8 +1181,6 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   };
 
   const startedAt = Date.now();
-  const localStatePath = path.join(userDataDir, 'Local State');
-  const preferencesPath = path.join(userDataDir, 'Default', 'Preferences');
 
   if (!fileExists(localStatePath) || !fileExists(preferencesPath)) {
     const useDetached = process.platform !== 'win32';
@@ -1103,7 +1202,9 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   }
 
   try {
-    decorateProfile(userDataDir, profileName, opts.profileColor ?? DEFAULT_PROFILE_COLOR);
+    decorateProfile(userDataDir, profileName, opts.profileColor ?? DEFAULT_PROFILE_COLOR, {
+      mockKeychain: useMockKeychain,
+    });
   } catch {}
 
   try {
@@ -1176,6 +1277,69 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   };
 }
 
+const CHROME_GRACEFUL_CLOSE_COMMAND_TIMEOUT_MS = 500;
+
+/** CDP `Browser.close` flushes profile data (cookies) before any signal reaches the process group. */
+async function requestGracefulChromeClose(cdpPort: number, timeoutMs: number): Promise<boolean> {
+  const commandTimeoutMs = Math.max(1, Math.min(timeoutMs, CHROME_GRACEFUL_CLOSE_COMMAND_TIMEOUT_MS));
+  let commandSent = false;
+  try {
+    const wsUrl = await getChromeWebSocketUrl(`http://127.0.0.1:${String(cdpPort)}`, Math.min(commandTimeoutMs, 200));
+    if (wsUrl === null) return false;
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let ws: WebSocket | undefined;
+      const finish = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try {
+          ws?.close();
+        } catch {
+          /* noop */
+        }
+        if (err) reject(err);
+        else resolve();
+      };
+      const timer = setTimeout(() => {
+        finish(new Error('Chrome graceful close timed out'));
+      }, commandTimeoutMs);
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (err) {
+        finish(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+      ws.onopen = () => {
+        try {
+          ws?.send(JSON.stringify({ id: 1, method: 'Browser.close' }));
+          commandSent = true;
+          finish();
+        } catch (err) {
+          finish(err instanceof Error ? err : new Error(String(err)));
+        }
+      };
+      ws.onerror = () => {
+        finish(new Error('Chrome graceful close socket error'));
+      };
+    });
+    return true;
+  } catch {
+    return commandSent;
+  }
+}
+
+async function waitForChromeCdpShutdown(cdpPort: number, timeoutMs: number): Promise<boolean> {
+  const cdpUrl = `http://127.0.0.1:${String(cdpPort)}`;
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (!(await isChromeReachable(cdpUrl, 200))) return true;
+    const remainingMs = timeoutMs - (Date.now() - start);
+    await new Promise((r) => setTimeout(r, Math.max(1, Math.min(100, remainingMs))));
+  }
+  return !(await isChromeReachable(cdpUrl, 200));
+}
+
 export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Promise<void> {
   const proc = running.proc;
   const cleanupIsolated = () => {
@@ -1189,6 +1353,19 @@ export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Prom
   if (proc.exitCode !== null) {
     cleanupIsolated();
     return;
+  }
+  if (
+    (await requestGracefulChromeClose(running.cdpPort, timeoutMs)) &&
+    (await waitForChromeCdpShutdown(running.cdpPort, timeoutMs))
+  ) {
+    const exitDeadline = Date.now() + 1000;
+    while (Date.now() < exitDeadline && proc.exitCode === null) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    if (proc.exitCode !== null) {
+      cleanupIsolated();
+      return;
+    }
   }
   killProcessTree(proc, 'SIGTERM');
   const start = Date.now();

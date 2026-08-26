@@ -644,6 +644,7 @@ export interface PageState {
   nextArmIdUpload: number;
   nextArmIdDialog: number;
   nextArmIdDownload: number;
+  downloadWaiterDepth: number;
   dialogHandler?: DialogHandler;
 }
 

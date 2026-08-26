@@ -62,13 +62,108 @@ export class BrowserCdpEndpointBlockedError extends Error {
 }
 
 /**
+ * Build request headers with Basic auth derived from URL userinfo, unless an
+ * Authorization header is already present. Percent-encoded credentials are
+ * decoded before base64-encoding (RFC 7617).
+ */
+export function getHeadersWithAuth(endpoint: string, baseHeaders: Record<string, string> = {}): Record<string, string> {
+  const headers = { ...baseHeaders };
+  try {
+    const parsed = new URL(endpoint);
+    if (Object.keys(headers).some((k) => k.toLowerCase() === 'authorization')) return headers;
+    if (parsed.username || parsed.password) {
+      const decode = (value: string): string => {
+        try {
+          return decodeURIComponent(value);
+        } catch {
+          return value;
+        }
+      };
+      const credentials = Buffer.from(`${decode(parsed.username)}:${decode(parsed.password)}`).toString('base64');
+      headers.Authorization = `Basic ${credentials}`;
+    }
+  } catch {
+    // endpoint is not a valid URL (e.g. a raw WebSocket path) — skip auth header injection
+  }
+  return headers;
+}
+
+/**
+ * Strip URL userinfo (user:pass@) so the URL can be safely logged or passed to
+ * fetch without leaking credentials. Pair with `getHeadersWithAuth` to move
+ * credentials into an Authorization header before issuing the request.
+ */
+export function stripUrlCredentials(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.username && !parsed.password) return url;
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+/** Pin a policy to the configured CDP hostname so `/json/*` discovery cannot use a broader allowlist. */
+export function scopeCdpPolicyToConfiguredEndpoint(cdpUrl: string, ssrfPolicy?: SsrfPolicy): SsrfPolicy | undefined {
+  if (!ssrfPolicy) return undefined;
+  let hostname: string;
+  try {
+    hostname = new URL(cdpUrl).hostname;
+  } catch {
+    return ssrfPolicy;
+  }
+  return { ...ssrfPolicy, allowedHostnames: [hostname], hostnameAllowlist: [hostname] };
+}
+
+function cdpEndpointAuthority(url: string): string {
+  const parsed = new URL(url);
+  const usesTls = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
+  const port = parsed.port || (usesTls ? '443' : '80');
+  return `${usesTls ? 'tls' : 'plain'}://${parsed.hostname}:${port}`;
+}
+
+function assertDiscoveredCdpEndpointMatchesConfigured(
+  discoveredUrl: string,
+  configuredUrl: string,
+  ssrfPolicy?: SsrfPolicy,
+): void {
+  if (!ssrfPolicy || isPrivateNetworkAllowedByPolicy(ssrfPolicy)) return;
+  let matches: boolean;
+  try {
+    matches = cdpEndpointAuthority(discoveredUrl) === cdpEndpointAuthority(configuredUrl);
+  } catch {
+    matches = false;
+  }
+  if (matches) return;
+  throw new BrowserCdpEndpointBlockedError(
+    'CDP endpoint blocked: discovered CDP endpoint changed configured authority',
+  );
+}
+
+/** A `discovered` URL (from `/json/*`) must not change the configured endpoint's authority. */
+export interface CdpEndpointSourceOptions {
+  source?: 'configured' | 'discovered';
+  configuredUrl?: string;
+}
+
+/**
  * Validate a CDP endpoint URL against an SSRF policy. No-op without a policy.
  * Loopback hostnames (`localhost`, `127.0.0.1`, `[::1]`) are allowed by default
  * when no explicit `allowedHostnames` or `hostnameAllowlist` is provided.
  * To reach a non-loopback private/internal endpoint, add its hostname to
  * `ssrfPolicy.allowedHostnames` or set `dangerouslyAllowPrivateNetwork: true`.
+ * Discovered endpoints (from `/json/*` responses) get no loopback auto-allow
+ * and must keep the configured endpoint's authority.
  */
-export async function assertCdpEndpointAllowed(cdpUrl: string, ssrfPolicy?: SsrfPolicy): Promise<void> {
+export async function assertCdpEndpointAllowed(
+  cdpUrl: string,
+  ssrfPolicy?: SsrfPolicy,
+  options?: CdpEndpointSourceOptions,
+): Promise<void> {
+  if (options?.source === 'discovered' && options.configuredUrl !== undefined)
+    assertDiscoveredCdpEndpointMatchesConfigured(cdpUrl, options.configuredUrl, ssrfPolicy);
   if (!ssrfPolicy) return;
   let parsed: URL;
   try {
@@ -88,7 +183,7 @@ export async function assertCdpEndpointAllowed(cdpUrl: string, ssrfPolicy?: Ssrf
     (Array.isArray(ssrfPolicy.allowedHostnames) && ssrfPolicy.allowedHostnames.length > 0) ||
     (Array.isArray(ssrfPolicy.hostnameAllowlist) && ssrfPolicy.hostnameAllowlist.length > 0);
   const effectivePolicy =
-    isLoopback && !hasExplicitAllowlist
+    isLoopback && !hasExplicitAllowlist && options?.source !== 'discovered'
       ? {
           ...ssrfPolicy,
           allowedHostnames: Array.from(new Set([...(ssrfPolicy.allowedHostnames ?? []), parsed.hostname])),
@@ -382,6 +477,32 @@ function isCloudMetadataOrLinkLocalAddress(address: string): boolean {
   return CLOUD_METADATA_IPV6.some((m) => v6.toNormalizedString() === ipaddr.IPv6.parse(m).toNormalizedString());
 }
 
+function isLoopbackIpAddressIncludingEmbeddedIpv4(address: string): boolean {
+  const parsed = parseCanonicalIpAddress(address);
+  if (!parsed) return false;
+  if (parsed.range() === 'loopback') return true;
+  if (parsed.kind() === 'ipv4') return false;
+  return extractEmbeddedIpv4FromIpv6(parsed as ipaddr.IPv6)?.range() === 'loopback';
+}
+
+function isExplicitLoopbackHostname(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname === 'localhost.localdomain' ||
+    hostname.endsWith('.localhost') ||
+    isLoopbackIpAddressIncludingEmbeddedIpv4(hostname)
+  );
+}
+
+function isUnspecifiedIpAddressIncludingEmbeddedIpv4(address: string): boolean {
+  const parsed = parseCanonicalIpAddress(address);
+  if (!parsed) return false;
+  if (parsed.kind() === 'ipv4') return parsed.range() === 'unspecified';
+  if (parsed.range() === 'unspecified') return true;
+  if (parsed.range() === 'loopback') return false;
+  return extractEmbeddedIpv4FromIpv6(parsed as ipaddr.IPv6)?.range() === 'unspecified';
+}
+
 // ── URL-level checks ──
 
 /**
@@ -620,8 +741,19 @@ export async function resolvePinnedHostnameWithPolicy(
       }
     }
   } else if (isExplicitlyAllowed && !allowPrivateNetwork) {
-    // An allow-listed host may resolve to a private IP on purpose, but never to a metadata/link-local one.
+    // Private IPs may be allow-listed on purpose; unspecified/metadata/link-local/loopback never are (DNS rebinding).
+    const loopbackAllowed = isExplicitLoopbackHostname(normalized);
     for (const r of results) {
+      if (isUnspecifiedIpAddressIncludingEmbeddedIpv4(r.address)) {
+        throw new InvalidBrowserNavigationUrlError(
+          `Navigation blocked: allow-listed hostname "${hostname}" resolves to an unspecified address "${r.address}".`,
+        );
+      }
+      if (!loopbackAllowed && isLoopbackIpAddressIncludingEmbeddedIpv4(r.address)) {
+        throw new InvalidBrowserNavigationUrlError(
+          `Navigation blocked: allow-listed hostname "${hostname}" resolves to a loopback address "${r.address}".`,
+        );
+      }
       if (isCloudMetadataOrLinkLocalAddress(r.address)) {
         throw new InvalidBrowserNavigationUrlError(
           `Navigation blocked: allow-listed hostname "${hostname}" resolves to a cloud-metadata/link-local address "${r.address}".`,
@@ -663,7 +795,16 @@ export async function assertBrowserNavigationAllowed(
   try {
     parsed = new URL(rawUrl);
   } catch {
-    throw new InvalidBrowserNavigationUrlError(`Invalid URL: "${rawUrl}"`);
+    throw new InvalidBrowserNavigationUrlError(
+      `Invalid URL: "${rawUrl.includes('@') ? '[redacted credential-bearing URL]' : rawUrl}"`,
+    );
+  }
+
+  if (parsed.username || parsed.password) {
+    throw new InvalidBrowserNavigationUrlError(
+      'Navigation blocked: URL-embedded credentials are not supported for page navigation. ' +
+        'Set HTTP Basic auth with `page.setHttpCredentials()` instead.',
+    );
   }
 
   // Block non-network protocols (file:, data:, javascript:, etc.) — only http/https allowed.

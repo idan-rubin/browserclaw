@@ -65,3 +65,98 @@ describe('downloadViaPlaywright — waiter rejection safety', () => {
     expect(unhandled).toEqual([]);
   });
 });
+
+const { waitForDownloadViaPlaywright, isDownloadStartingNavigationError } = await import('./download.js');
+
+describe('isDownloadStartingNavigationError', () => {
+  it('matches the Playwright download-start message', () => {
+    expect(isDownloadStartingNavigationError(new Error('page.goto: Download is starting'))).toBe(true);
+  });
+
+  it('matches net::ERR_ABORTED only when the message includes the expected URL', () => {
+    const err = new Error('page.goto: net::ERR_ABORTED at https://example.com/file.zip');
+    expect(isDownloadStartingNavigationError(err, 'https://example.com/file.zip')).toBe(true);
+    expect(isDownloadStartingNavigationError(err, 'https://other.com/file.zip')).toBe(false);
+    expect(isDownloadStartingNavigationError(err)).toBe(false);
+  });
+
+  it('rejects unrelated errors', () => {
+    expect(isDownloadStartingNavigationError(new Error('boom'), 'https://example.com')).toBe(false);
+  });
+});
+
+describe('download URL validation before saving bytes', () => {
+  function pageWithDownloadEmitter(): { page: Page; emit: (download: unknown) => void } {
+    let downloadHandler: ((download: unknown) => void) | undefined;
+    const page = {
+      on: (event: string, handler: (download: unknown) => void) => {
+        if (event === 'download') downloadHandler = handler;
+      },
+      off: () => undefined,
+    } as unknown as Page;
+    return {
+      page,
+      emit: (download: unknown) => {
+        downloadHandler?.(download);
+      },
+    };
+  }
+
+  it('rejects a policy-blocked download URL without calling saveAs', async () => {
+    const { page, emit } = pageWithDownloadEmitter();
+    mockGetPageForTargetId.mockResolvedValue(page);
+    mockEnsurePageState.mockReturnValue({ armIdDownload: 0, downloadWaiterDepth: 0 });
+    mockBumpDownloadArmId.mockReturnValue(1);
+    mockNormalizeTimeoutMs.mockReturnValue(1000);
+    const saveAs = vi.fn(() => Promise.resolve());
+    const fakeDownload = {
+      url: () => 'data:text/plain,exfiltrated',
+      suggestedFilename: () => 'file.bin',
+      saveAs,
+    };
+
+    const pending = waitForDownloadViaPlaywright({
+      cdpUrl: 'http://localhost:9222',
+      path: '/tmp/browserclaw-download-validate.bin',
+      ssrfPolicy: {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    emit(fakeDownload);
+    await expect(pending).rejects.toThrow('Navigation result blocked');
+    expect(saveAs).not.toHaveBeenCalled();
+  });
+
+  it('saves the same download when no policy is provided (control)', async () => {
+    const { mkdtempSync, writeFileSync, existsSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'bc-dl-test-'));
+    const outPath = join(dir, 'file.bin');
+
+    const { page, emit } = pageWithDownloadEmitter();
+    mockGetPageForTargetId.mockResolvedValue(page);
+    mockEnsurePageState.mockReturnValue({ armIdDownload: 0, downloadWaiterDepth: 0 });
+    mockBumpDownloadArmId.mockReturnValue(1);
+    mockNormalizeTimeoutMs.mockReturnValue(1000);
+    const saveAs = vi.fn((tempPath: string) => {
+      writeFileSync(tempPath, 'payload');
+      return Promise.resolve();
+    });
+    const fakeDownload = {
+      url: () => 'data:text/plain,exfiltrated',
+      suggestedFilename: () => 'file.bin',
+      saveAs,
+    };
+
+    const pending = waitForDownloadViaPlaywright({
+      cdpUrl: 'http://localhost:9222',
+      path: outPath,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    emit(fakeDownload);
+    const result = await pending;
+    expect(saveAs).toHaveBeenCalledTimes(1);
+    expect(result.path).toBe(outPath);
+    expect(existsSync(outPath)).toBe(true);
+  });
+});
