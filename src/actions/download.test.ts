@@ -160,3 +160,59 @@ describe('download URL validation before saving bytes', () => {
     expect(existsSync(outPath)).toBe(true);
   });
 });
+
+const { armNavigationDownloadCapture } = await import('./download.js');
+
+describe('armNavigationDownloadCapture — secure-by-default URL validation', () => {
+  function pageWithDownloadEmitter(): { page: Page; emit: (download: unknown) => void } {
+    let downloadHandler: ((download: unknown) => void) | undefined;
+    const page = {
+      on: (event: string, handler: (download: unknown) => void) => {
+        if (event === 'download') downloadHandler = handler;
+      },
+      off: () => undefined,
+    } as unknown as Page;
+    return { page, emit: (d: unknown) => downloadHandler?.(d) };
+  }
+
+  function makeState() {
+    return {
+      armIdDownload: 0,
+      downloadWaiterDepth: 0,
+    } as unknown as import('../types.js').PageState;
+  }
+
+  it('blocks a data: download URL even when no ssrfPolicy is set', async () => {
+    const { page, emit } = pageWithDownloadEmitter();
+    const capture = armNavigationDownloadCapture(page, makeState(), 1000, 'https://example.com/page');
+    expect(capture.armed).toBe(true);
+    emit({ url: () => 'data:text/plain,exfil', suggestedFilename: () => 'x.bin', saveAs: vi.fn() });
+    await expect(capture.promise).rejects.toThrow(/data:|not allowed/i);
+  });
+
+  it('blocks a private-host download URL with no policy (secure-by-default)', async () => {
+    const { page, emit } = pageWithDownloadEmitter();
+    const saveAs = vi.fn(() => Promise.resolve());
+    const capture = armNavigationDownloadCapture(page, makeState(), 1000, 'https://example.com/page');
+    emit({ url: () => 'http://169.254.169.254/latest/meta-data', suggestedFilename: () => 'x.bin', saveAs });
+    await expect(capture.promise).rejects.toThrow();
+    expect(saveAs).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the navigation URL when the download URL is empty', async () => {
+    const { page, emit } = pageWithDownloadEmitter();
+    const saveAs = vi.fn(() => Promise.resolve());
+    const capture = armNavigationDownloadCapture(page, makeState(), 1000, 'http://169.254.169.254/');
+    emit({ url: () => '', suggestedFilename: () => 'x.bin', saveAs });
+    await expect(capture.promise).rejects.toThrow();
+    expect(saveAs).not.toHaveBeenCalled();
+  });
+
+  it('is not armed when an explicit download waiter is already active', () => {
+    const { page } = pageWithDownloadEmitter();
+    const state = makeState();
+    (state as { downloadWaiterDepth: number }).downloadWaiterDepth = 1;
+    const capture = armNavigationDownloadCapture(page, state, 1000, 'https://example.com/');
+    expect(capture.armed).toBe(false);
+  });
+});

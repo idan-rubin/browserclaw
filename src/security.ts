@@ -464,17 +464,23 @@ function isPrivateIpAddress(address: string, policy?: SsrfPolicy): boolean {
 const CLOUD_METADATA_IPV4 = ['169.254.169.254', '100.100.100.200'];
 const CLOUD_METADATA_IPV6 = ['fd00:ec2::254'];
 
+function isCloudMetadataOrLinkLocalIpv4(v4: ipaddr.IPv4): boolean {
+  if (v4.range() === 'linkLocal') return true;
+  return CLOUD_METADATA_IPV4.some((m) => v4.toNormalizedString() === ipaddr.IPv4.parse(m).toNormalizedString());
+}
+
 function isCloudMetadataOrLinkLocalAddress(address: string): boolean {
   const parsed = parseCanonicalIpAddress(address);
   if (!parsed) return false;
-  if (parsed.kind() === 'ipv4') {
-    const v4 = parsed as ipaddr.IPv4;
-    if (v4.range() === 'linkLocal') return true;
-    return CLOUD_METADATA_IPV4.some((m) => v4.toNormalizedString() === ipaddr.IPv4.parse(m).toNormalizedString());
-  }
+  if (parsed.kind() === 'ipv4') return isCloudMetadataOrLinkLocalIpv4(parsed as ipaddr.IPv4);
   const v6 = parsed as ipaddr.IPv6;
   if (v6.range() === 'linkLocal') return true;
-  return CLOUD_METADATA_IPV6.some((m) => v6.toNormalizedString() === ipaddr.IPv6.parse(m).toNormalizedString());
+  if (CLOUD_METADATA_IPV6.some((m) => v6.toNormalizedString() === ipaddr.IPv6.parse(m).toNormalizedString()))
+    return true;
+  // An IPv4-mapped/6to4/Teredo v6 whose embedded IPv4 is metadata/link-local reaches
+  // the same target once Node dials it — mirror the loopback/unspecified embedded checks.
+  const embedded = extractEmbeddedIpv4FromIpv6(v6);
+  return embedded ? isCloudMetadataOrLinkLocalIpv4(embedded) : false;
 }
 
 function isLoopbackIpAddressIncludingEmbeddedIpv4(address: string): boolean {

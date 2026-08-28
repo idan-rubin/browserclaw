@@ -77,6 +77,20 @@ async function assertDownloadUrlAllowed(download: Download, ssrfPolicy?: SsrfPol
   await assertBrowserNavigationResultAllowed({ url: download.url(), ...withBrowserNavigationPolicy(ssrfPolicy) });
 }
 
+// Unconditional (secure-by-default) — assertBrowserNavigationResultAllowed blocks
+// data:/blob: and, with no policy, private/loopback hosts, matching what the
+// navigation that triggered the download was already validated against.
+async function assertNavigationDownloadUrlAllowed(
+  download: Download,
+  navigationUrl: string,
+  ssrfPolicy?: SsrfPolicy,
+): Promise<void> {
+  await assertBrowserNavigationResultAllowed({
+    url: download.url() || navigationUrl,
+    ...withBrowserNavigationPolicy(ssrfPolicy),
+  });
+}
+
 async function saveDownloadPayload(download: Download, outPath: string): Promise<DownloadResult> {
   await writeViaSiblingTempPath({
     rootDir: dirname(outPath),
@@ -111,6 +125,7 @@ export function armNavigationDownloadCapture(
   page: Page,
   state: PageState,
   timeoutMs: number,
+  navigationUrl: string,
   ssrfPolicy?: SsrfPolicy,
 ): NavigationDownloadCapture {
   if (state.downloadWaiterDepth > 0) {
@@ -126,7 +141,7 @@ export function armNavigationDownloadCapture(
   }
   const waiter = createPageDownloadWaiter(page, state, timeoutMs, 'Timeout waiting for navigation download');
   const promise = waiter.promise.then(async (download) => {
-    await assertDownloadUrlAllowed(download, ssrfPolicy);
+    await assertNavigationDownloadUrlAllowed(download, navigationUrl, ssrfPolicy);
     await mkdir(DEFAULT_DOWNLOAD_DIR, { recursive: true });
     return await saveDownloadPayload(
       download,

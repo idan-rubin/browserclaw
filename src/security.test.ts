@@ -894,6 +894,32 @@ describe('security.ts', () => {
       }
     });
 
+    it('blocks an allow-listed hostname resolving to an embedded-IPv4 metadata/link-local address', async () => {
+      // IPv4-mapped, CGNAT-metadata-mapped, and 6to4-embedded forms all reach the
+      // metadata/link-local target once Node dials the v6 address.
+      const cases: [string, string][] = [
+        ['rebind-meta-mapped.myapp.com', '::ffff:169.254.169.254'],
+        ['rebind-cgnat-mapped.myapp.com', '::ffff:100.100.100.200'],
+        ['rebind-meta-6to4.myapp.com', '2002:a9fe:a9fe::1'],
+      ];
+      for (const [hostname, address] of cases) {
+        await expect(
+          resolvePinnedHostnameWithPolicy(hostname, {
+            lookupFn: mockLookupOf(address, 6),
+            policy: { ...STRICT_POLICY, allowedHostnames: [hostname] },
+          }),
+        ).rejects.toThrow('cloud-metadata/link-local');
+      }
+    });
+
+    it('still allows an allow-listed hostname resolving to an ordinary private IP (control)', async () => {
+      const result = await resolvePinnedHostnameWithPolicy('rebind-ok.myapp.com', {
+        lookupFn: mockLookupOf('10.1.2.3', 4),
+        policy: { ...STRICT_POLICY, allowedHostnames: ['rebind-ok.myapp.com'] },
+      });
+      expect(result.hostname).toBe('rebind-ok.myapp.com');
+    });
+
     it('allows an allow-listed explicit loopback hostname to resolve to loopback', async () => {
       for (const hostname of ['localhost', '127.0.0.1', 'dev.localhost']) {
         const result = await resolvePinnedHostnameWithPolicy(hostname, {

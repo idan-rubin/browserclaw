@@ -512,7 +512,7 @@ export async function navigateViaPlaywright(opts: {
     response: Awaited<ReturnType<typeof navigate>>;
     download?: DownloadResult;
   }> => {
-    const capture = armNavigationDownloadCapture(page, pageState, timeout, policy);
+    const capture = armNavigationDownloadCapture(page, pageState, timeout, url, policy);
     try {
       const response = await navigate();
       capture.cancel();
