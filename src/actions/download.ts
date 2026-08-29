@@ -234,8 +234,15 @@ export async function waitForDownloadViaPlaywright(opts: {
   try {
     const download = await waiter.promise;
     if (state.armIdDownload !== armId) throw new Error('Download was superseded by another waiter');
-    const savePath =
-      opts.path ?? sanitizeUntrustedFileName(download.suggestedFilename() || 'download.bin', 'download.bin');
+    // With no explicit path, save into the managed downloads dir under a UUID —
+    // never the process CWD with a page-controlled filename (overwrite risk).
+    let savePath: string;
+    if (opts.path === undefined) {
+      await mkdir(DEFAULT_DOWNLOAD_DIR, { recursive: true });
+      savePath = buildManagedDownloadPath(download.suggestedFilename() || 'download.bin');
+    } else {
+      savePath = opts.path;
+    }
     await assertSafeOutputPath(savePath, opts.allowedOutputRoots);
     await assertDownloadUrlAllowed(download, opts.ssrfPolicy);
     return await saveDownloadPayload(download, savePath);

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { lookup as dnsLookupCb } from 'node:dns';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { lstat, realpath, rename, rm } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import { tmpdir } from 'node:os';
 import {
   resolve,
@@ -202,9 +203,17 @@ export async function assertCdpEndpointAllowed(
   }
 }
 
+/**
+ * How the target browser reaches the network.
+ * `explicit-browser-proxy`: Chrome was launched with a proxy-routing arg, so the
+ * proxy resolves DNS and egresses — local SSRF address validation is meaningless.
+ */
+export type BrowserProxyMode = 'direct' | 'explicit-browser-proxy';
+
 /** Options for browser navigation SSRF policy. */
 export interface BrowserNavigationPolicyOptions {
   ssrfPolicy?: SsrfPolicy;
+  browserProxyMode?: BrowserProxyMode;
 }
 
 /** Playwright-compatible request interface for redirect chain inspection. */
@@ -213,9 +222,17 @@ export interface BrowserNavigationRequestLike {
   redirectedFrom(): BrowserNavigationRequestLike | null;
 }
 
-/** Build a BrowserNavigationPolicyOptions from an SsrfPolicy. */
-export function withBrowserNavigationPolicy(ssrfPolicy?: SsrfPolicy): BrowserNavigationPolicyOptions {
-  return ssrfPolicy ? { ssrfPolicy } : {};
+/** Build a BrowserNavigationPolicyOptions from an SsrfPolicy (and optional proxy mode). */
+export function withBrowserNavigationPolicy(
+  ssrfPolicy?: SsrfPolicy,
+  opts?: { browserProxyMode?: BrowserProxyMode },
+): BrowserNavigationPolicyOptions {
+  return {
+    ...(ssrfPolicy ? { ssrfPolicy } : {}),
+    ...(opts?.browserProxyMode && opts.browserProxyMode !== 'direct'
+      ? { browserProxyMode: opts.browserProxyMode }
+      : {}),
+  };
 }
 
 // Only http: and https: are permitted for navigation; about:blank is the sole non-network exception.
@@ -560,6 +577,18 @@ function matchesHostnameAllowlist(hostname: string, allowlist: string[]): boolea
   return allowlist.some((pattern) => isHostnameAllowedByPattern(hostname, pattern));
 }
 
+function isIpLiteralHostname(hostname: string): boolean {
+  return isIP(normalizeHostname(hostname)) !== 0;
+}
+
+/** True when the hostname is exactly allow-listed or matches a hostnameAllowlist pattern. */
+function isExplicitlyAllowedBrowserHostname(hostname: string, policy?: SsrfPolicy): boolean {
+  const normalized = normalizeHostname(hostname);
+  if (normalizeHostnameSet(policy?.allowedHostnames).has(normalized)) return true;
+  const allowlist = normalizeHostnameAllowlist(policy?.hostnameAllowlist);
+  return allowlist.length > 0 ? matchesHostnameAllowlist(normalized, allowlist) : false;
+}
+
 // ── DNS pinning (prevents TOCTOU rebinding) ──
 
 function dedupeAndPreferIpv4(results: { address: string; family: number }[]): string[] {
@@ -823,6 +852,30 @@ export async function assertBrowserNavigationAllowed(
   if (hasProxyEnvConfigured() && !isPrivateNetworkAllowedByPolicy(opts.ssrfPolicy)) {
     throw new InvalidBrowserNavigationUrlError(
       'Navigation blocked: strict browser SSRF policy cannot be enforced while env proxy variables are set',
+    );
+  }
+
+  // Fail closed when the browser itself is proxy-routed (launched with --proxy-server etc.):
+  // the proxy resolves DNS and egresses, so local address validation cannot enforce the policy.
+  if (opts.browserProxyMode === 'explicit-browser-proxy' && !isPrivateNetworkAllowedByPolicy(opts.ssrfPolicy)) {
+    throw new InvalidBrowserNavigationUrlError(
+      'Navigation blocked: strict browser SSRF policy cannot be enforced while this browser is proxy-routed',
+    );
+  }
+
+  // Under an explicit strict policy, hostnames cannot be safely navigated: the browser
+  // re-resolves DNS independently of this pinned check (a 0-TTL rebind reaches a private
+  // IP). Require an IP literal or an explicitly allow-listed hostname.
+  if (
+    requiresInspectableBrowserNavigationRedirects(opts.ssrfPolicy) &&
+    !isPrivateNetworkAllowedByPolicy(opts.ssrfPolicy) &&
+    !isIpLiteralHostname(parsed.hostname) &&
+    !isExplicitlyAllowedBrowserHostname(parsed.hostname, opts.ssrfPolicy)
+  ) {
+    throw new InvalidBrowserNavigationUrlError(
+      'Navigation blocked: strict SSRF policy (dangerouslyAllowPrivateNetwork: false) requires an IP-literal URL ' +
+        'or an allow-listed hostname, because the browser resolves DNS itself and hostname-based rebinding ' +
+        'protection cannot be guaranteed. Add the hostname to ssrfPolicy.allowedHostnames or navigate by IP.',
     );
   }
 

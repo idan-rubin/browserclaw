@@ -625,7 +625,7 @@ describe('security.ts', () => {
           assertBrowserNavigationAllowed({
             url: 'https://playwright.dev',
             lookupFn: mockPublicLookup(),
-            ssrfPolicy: STRICT_POLICY,
+            ssrfPolicy: { ...STRICT_POLICY, allowedHostnames: ['playwright.dev'] },
           }),
         ).resolves.toBeUndefined();
       });
@@ -649,6 +649,122 @@ describe('security.ts', () => {
           ssrfPolicy: STRICT_POLICY,
         }),
       ).rejects.toThrow(InvalidBrowserNavigationUrlError);
+    });
+
+    describe('explicit strict policy (dangerouslyAllowPrivateNetwork: false) — IP-literal gate', () => {
+      it('blocks a plain hostname that is neither IP-literal nor allow-listed', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://example.com',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: STRICT_POLICY,
+            }),
+          ).rejects.toThrow('requires an IP-literal URL or an allow-listed hostname');
+        });
+      });
+
+      it('allows an IP-literal URL', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({ url: 'http://93.184.216.34/', ssrfPolicy: STRICT_POLICY }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('allows an IPv6-literal URL', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'http://[2606:2800:220:1:248:1893:25c8:1946]/',
+              ssrfPolicy: STRICT_POLICY,
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('allows an explicitly allow-listed hostname', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://internal.corp',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: { ...STRICT_POLICY, allowedHostnames: ['internal.corp'] },
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('allows a hostname matching a hostnameAllowlist pattern', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://api.internal.corp',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: { ...STRICT_POLICY, hostnameAllowlist: ['*.internal.corp'] },
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('does not fire without a policy (default secure-by-default resolve still applies)', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({ url: 'https://example.com', lookupFn: mockPublicLookup() }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('does not fire when the policy is not explicit-strict', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://example.com',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: { allowedHostnames: ['other.com'] },
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
+    });
+
+    describe('proxy-routed browser fail-close', () => {
+      it('blocks navigation when browserProxyMode is explicit-browser-proxy under a non-permissive policy', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'http://93.184.216.34/',
+              ssrfPolicy: STRICT_POLICY,
+              browserProxyMode: 'explicit-browser-proxy',
+            }),
+          ).rejects.toThrow('proxy-routed');
+        });
+      });
+
+      it('allows proxy-routed navigation when private network is permitted', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://example.com',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: PERMISSIVE_POLICY,
+              browserProxyMode: 'explicit-browser-proxy',
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('does not block when browserProxyMode is direct', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'http://93.184.216.34/',
+              ssrfPolicy: STRICT_POLICY,
+              browserProxyMode: 'direct',
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
     });
 
     it('should block when DNS fails with strict policy', async () => {
@@ -1165,7 +1281,7 @@ describe('security.ts', () => {
           assertBrowserNavigationResultAllowed({
             url: 'https://playwright.dev',
             lookupFn: mockPublicLookup(),
-            ssrfPolicy: STRICT_POLICY,
+            ssrfPolicy: { ...STRICT_POLICY, allowedHostnames: ['playwright.dev'] },
           }),
         ).resolves.toBeUndefined();
       });
@@ -1212,7 +1328,7 @@ describe('security.ts', () => {
           assertBrowserNavigationRedirectChainAllowed({
             request: chain,
             lookupFn: mockPublicLookup(),
-            ssrfPolicy: STRICT_POLICY,
+            ssrfPolicy: { ...STRICT_POLICY, allowedHostnames: ['final.com', 'middle.com', 'start.com'] },
           }),
         ).resolves.toBeUndefined();
       });

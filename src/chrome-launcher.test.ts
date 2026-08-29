@@ -45,6 +45,9 @@ const {
   activateMacOsWindowByPid,
   readJsonResponseBounded,
   getChromeWebSocketUrl,
+  markCdpUrlProxyRouted,
+  clearCdpUrlProxyRouted,
+  isCdpUrlProxyRouted,
 } = await import('./chrome-launcher.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -835,5 +838,30 @@ describe('getChromeWebSocketUrl with URL credentials', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// proxy-routed CDP URL registry
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('proxy-routed CDP URL registry', () => {
+  it('marks, reports, and clears a proxy-routed cdpUrl (normalizing trailing slash/case)', () => {
+    const url = 'http://127.0.0.1:9222';
+    expect(isCdpUrlProxyRouted(url)).toBe(false);
+    markCdpUrlProxyRouted(url);
+    expect(isCdpUrlProxyRouted(url)).toBe(true);
+    // normalization: trailing slash + case are ignored
+    expect(isCdpUrlProxyRouted('http://127.0.0.1:9222/')).toBe(true);
+    expect(isCdpUrlProxyRouted('HTTP://127.0.0.1:9222')).toBe(true);
+    clearCdpUrlProxyRouted(url);
+    expect(isCdpUrlProxyRouted(url)).toBe(false);
+  });
+
+  it('keeps distinct ports separate', () => {
+    markCdpUrlProxyRouted('http://127.0.0.1:9333');
+    expect(isCdpUrlProxyRouted('http://127.0.0.1:9333')).toBe(true);
+    expect(isCdpUrlProxyRouted('http://127.0.0.1:9334')).toBe(false);
+    clearCdpUrlProxyRouted('http://127.0.0.1:9333');
   });
 });

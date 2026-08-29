@@ -12,6 +12,12 @@ export interface SsrfPolicy {
   /**
    * Allow navigation to private/internal network addresses.
    * Default: `false` — private/internal/loopback addresses are blocked. Set to `true` to allow them.
+   *
+   * Setting this **explicitly to `false`** (strict mode) additionally requires page
+   * navigation to use an IP-literal URL or an allow-listed hostname: the browser
+   * re-resolves DNS independently of browserclaw's pinned lookup, so a hostname
+   * cannot be protected against 0-TTL rebinding. Add hostnames to `allowedHostnames`
+   * (or `hostnameAllowlist`) or navigate by IP under strict mode.
    */
   dangerouslyAllowPrivateNetwork?: boolean;
   /**

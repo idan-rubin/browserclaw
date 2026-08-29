@@ -216,3 +216,40 @@ describe('armNavigationDownloadCapture — secure-by-default URL validation', ()
     expect(capture.armed).toBe(false);
   });
 });
+
+describe('waitForDownloadViaPlaywright — no-path default location', () => {
+  function pageWithDownloadEmitter(): { page: Page; emit: (download: unknown) => void } {
+    let downloadHandler: ((download: unknown) => void) | undefined;
+    const page = {
+      on: (event: string, handler: (download: unknown) => void) => {
+        if (event === 'download') downloadHandler = handler;
+      },
+      off: () => undefined,
+    } as unknown as Page;
+    return { page, emit: (d: unknown) => downloadHandler?.(d) };
+  }
+
+  it('saves into the managed downloads dir (not CWD) with a UUID prefix when no path is given', async () => {
+    const { writeFileSync, existsSync, rmSync } = await import('node:fs');
+    const { DEFAULT_DOWNLOAD_DIR } = await import('../security.js');
+    const { page, emit } = pageWithDownloadEmitter();
+    mockGetPageForTargetId.mockResolvedValue(page);
+    mockEnsurePageState.mockReturnValue({ armIdDownload: 0, downloadWaiterDepth: 0 });
+    mockBumpDownloadArmId.mockReturnValue(1);
+    mockNormalizeTimeoutMs.mockReturnValue(1000);
+    const saveAs = vi.fn((tempPath: string) => {
+      writeFileSync(tempPath, 'payload');
+      return Promise.resolve();
+    });
+
+    const pending = waitForDownloadViaPlaywright({ cdpUrl: 'http://localhost:9222' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    emit({ url: () => 'https://example.com/report.pdf', suggestedFilename: () => 'report.pdf', saveAs });
+    const result = await pending;
+
+    expect(result.path.startsWith(DEFAULT_DOWNLOAD_DIR)).toBe(true);
+    expect(result.path).toMatch(/[0-9a-f-]{36}-report\.pdf$/);
+    expect(existsSync(result.path)).toBe(true);
+    rmSync(result.path, { force: true });
+  });
+});

@@ -1075,12 +1075,39 @@ const PROXY_CONTROL_CHROME_ARGS = new Set([
   '--proxy-auto-detect',
 ]);
 
+// Args that route Chrome's traffic through a proxy (excludes --no-proxy-server).
+const PROXY_ROUTING_CHROME_ARGS = new Set(['--proxy-server', '--proxy-pac-url', '--proxy-auto-detect']);
+
 function chromeArgName(arg: string): string {
   return arg.trim().split('=', 1)[0]?.toLowerCase() ?? '';
 }
 
 function hasChromeProxyControlArg(args: readonly string[]): boolean {
   return args.some((arg) => PROXY_CONTROL_CHROME_ARGS.has(chromeArgName(arg)));
+}
+
+function hasChromeProxyRoutingArg(args: readonly string[]): boolean {
+  return args.some((arg) => PROXY_ROUTING_CHROME_ARGS.has(chromeArgName(arg)));
+}
+
+// CDP URLs whose Chrome was launched proxy-routed — navigation under a strict SSRF
+// policy fails closed for these (the proxy egresses, defeating local address checks).
+const proxyRoutedCdpUrls = new Set<string>();
+
+function proxyRoutedKey(cdpUrl: string): string {
+  return cdpUrl.trim().replace(/\/+$/, '').toLowerCase();
+}
+
+export function markCdpUrlProxyRouted(cdpUrl: string): void {
+  proxyRoutedCdpUrls.add(proxyRoutedKey(cdpUrl));
+}
+
+export function clearCdpUrlProxyRouted(cdpUrl: string): void {
+  proxyRoutedCdpUrls.delete(proxyRoutedKey(cdpUrl));
+}
+
+export function isCdpUrlProxyRouted(cdpUrl: string): boolean {
+  return proxyRoutedCdpUrls.has(proxyRoutedKey(cdpUrl));
 }
 
 export interface BuildChromeLaunchArgsOptions {
@@ -1213,6 +1240,12 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
 
   const cdpUrl = `http://127.0.0.1:${String(cdpPort)}`;
 
+  const extraArgsForProxyCheck = Array.isArray(opts.chromeArgs)
+    ? opts.chromeArgs.filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
+    : [];
+  if (hasChromeProxyRoutingArg(extraArgsForProxyCheck)) markCdpUrlProxyRouted(cdpUrl);
+  else clearCdpUrlProxyRouted(cdpUrl);
+
   const launchOnceAndWait = async (
     allowSingletonRecovery: boolean,
   ): Promise<{ proc: ReturnType<typeof spawnChrome> }> => {
@@ -1342,6 +1375,7 @@ async function waitForChromeCdpShutdown(cdpPort: number, timeoutMs: number): Pro
 
 export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Promise<void> {
   const proc = running.proc;
+  clearCdpUrlProxyRouted(`http://127.0.0.1:${String(running.cdpPort)}`);
   const cleanupIsolated = () => {
     if (running.isolated !== true) return;
     try {
