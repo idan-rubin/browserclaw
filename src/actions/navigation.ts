@@ -30,7 +30,15 @@ import {
   assertBrowserNavigationRedirectChainAllowed,
   withBrowserNavigationPolicy,
 } from '../security.js';
-import type { BrowserTab, SsrfPolicy } from '../types.js';
+import { isCdpUrlProxyRouted } from '../chrome-launcher.js';
+import type { BrowserTab, DownloadResult, SsrfPolicy } from '../types.js';
+
+import { armNavigationDownloadCapture, isDownloadStartingNavigationError } from './download.js';
+
+/** Navigation-policy proxy-mode addendum for a cdpUrl whose Chrome is proxy-routed. */
+function proxyModeOpts(cdpUrl: string): { browserProxyMode?: 'explicit-browser-proxy' } {
+  return isCdpUrlProxyRouted(cdpUrl) ? { browserProxyMode: 'explicit-browser-proxy' } : {};
+}
 
 const recordingContexts = new Map<string, BrowserContext>();
 
@@ -122,7 +130,7 @@ export async function assertPageNavigationCompletedSafely(opts: {
   ssrfPolicy?: SsrfPolicy;
   targetId?: string;
 }): Promise<void> {
-  const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy);
+  const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, proxyModeOpts(opts.cdpUrl));
   try {
     await assertBrowserNavigationRedirectChainAllowed({ request: opts.response?.request(), ...navigationPolicy });
     await assertBrowserNavigationResultAllowed({ url: opts.page.url(), ...navigationPolicy });
@@ -167,10 +175,17 @@ function isMainFrameNavigation(page: Page, frame: Frame): boolean {
   return frame === page.mainFrame();
 }
 
-async function assertSubframeNavigationAllowed(frameUrl: string, ssrfPolicy?: SsrfPolicy): Promise<void> {
+async function assertSubframeNavigationAllowed(
+  cdpUrl: string,
+  frameUrl: string,
+  ssrfPolicy?: SsrfPolicy,
+): Promise<void> {
   if (!ssrfPolicy) return;
   if (!frameUrl.startsWith('http://') && !frameUrl.startsWith('https://')) return;
-  await assertBrowserNavigationResultAllowed({ url: frameUrl, ...withBrowserNavigationPolicy(ssrfPolicy) });
+  await assertBrowserNavigationResultAllowed({
+    url: frameUrl,
+    ...withBrowserNavigationPolicy(ssrfPolicy, proxyModeOpts(cdpUrl)),
+  });
 }
 
 function snapshotNetworkFrameUrl(frame: Frame): string | null {
@@ -203,7 +218,8 @@ async function assertObservedDelayedNavigations(opts: {
 }): Promise<void> {
   let subframeError: Error | undefined;
   try {
-    for (const frameUrl of opts.observed.subframes) await assertSubframeNavigationAllowed(frameUrl, opts.ssrfPolicy);
+    for (const frameUrl of opts.observed.subframes)
+      await assertSubframeNavigationAllowed(opts.cdpUrl, frameUrl, opts.ssrfPolicy);
   } catch (err) {
     subframeError = err instanceof Error ? err : new Error(formatThrown(err));
   }
@@ -361,7 +377,7 @@ export async function assertInteractionNavigationCompletedSafely<T>(opts: {
   let subframeError: Error | undefined;
   try {
     for (const frameUrl of subframeNavigationsDuringAction) {
-      await assertSubframeNavigationAllowed(frameUrl, opts.ssrfPolicy ?? {});
+      await assertSubframeNavigationAllowed(opts.cdpUrl, frameUrl, opts.ssrfPolicy ?? {});
     }
   } catch (err) {
     subframeError = err instanceof Error ? err : new Error(formatThrown(err));
@@ -411,7 +427,7 @@ async function gotoPageWithNavigationGuard(opts: {
   ssrfPolicy?: SsrfPolicy;
   targetId?: string;
 }): Promise<Awaited<ReturnType<Page['goto']>>> {
-  const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy);
+  const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, proxyModeOpts(opts.cdpUrl));
   const state: { blocked: Error | null } = { blocked: null };
   const safeContinue = async (route: Route): Promise<void> => {
     try {
@@ -483,18 +499,18 @@ export async function navigateViaPlaywright(opts: {
   ssrfPolicy?: SsrfPolicy;
   /** @deprecated Use ssrfPolicy: { dangerouslyAllowPrivateNetwork: true } instead */
   allowInternal?: boolean;
-}): Promise<{ url: string }> {
+}): Promise<{ url: string; download?: DownloadResult }> {
   const url = opts.url.trim();
   if (!url) throw new Error('url is required');
   /* eslint-disable @typescript-eslint/no-deprecated */
   const policy =
     opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
   /* eslint-enable @typescript-eslint/no-deprecated */
-  await assertBrowserNavigationAllowed({ url, ...withBrowserNavigationPolicy(policy) });
+  await assertBrowserNavigationAllowed({ url, ...withBrowserNavigationPolicy(policy, proxyModeOpts(opts.cdpUrl)) });
 
   const timeout = Math.max(1000, Math.min(120000, opts.timeoutMs ?? 20000));
   let page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: policy });
-  ensurePageState(page);
+  let pageState = ensurePageState(page);
 
   const navigate = async () =>
     await gotoPageWithNavigationGuard({
@@ -506,9 +522,35 @@ export async function navigateViaPlaywright(opts: {
       targetId: opts.targetId,
     });
 
-  let response;
+  const navigateWithDownloadCapture = async (): Promise<{
+    response: Awaited<ReturnType<typeof navigate>>;
+    download?: DownloadResult;
+  }> => {
+    const capture = armNavigationDownloadCapture(page, pageState, timeout, url, policy);
+    try {
+      const response = await navigate();
+      capture.cancel();
+      return { response };
+    } catch (err) {
+      if (!capture.armed || !isDownloadStartingNavigationError(err, url)) {
+        capture.cancel();
+        throw err;
+      }
+      try {
+        return { response: null, download: await capture.promise };
+      } catch (downloadErr) {
+        if (downloadErr instanceof Error && downloadErr.message === 'Timeout waiting for navigation download')
+          throw err;
+        if (isPolicyDenyNavigationError(downloadErr))
+          await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page, targetId: opts.targetId });
+        throw downloadErr;
+      }
+    }
+  };
+
+  let navigationResult;
   try {
-    response = await navigate();
+    navigationResult = await navigateWithDownloadCapture();
   } catch (err) {
     if (!isRetryableNavigateError(err)) throw err;
     // Clean recording context before force-disconnect to prevent stale references
@@ -522,24 +564,29 @@ export async function navigateViaPlaywright(opts: {
       /* intentional no-op */
     });
     page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: policy });
-    ensurePageState(page);
-    response = await navigate();
+    pageState = ensurePageState(page);
+    navigationResult = await navigateWithDownloadCapture();
   }
 
-  try {
-    await assertPageNavigationCompletedSafely({
-      cdpUrl: opts.cdpUrl,
-      page,
-      response,
-      ssrfPolicy: policy,
-      targetId: opts.targetId,
-    });
-  } catch (err) {
-    if (isPolicyDenyNavigationError(err))
-      await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page, targetId: opts.targetId });
-    throw err;
+  if (!navigationResult.download) {
+    try {
+      await assertPageNavigationCompletedSafely({
+        cdpUrl: opts.cdpUrl,
+        page,
+        response: navigationResult.response,
+        ssrfPolicy: policy,
+        targetId: opts.targetId,
+      });
+    } catch (err) {
+      if (isPolicyDenyNavigationError(err))
+        await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page, targetId: opts.targetId });
+      throw err;
+    }
   }
-  return { url: page.url() };
+  return {
+    url: navigationResult.download?.url ?? page.url(),
+    ...(navigationResult.download ? { download: navigationResult.download } : {}),
+  };
 }
 
 async function listPagesViaPlaywrightOnce(cdpUrl: string): Promise<BrowserTab[]> {
@@ -562,14 +609,55 @@ async function listPagesViaPlaywrightOnce(cdpUrl: string): Promise<BrowserTab[]>
   return results;
 }
 
-export async function listPagesViaPlaywright(opts: { cdpUrl: string }): Promise<BrowserTab[]> {
-  const reusedCachedBrowser = hasCachedPlaywrightBrowserConnection(opts.cdpUrl);
+async function listPagesWithRecovery(cdpUrl: string, attempt?: { cancelled: boolean }): Promise<BrowserTab[]> {
+  const reusedCachedBrowser = hasCachedPlaywrightBrowserConnection(cdpUrl);
   try {
-    return await listPagesViaPlaywrightOnce(opts.cdpUrl);
+    return await listPagesViaPlaywrightOnce(cdpUrl);
   } catch (err) {
-    if (!reusedCachedBrowser || !isRecoverablePlaywrightDisconnectError(err)) throw err;
-    await closePlaywrightBrowserConnection({ cdpUrl: opts.cdpUrl, preserveSsrfState: true });
-    return await listPagesViaPlaywrightOnce(opts.cdpUrl);
+    if (!reusedCachedBrowser || !isRecoverablePlaywrightDisconnectError(err) || attempt?.cancelled) throw err;
+    await closePlaywrightBrowserConnection({ cdpUrl, preserveSsrfState: true });
+    if (attempt?.cancelled) throw err;
+    return await listPagesViaPlaywrightOnce(cdpUrl);
+  }
+}
+
+export async function listPagesViaPlaywright(opts: {
+  cdpUrl: string;
+  timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<BrowserTab[]> {
+  const timeoutMs =
+    typeof opts.timeoutMs === 'number' && Number.isFinite(opts.timeoutMs)
+      ? Math.max(1, Math.floor(opts.timeoutMs))
+      : undefined;
+  if (timeoutMs === undefined) return await listPagesWithRecovery(opts.cdpUrl);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timeoutError: Error | undefined;
+  const attempt = { cancelled: false };
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      attempt.cancelled = true;
+      timeoutError = new Error(`Playwright page enumeration timed out after ${String(timeoutMs)}ms`);
+      reject(timeoutError);
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([listPagesWithRecovery(opts.cdpUrl, attempt), timeout]);
+  } catch (err) {
+    // Retire the wedged connection so a late completion cannot restore it.
+    if (timeoutError !== undefined && err === timeoutError)
+      await forceDisconnectPlaywrightConnection({
+        cdpUrl: opts.cdpUrl,
+        reason: 'Playwright page enumeration',
+        ssrfPolicy: opts.ssrfPolicy,
+      }).catch(() => {
+        /* noop */
+      });
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -591,7 +679,10 @@ export async function createPageViaPlaywright(opts: {
   // Preflight URL policy *before* allocating a tab. Otherwise a denial would
   // leak the freshly-created blank tab into the browser session.
   if (targetUrl !== 'about:blank') {
-    await assertBrowserNavigationAllowed({ url: targetUrl, ...withBrowserNavigationPolicy(policy) });
+    await assertBrowserNavigationAllowed({
+      url: targetUrl,
+      ...withBrowserNavigationPolicy(policy, proxyModeOpts(opts.cdpUrl)),
+    });
   }
 
   const { browser } = await connectBrowser(opts.cdpUrl, undefined, policy, { stealth: opts.stealth });

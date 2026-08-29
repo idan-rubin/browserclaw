@@ -11,6 +11,7 @@ import {
   resolvePinnedHostnameWithPolicy,
   assertBrowserNavigationAllowed,
   assertCdpEndpointAllowed,
+  scopeCdpPolicyToConfiguredEndpoint,
   BrowserCdpEndpointBlockedError,
   assertSafeOutputPath,
   assertSafeUploadPaths,
@@ -50,6 +51,16 @@ function mockPublicLookup(): LookupFn {
 /** Mock DNS lookup that resolves a hostname to a loopback IP */
 function mockLoopbackLookup(): LookupFn {
   return (() => Promise.resolve([{ address: '127.0.0.1', family: 4 }])) as unknown as LookupFn;
+}
+
+/** Mock DNS lookup that resolves a hostname to a private (non-loopback) IP */
+function mockPrivateLookup(): LookupFn {
+  return (() => Promise.resolve([{ address: '10.0.0.5', family: 4 }])) as unknown as LookupFn;
+}
+
+/** Mock DNS lookup that resolves a hostname to a caller-chosen address */
+function mockLookupOf(address: string, family = 4): LookupFn {
+  return (() => Promise.resolve([{ address, family }])) as unknown as LookupFn;
 }
 
 /** Mock DNS lookup that throws (simulating failed resolution) */
@@ -565,6 +576,21 @@ describe('security.ts', () => {
       );
     });
 
+    it('rejects URL-embedded credentials and points at the credentials API', async () => {
+      await expect(assertBrowserNavigationAllowed({ url: 'https://user:pass@example.com/' })).rejects.toThrow(
+        'URL-embedded credentials are not supported',
+      );
+      await expect(assertBrowserNavigationAllowed({ url: 'https://user@example.com/' })).rejects.toThrow(
+        'URL-embedded credentials are not supported',
+      );
+    });
+
+    it('redacts credential-bearing text from invalid-URL errors', async () => {
+      await expect(assertBrowserNavigationAllowed({ url: 'http://user:pass@' })).rejects.toThrow(
+        '[redacted credential-bearing URL]',
+      );
+    });
+
     it('should reject file: protocol', async () => {
       await expect(assertBrowserNavigationAllowed({ url: 'file:///etc/passwd' })).rejects.toThrow(
         'unsupported protocol',
@@ -599,7 +625,7 @@ describe('security.ts', () => {
           assertBrowserNavigationAllowed({
             url: 'https://playwright.dev',
             lookupFn: mockPublicLookup(),
-            ssrfPolicy: STRICT_POLICY,
+            ssrfPolicy: { ...STRICT_POLICY, allowedHostnames: ['playwright.dev'] },
           }),
         ).resolves.toBeUndefined();
       });
@@ -623,6 +649,122 @@ describe('security.ts', () => {
           ssrfPolicy: STRICT_POLICY,
         }),
       ).rejects.toThrow(InvalidBrowserNavigationUrlError);
+    });
+
+    describe('explicit strict policy (dangerouslyAllowPrivateNetwork: false) — IP-literal gate', () => {
+      it('blocks a plain hostname that is neither IP-literal nor allow-listed', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://example.com',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: STRICT_POLICY,
+            }),
+          ).rejects.toThrow('requires an IP-literal URL or an allow-listed hostname');
+        });
+      });
+
+      it('allows an IP-literal URL', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({ url: 'http://93.184.216.34/', ssrfPolicy: STRICT_POLICY }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('allows an IPv6-literal URL', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'http://[2606:2800:220:1:248:1893:25c8:1946]/',
+              ssrfPolicy: STRICT_POLICY,
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('allows an explicitly allow-listed hostname', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://internal.corp',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: { ...STRICT_POLICY, allowedHostnames: ['internal.corp'] },
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('allows a hostname matching a hostnameAllowlist pattern', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://api.internal.corp',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: { ...STRICT_POLICY, hostnameAllowlist: ['*.internal.corp'] },
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('does not fire without a policy (default secure-by-default resolve still applies)', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({ url: 'https://example.com', lookupFn: mockPublicLookup() }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('does not fire when the policy is not explicit-strict', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://example.com',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: { allowedHostnames: ['other.com'] },
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
+    });
+
+    describe('proxy-routed browser fail-close', () => {
+      it('blocks navigation when browserProxyMode is explicit-browser-proxy under a non-permissive policy', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'http://93.184.216.34/',
+              ssrfPolicy: STRICT_POLICY,
+              browserProxyMode: 'explicit-browser-proxy',
+            }),
+          ).rejects.toThrow('proxy-routed');
+        });
+      });
+
+      it('allows proxy-routed navigation when private network is permitted', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://example.com',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: PERMISSIVE_POLICY,
+              browserProxyMode: 'explicit-browser-proxy',
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('does not block when browserProxyMode is direct', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'http://93.184.216.34/',
+              ssrfPolicy: STRICT_POLICY,
+              browserProxyMode: 'direct',
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
     });
 
     it('should block when DNS fails with strict policy', async () => {
@@ -830,10 +972,78 @@ describe('security.ts', () => {
 
     it('should allow explicitly allowedHostnames even with private IPs', async () => {
       const result = await resolvePinnedHostnameWithPolicy('internal.myapp.com', {
-        lookupFn: mockLoopbackLookup(),
+        lookupFn: mockPrivateLookup(),
         policy: { ...STRICT_POLICY, allowedHostnames: ['internal.myapp.com'] },
       });
       expect(result.hostname).toBe('internal.myapp.com');
+    });
+
+    it('blocks an allow-listed hostname that resolves to a loopback address (DNS rebinding)', async () => {
+      await expect(
+        resolvePinnedHostnameWithPolicy('rebind-loopback.myapp.com', {
+          lookupFn: mockLoopbackLookup(),
+          policy: { ...STRICT_POLICY, allowedHostnames: ['rebind-loopback.myapp.com'] },
+        }),
+      ).rejects.toThrow('resolves to a loopback address');
+    });
+
+    it('blocks an allow-listed hostname that resolves to an IPv6-embedded loopback address', async () => {
+      await expect(
+        resolvePinnedHostnameWithPolicy('rebind-embedded.myapp.com', {
+          lookupFn: mockLookupOf('::ffff:127.0.0.1', 6),
+          policy: { ...STRICT_POLICY, allowedHostnames: ['rebind-embedded.myapp.com'] },
+        }),
+      ).rejects.toThrow('resolves to a loopback address');
+    });
+
+    it('blocks an allow-listed hostname that resolves to an unspecified address', async () => {
+      for (const [hostname, address] of [
+        ['rebind-unspec4.myapp.com', '0.0.0.0'],
+        ['rebind-unspec6.myapp.com', '::'],
+      ] as const) {
+        await expect(
+          resolvePinnedHostnameWithPolicy(hostname, {
+            lookupFn: mockLookupOf(address, address.includes(':') ? 6 : 4),
+            policy: { ...STRICT_POLICY, allowedHostnames: [hostname] },
+          }),
+        ).rejects.toThrow('resolves to an unspecified address');
+      }
+    });
+
+    it('blocks an allow-listed hostname resolving to an embedded-IPv4 metadata/link-local address', async () => {
+      // IPv4-mapped, CGNAT-metadata-mapped, and 6to4-embedded forms all reach the
+      // metadata/link-local target once Node dials the v6 address.
+      const cases: [string, string][] = [
+        ['rebind-meta-mapped.myapp.com', '::ffff:169.254.169.254'],
+        ['rebind-cgnat-mapped.myapp.com', '::ffff:100.100.100.200'],
+        ['rebind-meta-6to4.myapp.com', '2002:a9fe:a9fe::1'],
+      ];
+      for (const [hostname, address] of cases) {
+        await expect(
+          resolvePinnedHostnameWithPolicy(hostname, {
+            lookupFn: mockLookupOf(address, 6),
+            policy: { ...STRICT_POLICY, allowedHostnames: [hostname] },
+          }),
+        ).rejects.toThrow('cloud-metadata/link-local');
+      }
+    });
+
+    it('still allows an allow-listed hostname resolving to an ordinary private IP (control)', async () => {
+      const result = await resolvePinnedHostnameWithPolicy('rebind-ok.myapp.com', {
+        lookupFn: mockLookupOf('10.1.2.3', 4),
+        policy: { ...STRICT_POLICY, allowedHostnames: ['rebind-ok.myapp.com'] },
+      });
+      expect(result.hostname).toBe('rebind-ok.myapp.com');
+    });
+
+    it('allows an allow-listed explicit loopback hostname to resolve to loopback', async () => {
+      for (const hostname of ['localhost', '127.0.0.1', 'dev.localhost']) {
+        const result = await resolvePinnedHostnameWithPolicy(hostname, {
+          lookupFn: mockLoopbackLookup(),
+          policy: { ...STRICT_POLICY, allowedHostnames: [hostname] },
+        });
+        expect(result.hostname).toBe(hostname);
+      }
     });
 
     it('should normalize hostname (case, trailing dot) before checking', async () => {
@@ -1071,7 +1281,7 @@ describe('security.ts', () => {
           assertBrowserNavigationResultAllowed({
             url: 'https://playwright.dev',
             lookupFn: mockPublicLookup(),
-            ssrfPolicy: STRICT_POLICY,
+            ssrfPolicy: { ...STRICT_POLICY, allowedHostnames: ['playwright.dev'] },
           }),
         ).resolves.toBeUndefined();
       });
@@ -1118,7 +1328,7 @@ describe('security.ts', () => {
           assertBrowserNavigationRedirectChainAllowed({
             request: chain,
             lookupFn: mockPublicLookup(),
-            ssrfPolicy: STRICT_POLICY,
+            ssrfPolicy: { ...STRICT_POLICY, allowedHostnames: ['final.com', 'middle.com', 'start.com'] },
           }),
         ).resolves.toBeUndefined();
       });
@@ -1846,6 +2056,52 @@ describe('security.ts', () => {
     it('is a no-op when no policy is provided', async () => {
       await expect(assertCdpEndpointAllowed('http://localhost:9222')).resolves.toBeUndefined();
       await expect(assertCdpEndpointAllowed('http://169.254.169.254/')).resolves.toBeUndefined();
+    });
+
+    it('blocks a discovered endpoint whose authority differs from the configured endpoint', async () => {
+      await expect(
+        assertCdpEndpointAllowed('ws://192.168.1.100:9222/devtools/browser/abc', STRICT_POLICY, {
+          source: 'discovered',
+          configuredUrl: 'http://127.0.0.1:9222',
+        }),
+      ).rejects.toThrow('discovered CDP endpoint changed configured authority');
+    });
+
+    it('blocks a discovered endpoint that keeps the hostname but changes the port', async () => {
+      await expect(
+        assertCdpEndpointAllowed('ws://127.0.0.1:6379/devtools/browser/abc', STRICT_POLICY, {
+          source: 'discovered',
+          configuredUrl: 'http://127.0.0.1:9222',
+        }),
+      ).rejects.toThrow('discovered CDP endpoint changed configured authority');
+    });
+
+    it('allows a discovered endpoint with the same authority under a scoped policy', async () => {
+      const scoped = scopeCdpPolicyToConfiguredEndpoint('http://127.0.0.1:9222', STRICT_POLICY);
+      await expect(
+        assertCdpEndpointAllowed('ws://127.0.0.1:9222/devtools/browser/abc', scoped, {
+          source: 'discovered',
+          configuredUrl: 'http://127.0.0.1:9222',
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('does not enforce discovered-authority matching without a policy', async () => {
+      await expect(
+        assertCdpEndpointAllowed('ws://192.168.1.100:9222/devtools/browser/abc', undefined, {
+          source: 'discovered',
+          configuredUrl: 'http://127.0.0.1:9222',
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('does not enforce discovered-authority matching when private network is allowed', async () => {
+      await expect(
+        assertCdpEndpointAllowed('ws://192.168.1.100:9222/devtools/browser/abc', PERMISSIVE_POLICY, {
+          source: 'discovered',
+          configuredUrl: 'http://127.0.0.1:9222',
+        }),
+      ).resolves.toBeUndefined();
     });
 
     it('is a no-op when policy is undefined explicitly', async () => {

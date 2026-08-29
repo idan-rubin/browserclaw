@@ -832,13 +832,17 @@ describe('isRecoverablePlaywrightDisconnectError', () => {
 
 describe('tryTerminateExecutionViaCdp SSRF validation', () => {
   const craftedList = [{ id: 'T1', webSocketDebuggerUrl: 'ws://192.168.1.100:9222/devtools/page/T1' }];
+  const jsonResponse = (data: unknown) => {
+    const bytes = new TextEncoder().encode(JSON.stringify(data));
+    return { ok: true, body: undefined, arrayBuffer: () => Promise.resolve(bytes.buffer) };
+  };
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
   it('rejects a crafted /json/list webSocketDebuggerUrl pointing at a policy-blocked host', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(craftedList) });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(craftedList));
     const webSocketMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('WebSocket', webSocketMock);
@@ -861,7 +865,7 @@ describe('tryTerminateExecutionViaCdp SSRF validation', () => {
   });
 
   it('dials the discovered webSocketDebuggerUrl when no policy is provided', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(craftedList) });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(craftedList));
     const webSocketMock = vi.fn().mockImplementation(() => {
       throw new Error('socket unavailable in test');
     });

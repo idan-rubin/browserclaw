@@ -43,6 +43,11 @@ const {
   wipeChromeSessionState,
   reserveFreePortFromList,
   activateMacOsWindowByPid,
+  readJsonResponseBounded,
+  getChromeWebSocketUrl,
+  markCdpUrlProxyRouted,
+  clearCdpUrlProxyRouted,
+  isCdpUrlProxyRouted,
 } = await import('./chrome-launcher.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -204,6 +209,11 @@ describe('normalizeCdpWsUrl', () => {
     const result = normalizeCdpWsUrl('ws://localhost:9222/devtools/browser/abc', 'http://127.0.0.1:9222');
     expect(result).toContain('127.0.0.1');
     expect(result).not.toContain('localhost');
+  });
+
+  it('inherits the cdp port when a loopback ws URL omits its port', () => {
+    const result = normalizeCdpWsUrl('ws://localhost/devtools/browser/abc', 'http://127.0.0.1:9222');
+    expect(result).toContain('127.0.0.1:9222');
   });
 
   it('normalizes loopback aliases in reverse (ws 127.0.0.1, cdp localhost → use cdp alias)', () => {
@@ -542,6 +552,14 @@ describe('buildChromeLaunchArgs', () => {
     expect(args).toContain('--disable-features=Translate,MediaRouter');
   });
 
+  it('adds --use-mock-keychain only on darwin with useMockKeychain', () => {
+    expect(buildChromeLaunchArgs({ ...baseOpts, useMockKeychain: true })).toContain('--use-mock-keychain');
+    expect(buildChromeLaunchArgs(baseOpts)).not.toContain('--use-mock-keychain');
+    expect(
+      buildChromeLaunchArgs({ ...baseOpts, platform: 'linux' as NodeJS.Platform, useMockKeychain: true }),
+    ).not.toContain('--use-mock-keychain');
+  });
+
   it('adds --password-store=basic on every platform (matches OpenClaw; avoids macOS Keychain hang)', () => {
     for (const platform of ['linux', 'darwin', 'win32'] as const) {
       expect(buildChromeLaunchArgs({ ...baseOpts, platform })).toContain('--password-store=basic');
@@ -736,5 +754,114 @@ describe('activateMacOsWindowByPid', () => {
       throw new Error('osascript not found');
     });
     await expect(activateMacOsWindowByPid(99)).resolves.toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// readJsonResponseBounded
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('readJsonResponseBounded', () => {
+  it('parses a JSON body within the limit', async () => {
+    await expect(readJsonResponseBounded(new Response('{"a":1}'), 'test')).resolves.toEqual({ a: 1 });
+  });
+
+  it('rejects a body that exceeds the byte limit', async () => {
+    const res = new Response(`"${'x'.repeat(64)}"`);
+    await expect(readJsonResponseBounded(res, 'test', 16)).rejects.toThrow('test: JSON response exceeds 16 bytes');
+  });
+
+  it('rejects malformed JSON with a labeled error', async () => {
+    await expect(readJsonResponseBounded(new Response('{oops'), 'test')).rejects.toThrow(
+      'test: malformed JSON response',
+    );
+  });
+
+  it('reads via arrayBuffer when the response has no stream body', async () => {
+    const bytes = new TextEncoder().encode('[1,2,3]');
+    const res = { body: undefined, arrayBuffer: () => Promise.resolve(bytes.buffer) } as unknown as Response;
+    await expect(readJsonResponseBounded(res, 'test')).resolves.toEqual([1, 2, 3]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getChromeWebSocketUrl — credential-bearing endpoints
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('getChromeWebSocketUrl with URL credentials', () => {
+  it('moves URL credentials into a Basic Authorization header and never fetches a credentialed URL', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc' })),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const wsUrl = await getChromeWebSocketUrl('http://user:p%40ss@127.0.0.1:9222', 500);
+      expect(wsUrl).toContain('/devtools/browser/abc');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [fetchedUrl, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string> }];
+      expect(fetchedUrl).toBe('http://127.0.0.1:9222/json/version');
+      expect(init.headers.Authorization).toBe(`Basic ${Buffer.from('user:p@ss').toString('base64')}`);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('retries /json/version/ when a credentialed endpoint exposes no WebSocket URL', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({})))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/xyz' })),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const wsUrl = await getChromeWebSocketUrl('http://user:pass@127.0.0.1:9222', 500);
+      expect(wsUrl).toContain('/devtools/browser/xyz');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const secondUrl = (fetchMock.mock.calls[1] as [string])[0];
+      expect(secondUrl).toBe('http://127.0.0.1:9222/json/version/');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not retry the trailing-slash form for credential-free endpoints', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({})));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await getChromeWebSocketUrl('http://127.0.0.1:9222', 500);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string> }];
+      expect(init.headers.Authorization).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// proxy-routed CDP URL registry
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('proxy-routed CDP URL registry', () => {
+  it('marks, reports, and clears a proxy-routed cdpUrl (normalizing trailing slash/case)', () => {
+    const url = 'http://127.0.0.1:9222';
+    expect(isCdpUrlProxyRouted(url)).toBe(false);
+    markCdpUrlProxyRouted(url);
+    expect(isCdpUrlProxyRouted(url)).toBe(true);
+    // normalization: trailing slash + case are ignored
+    expect(isCdpUrlProxyRouted('http://127.0.0.1:9222/')).toBe(true);
+    expect(isCdpUrlProxyRouted('HTTP://127.0.0.1:9222')).toBe(true);
+    clearCdpUrlProxyRouted(url);
+    expect(isCdpUrlProxyRouted(url)).toBe(false);
+  });
+
+  it('keeps distinct ports separate', () => {
+    markCdpUrlProxyRouted('http://127.0.0.1:9333');
+    expect(isCdpUrlProxyRouted('http://127.0.0.1:9333')).toBe(true);
+    expect(isCdpUrlProxyRouted('http://127.0.0.1:9334')).toBe(false);
+    clearCdpUrlProxyRouted('http://127.0.0.1:9333');
   });
 });
