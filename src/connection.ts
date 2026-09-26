@@ -11,14 +11,18 @@ import {
   normalizeCdpWsUrl,
   isLoopbackHost,
   hasProxyEnvConfigured,
+  openCdpWebSocket,
   readJsonResponseBounded,
 } from './chrome-launcher.js';
 import { BrowserTabNotFoundError } from './errors.js';
 import { ensurePageState, observeBrowser, setDialogHandlerOnPage, type ObserveOptions } from './page-utils.js';
 import { clearRoleRefsForCdpUrl, normalizeCdpUrl } from './ref-resolver.js';
 import {
+  BrowserCdpEndpointBlockedError,
+  InvalidBrowserNavigationUrlError,
   assertCdpEndpointAllowed,
   getHeadersWithAuth,
+  isPrivateNetworkAllowedByPolicy,
   scopeCdpPolicyToConfiguredEndpoint,
   stripUrlCredentials,
 } from './security.js';
@@ -471,97 +475,94 @@ export async function connectBrowser(
   const existing = connectingByCdpUrl.get(normalized);
   if (existing) return await observeCached(await existing.promise);
 
-  // Slow path: acquire connection lock before creating a new connection
-  return withConnectionLock(async () => {
-    // Re-check after acquiring lock
+  const connectionAttempt: ConnectionAttempt = { cancelled: false };
+  const isCancelled = (): boolean => connectionAttempt.cancelled;
+  const isPolicyError = (err: unknown): boolean =>
+    err instanceof BrowserCdpEndpointBlockedError || err instanceof InvalidBrowserNavigationUrlError;
+  const connectWithRetry = async (): Promise<CachedConnection> => {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (isCancelled()) break;
+      try {
+        const timeout = 5000 + attempt * 2000;
+        let wsUrl: string | null;
+        try {
+          wsUrl = await getChromeWebSocketUrl(normalized, timeout, authToken, effectivePolicy);
+        } catch (discoveryErr) {
+          if (isPolicyError(discoveryErr)) throw discoveryErr;
+          wsUrl = null;
+        }
+        if (wsUrl === null && !isWebSocketUrl(normalized)) {
+          if (stripUrlCredentials(normalized) !== normalized)
+            throw new Error('Authenticated CDP HTTP endpoint did not expose a usable WebSocket URL.');
+          if (effectivePolicy !== undefined && !isPrivateNetworkAllowedByPolicy(effectivePolicy))
+            throw new Error('CDP HTTP endpoint did not expose a usable WebSocket URL; refusing an unvalidated dial.');
+        }
+        const endpoint = wsUrl ?? normalized;
+        const connectAt = async (target: string) => {
+          const headers: Record<string, string> = getHeadersWithAuth(target);
+          if (authToken !== undefined && authToken !== '' && !headers.Authorization)
+            headers.Authorization = `Bearer ${authToken}`;
+          // Credentials travel in the Authorization header; never in the dialed URL.
+          const connectionUrl = stripUrlCredentials(target);
+          return await withNoProxyForCdpUrl(connectionUrl, () =>
+            chromium.connectOverCDP(connectionUrl, { timeout, headers }),
+          );
+        };
+        let browser: Browser;
+        try {
+          browser = await connectAt(endpoint);
+        } catch (connectErr) {
+          if (!isWebSocketUrl(normalized) || endpoint === normalized) throw connectErr;
+          browser = await connectAt(normalized);
+        }
+        if (isCancelled()) {
+          await browser.close().catch(() => {
+            /* noop */
+          });
+          throw new Error('Playwright connection attempt was superseded.');
+        }
+        const onDisconnected = () => {
+          if (cachedByCdpUrl.get(normalized)?.browser === browser) {
+            cachedByCdpUrl.delete(normalized);
+            clearRoleRefsForCdpUrl(normalized);
+          }
+        };
+        const connected: CachedConnection = { browser, cdpUrl: normalized, onDisconnected };
+        cachedByCdpUrl.set(normalized, connected);
+        await observeBrowser(browser, effectiveObserveOptions);
+        browser.on('disconnected', onDisconnected);
+        return connected;
+      } catch (err) {
+        if (isPolicyError(err)) throw err;
+        lastErr = err;
+        if (isCancelled()) break;
+        if ((err instanceof Error ? err.message : String(err)).includes('rate limit')) {
+          // Rate-limit: wait longer before retrying instead of breaking immediately
+          await new Promise((r) => setTimeout(r, 1000 + attempt * 1000));
+          continue;
+        }
+        await new Promise((r) => setTimeout(r, 250 + attempt * 250));
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error('CDP connect failed');
+  };
+
+  const promise = withConnectionLock(async () => {
+    if (isCancelled()) throw new Error('Playwright connection attempt was cancelled before it started.');
     const rechecked = cachedByCdpUrl.get(normalized);
     if (rechecked) return await observeCached(rechecked);
-    const recheckPending = connectingByCdpUrl.get(normalized);
-    if (recheckPending) return await observeCached(await recheckPending.promise);
-
-    const connectionAttempt: ConnectionAttempt = { cancelled: false };
-    const isCancelled = (): boolean => connectionAttempt.cancelled;
-    const connectWithRetry = async () => {
-      let lastErr: unknown;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (isCancelled()) break;
-        try {
-          const timeout = 5000 + attempt * 2000;
-          const wsUrl = await getChromeWebSocketUrl(normalized, timeout, authToken, effectivePolicy).catch(() => null);
-          const hasUrlCredentials = stripUrlCredentials(normalized) !== normalized;
-          if (wsUrl === null && hasUrlCredentials && !isWebSocketUrl(normalized))
-            throw new Error('Authenticated CDP HTTP endpoint did not expose a usable WebSocket URL.');
-          const endpoint = wsUrl ?? normalized;
-          const connectAt = async (target: string) => {
-            const headers: Record<string, string> = getHeadersWithAuth(target);
-            if (authToken !== undefined && authToken !== '' && !headers.Authorization)
-              headers.Authorization = `Bearer ${authToken}`;
-            // Credentials travel in the Authorization header; never in the dialed URL.
-            const connectionUrl = stripUrlCredentials(target);
-            return await withNoProxyForCdpUrl(connectionUrl, () =>
-              chromium.connectOverCDP(connectionUrl, { timeout, headers }),
-            );
-          };
-          let browser: Browser;
-          try {
-            browser = await connectAt(endpoint);
-          } catch (connectErr) {
-            if (!isWebSocketUrl(normalized) || endpoint === normalized) throw connectErr;
-            browser = await connectAt(normalized);
-          }
-          if (isCancelled()) {
-            await browser.close().catch(() => {
-              /* noop */
-            });
-            throw new Error('Playwright connection attempt was superseded.');
-          }
-          const onDisconnected = () => {
-            if (cachedByCdpUrl.get(normalized)?.browser === browser) {
-              cachedByCdpUrl.delete(normalized);
-              clearRoleRefsForCdpUrl(normalized);
-            }
-          };
-          const connected: CachedConnection = { browser, cdpUrl: normalized, onDisconnected };
-          cachedByCdpUrl.set(normalized, connected);
-          await observeBrowser(browser, effectiveObserveOptions);
-          browser.on('disconnected', onDisconnected);
-          return connected;
-        } catch (err) {
-          lastErr = err;
-          if (isCancelled()) break;
-          if ((err instanceof Error ? err.message : String(err)).includes('rate limit')) {
-            // Rate-limit: wait longer before retrying instead of breaking immediately
-            await new Promise((r) => setTimeout(r, 1000 + attempt * 1000));
-            continue;
-          }
-          await new Promise((r) => setTimeout(r, 250 + attempt * 250));
-        }
-      }
-      throw lastErr instanceof Error ? lastErr : new Error('CDP connect failed');
-    };
-
-    const promise = connectWithRetry().finally(() => {
-      if (connectingByCdpUrl.get(normalized)?.attempt === connectionAttempt) connectingByCdpUrl.delete(normalized);
-    });
-    connectingByCdpUrl.set(normalized, { attempt: connectionAttempt, promise });
-    return await promise;
+    return await connectWithRetry();
+  }).finally(() => {
+    if (connectingByCdpUrl.get(normalized)?.attempt === connectionAttempt) connectingByCdpUrl.delete(normalized);
   });
+  connectingByCdpUrl.set(normalized, { attempt: connectionAttempt, promise });
+  return await promise;
 }
 
 export async function disconnectBrowser(): Promise<void> {
   for (const pending of connectingByCdpUrl.values()) pending.attempt.cancelled = true;
   return withConnectionLock(async () => {
-    if (connectingByCdpUrl.size) {
-      for (const pending of connectingByCdpUrl.values()) {
-        try {
-          await pending.promise;
-        } catch (err) {
-          console.warn(
-            `[browserclaw] disconnectBrowser: pending connect failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
-    }
     for (const cur of cachedByCdpUrl.values()) {
       clearRoleRefsForCdpUrl(cur.cdpUrl);
       if (cur.onDisconnected && typeof cur.browser.off === 'function')
@@ -664,12 +665,6 @@ async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string, ssr
     configuredUrl: cdpUrl,
   });
   const wsConnectionUrl = stripUrlCredentials(wsUrl);
-  if (wsConnectionUrl !== wsUrl) {
-    console.warn(
-      `[browserclaw] skipping Runtime.terminateExecution for ${targetId}: native WebSocket cannot send the endpoint credentials`,
-    );
-    return;
-  }
   const needsAttach = cdpSocketNeedsAttach(wsConnectionUrl);
 
   await new Promise<void>((resolve) => {
@@ -687,7 +682,7 @@ async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string, ssr
     let ws: WebSocket;
     let nextId = 1;
     try {
-      ws = new WebSocket(wsConnectionUrl);
+      ws = openCdpWebSocket(wsConnectionUrl, headers);
     } catch {
       finish();
       return;

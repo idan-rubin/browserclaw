@@ -263,7 +263,7 @@ function isAllowedNonNetworkNavigationUrl(parsed: URL): boolean {
   return SAFE_NON_NETWORK_URLS.has(parsed.href);
 }
 
-function isPrivateNetworkAllowedByPolicy(policy?: SsrfPolicy): boolean {
+export function isPrivateNetworkAllowedByPolicy(policy?: SsrfPolicy): boolean {
   // eslint-disable-next-line @typescript-eslint/no-deprecated
   return policy?.dangerouslyAllowPrivateNetwork === true || policy?.allowPrivateNetwork === true;
 }

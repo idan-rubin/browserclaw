@@ -823,7 +823,14 @@ function appendCdpPath(cdpUrl: string, cdpPath: string): string {
 
 // ── Chrome Reachability ──
 
-async function canOpenWebSocket(url: string, timeoutMs: number): Promise<boolean> {
+type HeaderedWebSocketCtor = new (url: string, init?: { headers?: Record<string, string> }) => WebSocket;
+
+export function openCdpWebSocket(url: string, headers?: Record<string, string>): WebSocket {
+  const Ctor = WebSocket as unknown as HeaderedWebSocketCtor;
+  return headers !== undefined && Object.keys(headers).length > 0 ? new Ctor(url, { headers }) : new Ctor(url);
+}
+
+async function canOpenWebSocket(url: string, timeoutMs: number, headers?: Record<string, string>): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false;
     const finish = (value: boolean) => {
@@ -843,7 +850,7 @@ async function canOpenWebSocket(url: string, timeoutMs: number): Promise<boolean
     );
     let ws: WebSocket;
     try {
-      ws = new WebSocket(url);
+      ws = openCdpWebSocket(stripUrlCredentials(url), headers);
     } catch {
       finish(false);
       return;
@@ -972,13 +979,15 @@ export async function isChromeReachable(
   } catch {
     return false;
   }
-  const authenticated = (authToken !== undefined && authToken !== '') || stripUrlCredentials(cdpUrl) !== cdpUrl;
-  if (isDirectCdpWebSocketEndpoint(cdpUrl)) return authenticated || (await canOpenWebSocket(cdpUrl, timeoutMs));
+  const probeHeaders = getHeadersWithAuth(cdpUrl);
+  if (authToken !== undefined && authToken !== '' && !probeHeaders.Authorization)
+    probeHeaders.Authorization = `Bearer ${authToken}`;
+  if (isDirectCdpWebSocketEndpoint(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs, probeHeaders);
   const cdpControlPolicy = scopeCdpPolicyToConfiguredEndpoint(cdpUrl, ssrfPolicy);
   const discoveryUrl = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
   const version = await fetchChromeVersionWithCredentialFallback(discoveryUrl, timeoutMs, authToken, cdpControlPolicy);
   if (version !== null) return true;
-  if (isWebSocketUrl(cdpUrl)) return authenticated || (await canOpenWebSocket(cdpUrl, timeoutMs));
+  if (isWebSocketUrl(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs, probeHeaders);
   return false;
 }
 
@@ -1318,10 +1327,11 @@ const CHROME_GRACEFUL_CLOSE_COMMAND_TIMEOUT_MS = 500;
 
 /** CDP `Browser.close` flushes profile data (cookies) before any signal reaches the process group. */
 async function requestGracefulChromeClose(cdpPort: number, timeoutMs: number): Promise<boolean> {
-  const commandTimeoutMs = Math.max(1, Math.min(timeoutMs, CHROME_GRACEFUL_CLOSE_COMMAND_TIMEOUT_MS));
+  const deadline = Date.now() + Math.max(1, Math.min(timeoutMs, CHROME_GRACEFUL_CLOSE_COMMAND_TIMEOUT_MS));
+  const remaining = () => Math.max(1, deadline - Date.now());
   let commandSent = false;
   try {
-    const wsUrl = await getChromeWebSocketUrl(`http://127.0.0.1:${String(cdpPort)}`, Math.min(commandTimeoutMs, 200));
+    const wsUrl = await getChromeWebSocketUrl(`http://127.0.0.1:${String(cdpPort)}`, Math.min(remaining(), 200));
     if (wsUrl === null) return false;
     await new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -1340,7 +1350,7 @@ async function requestGracefulChromeClose(cdpPort: number, timeoutMs: number): P
       };
       const timer = setTimeout(() => {
         finish(new Error('Chrome graceful close timed out'));
-      }, commandTimeoutMs);
+      }, remaining());
       try {
         ws = new WebSocket(wsUrl);
       } catch (err) {
@@ -1368,13 +1378,14 @@ async function requestGracefulChromeClose(cdpPort: number, timeoutMs: number): P
 
 async function waitForChromeCdpShutdown(cdpPort: number, timeoutMs: number): Promise<boolean> {
   const cdpUrl = `http://127.0.0.1:${String(cdpPort)}`;
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (!(await isChromeReachable(cdpUrl, 200))) return true;
-    const remainingMs = timeoutMs - (Date.now() - start);
-    await new Promise((r) => setTimeout(r, Math.max(1, Math.min(100, remainingMs))));
+  const deadline = Date.now() + timeoutMs;
+  const remaining = () => deadline - Date.now();
+  while (remaining() > 0) {
+    if (!(await isChromeReachable(cdpUrl, Math.min(200, remaining())))) return true;
+    if (remaining() <= 0) break;
+    await new Promise((r) => setTimeout(r, Math.max(1, Math.min(100, remaining()))));
   }
-  return !(await isChromeReachable(cdpUrl, 200));
+  return false;
 }
 
 function processHasExited(proc: RunningChrome['proc']): boolean {
