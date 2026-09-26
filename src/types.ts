@@ -12,6 +12,7 @@ export interface SsrfPolicy {
   /**
    * Allow navigation to private/internal network addresses.
    * Default: `false` — private/internal/loopback addresses are blocked. Set to `true` to allow them.
+   * Hostname navigation stays exposed to browser-side DNS rebinding; see `requireAllowlistedHostnames`.
    */
   dangerouslyAllowPrivateNetwork?: boolean;
   /**
