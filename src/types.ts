@@ -1,6 +1,8 @@
 import type { ChildProcess } from 'node:child_process';
 import type { lookup as dnsLookup } from 'node:dns';
 
+import type { Frame } from 'playwright-core';
+
 // ── SSRF Policy ──
 
 /**
@@ -37,11 +39,14 @@ export interface SsrfPolicy {
    * `dangerouslyAllowPrivateNetwork: true`.
    */
   hostnameAllowlist?: string[];
+  /** Hostname patterns to deny (supports `*.example.com`); takes precedence over all private-network exemptions. */
+  blockedHostnames?: string[];
   /**
-   * Require every navigation to target an IP-literal URL or a hostname listed in
-   * `allowedHostnames` / `hostnameAllowlist`. The browser resolves DNS itself, so a
-   * hostname validated here can still rebind to a private address before the browser
-   * connects; this closes that window at the cost of plain hostname browsing.
+   * Require every navigation to target an IP-literal URL, an exact `allowedHostnames`
+   * entry, or a `hostnameAllowlist` pattern. This rejects unlisted DNS hostnames;
+   * listed names must still be trusted because Chrome resolves them independently.
+   * The gate does not pin browser DNS or grant private-address access to a
+   * `hostnameAllowlist` entry.
    * Default: `false`. Has no effect when `dangerouslyAllowPrivateNetwork` is `true`.
    */
   requireAllowlistedHostnames?: boolean;
@@ -266,13 +271,14 @@ export interface SnapshotStats {
 
 /** Options for controlling snapshot output. */
 export interface SnapshotOptions {
+  signal?: AbortSignal;
   /** Only include interactive elements (buttons, links, inputs, etc.) */
   interactive?: boolean;
   /** Remove structural containers that don't contain interactive elements */
   compact?: boolean;
   /** Maximum tree depth to include */
   maxDepth?: number;
-  /** Maximum character count before truncation (aria mode only) */
+  /** Maximum character count after snapshot enrichment */
   maxChars?: number;
   /** CSS selector to scope the snapshot to a specific element (role mode only — throws in aria mode) */
   selector?: string;
@@ -281,15 +287,15 @@ export interface SnapshotOptions {
   /**
    * Snapshot strategy:
    * - `'aria'` (default) — uses Playwright's AI-mode snapshot, produces refs like `e1`
-   * - `'role'` — uses Playwright's `ariaSnapshot()` + `getByRole()` resolution
+   * - `'role'` — captures the native accessibility tree and binds refs to DOM identities
    */
   mode?: 'role' | 'aria';
   /** Timeout in milliseconds for the snapshot operation (default: 5000) */
   timeoutMs?: number;
   /**
    * How refs are stored for role-mode snapshots.
-   * - `'role'` (default) — refs resolved via `getByRole()`
-   * - `'aria'` — refs resolved via aria snapshot index
+   * - `'role'` (default) — native refs resolve through their bound DOM markers
+   * - `'aria'` — uses Playwright's AI snapshot and aria-ref locators; no selector/frame scope
    * Only applies when `mode: 'role'`.
    */
   refsMode?: 'role' | 'aria';
@@ -369,12 +375,14 @@ export interface ClickOptions {
   timeoutMs?: number;
   /** Force click even if element is hidden or covered. Dispatches the event regardless of visibility. */
   force?: boolean;
-  /** AbortSignal to cancel the click mid-flight. Aborts tear down the Playwright connection to unblock the in-flight action. */
+  /** Cancel the click without disconnecting other tabs. */
   signal?: AbortSignal;
 }
 
 /** Options for type actions. */
 export interface TypeOptions {
+  /** Cancel typing without disconnecting other tabs. */
+  signal?: AbortSignal;
   /** Press Enter after typing */
   submit?: boolean;
   /** Type character-by-character with delay (75ms per key) instead of instant fill */
@@ -404,8 +412,9 @@ export interface WaitOptions {
   fn?: string | ((arg?: unknown) => unknown);
   /** Serializable argument passed to `fn` in the browser context. Use an array or object to pass multiple values. */
   arg?: unknown;
-  /** Timeout for each condition in milliseconds. Default: `20000` */
+  /** Shared timeout budget for condition waits in milliseconds. Default: `20000` */
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 /** Options for screenshot capture. */
@@ -420,8 +429,10 @@ export interface ScreenshotOptions {
   type?: 'png' | 'jpeg';
   /** Enable labeled screenshot mode (used internally by screenshotWithLabels) */
   labels?: boolean;
-  /** Max ms to wait for the screenshot. Default: Playwright's 30s. Pass 0 to disable. */
+  /** Max ms to wait for a standard screenshot. Default: 20000. Pass 0 to disable. */
   timeoutMs?: number;
+  /** Cancel a standard screenshot without disconnecting the browser. */
+  signal?: AbortSignal;
 }
 
 // ── Activity ──
@@ -644,6 +655,7 @@ export interface PageState {
   nextRequestId: number;
   roleRefs?: RoleRefs;
   roleRefsFrameSelector?: string;
+  roleRefsFrame?: Frame;
   roleRefsMode?: 'role' | 'aria';
   roleRefsStoredAt?: number;
   roleRefsStaleWarned?: number;

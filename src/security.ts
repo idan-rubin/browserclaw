@@ -4,23 +4,22 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import { lstat, realpath, rename, rm } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { tmpdir } from 'node:os';
-import {
-  resolve,
-  normalize,
-  dirname,
-  basename,
-  join,
-  sep,
-  relative,
-  posix,
-  win32,
-  isAbsolute as pathIsAbsolute,
-} from 'node:path';
+import { resolve, normalize, dirname, basename, join, sep, relative, isAbsolute as pathIsAbsolute } from 'node:path';
 
 import * as ipaddr from 'ipaddr.js';
 
 import { hasProxyEnvConfigured } from './chrome-launcher.js';
+import {
+  fitFileNameToPortableComponent,
+  hasWindowsPathAlias,
+  pathForWindowsFilesystem,
+  resolvePathPreservingWindowsRoot,
+  sanitizeUntrustedFileName,
+} from './file-safety.js';
+import { assertConfinedFilePath } from './path-confinement.js';
 import type { SsrfPolicy, PinnedHostname } from './types.js';
+
+export { sanitizeUntrustedFileName } from './file-safety.js';
 
 // ── Default temp directories for downloads/uploads ──
 
@@ -117,6 +116,15 @@ function hasExplicitCdpAllowlist(policy: SsrfPolicy): boolean {
   );
 }
 
+const discoveredCdpAuthorityChangeByPolicy = new WeakMap<SsrfPolicy, boolean>();
+
+function allowsDiscoveredCdpAuthorityChange(policy?: SsrfPolicy): boolean {
+  const prepared = policy ? discoveredCdpAuthorityChangeByPolicy.get(policy) : undefined;
+  if (prepared !== undefined) return prepared;
+  const hasExplicitAllowedHostnames = (policy?.allowedHostnames ?? []).some((hostname) => hostname.trim().length > 0);
+  return !policy || (!hasExplicitAllowedHostnames && isPrivateNetworkAllowedByPolicy(policy));
+}
+
 /**
  * Pin a policy to the configured CDP hostname so `/json/*` discovery cannot use a broader allowlist.
  * `allowedHostnames` also skips private-network checks; keep it only if the caller or loopback auto-allow already did.
@@ -132,11 +140,15 @@ export function scopeCdpPolicyToConfiguredEndpoint(cdpUrl: string, ssrfPolicy?: 
   const keepsPrivateExemption =
     normalizeHostnameSet(ssrfPolicy.allowedHostnames).has(normalizeHostname(hostname)) ||
     (isCdpLoopbackHostname(hostname.replace(/\.+$/, '')) && !hasExplicitCdpAllowlist(ssrfPolicy));
-  return {
+  const scopedPolicy: SsrfPolicy = {
     ...ssrfPolicy,
     allowedHostnames: keepsPrivateExemption ? [hostname] : [],
     hostnameAllowlist: [hostname],
   };
+  // Scoping may add a loopback grant or narrow an existing list. Preserve the
+  // original authority decision instead of treating those derived fields as caller intent.
+  discoveredCdpAuthorityChangeByPolicy.set(scopedPolicy, allowsDiscoveredCdpAuthorityChange(ssrfPolicy));
+  return scopedPolicy;
 }
 
 function cdpEndpointAuthority(url: string): string {
@@ -151,7 +163,7 @@ function assertDiscoveredCdpEndpointMatchesConfigured(
   configuredUrl: string,
   ssrfPolicy?: SsrfPolicy,
 ): void {
-  if (!ssrfPolicy || isPrivateNetworkAllowedByPolicy(ssrfPolicy)) return;
+  if (allowsDiscoveredCdpAuthorityChange(ssrfPolicy)) return;
   let matches: boolean;
   try {
     matches = cdpEndpointAuthority(discoveredUrl) === cdpEndpointAuthority(configuredUrl);
@@ -184,6 +196,16 @@ export async function assertCdpEndpointAllowed(
   ssrfPolicy?: SsrfPolicy,
   options?: CdpEndpointSourceOptions,
 ): Promise<void> {
+  await resolveCdpEndpointPin(cdpUrl, ssrfPolicy, options);
+}
+
+/** @internal Validate and retain the DNS result used by the actual CDP dial. */
+export async function resolveCdpEndpointPin(
+  cdpUrl: string,
+  ssrfPolicy?: SsrfPolicy,
+  options?: CdpEndpointSourceOptions,
+  signal?: AbortSignal,
+): Promise<PinnedHostname | undefined> {
   if (options?.source === 'discovered' && options.configuredUrl !== undefined)
     assertDiscoveredCdpEndpointMatchesConfigured(cdpUrl, options.configuredUrl, ssrfPolicy);
   if (!ssrfPolicy) return;
@@ -209,7 +231,7 @@ export async function assertCdpEndpointAllowed(
         }
       : ssrfPolicy;
   try {
-    await resolvePinnedHostnameWithPolicy(parsed.hostname, { policy: effectivePolicy });
+    return await resolvePinnedHostnameWithPolicy(parsed.hostname, { policy: effectivePolicy, signal });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new BrowserCdpEndpointBlockedError(
@@ -232,6 +254,7 @@ export type BrowserProxyMode = 'direct' | 'explicit-browser-proxy';
 export interface BrowserNavigationPolicyOptions {
   ssrfPolicy?: SsrfPolicy;
   browserProxyMode?: BrowserProxyMode;
+  signal?: AbortSignal;
 }
 
 /** Playwright-compatible request interface for redirect chain inspection. */
@@ -326,12 +349,6 @@ const EMBEDDED_IPV4_SENTINEL_RULES: {
   {
     matches: (parts) =>
       parts[0] === 0 && parts[1] === 0 && parts[2] === 0 && parts[3] === 0 && parts[4] === 0 && parts[5] === 0,
-    toHextets: (parts) => [parts[6], parts[7]],
-  },
-  // NAT64 local-use (64:ff9b:1::/48)
-  {
-    matches: (parts) =>
-      parts[0] === 100 && parts[1] === 65435 && parts[2] === 1 && parts[3] === 0 && parts[4] === 0 && parts[5] === 0,
     toHextets: (parts) => [parts[6], parts[7]],
   },
   // 6to4 (2002::/16)
@@ -432,6 +449,13 @@ function isBlockedSpecialUseIpv4Address(address: ipaddr.IPv4, opts?: IsPrivateIp
 
 function isBlockedSpecialUseIpv6Address(address: ipaddr.IPv6, opts?: IsPrivateIpv6Opts): boolean {
   const range = address.range();
+  if (isRfc8215Nat64LocalUseAddress(address)) return true;
+  if (
+    CLOUD_METADATA_IPV6.some(
+      (metadata) => address.toNormalizedString() === ipaddr.IPv6.parse(metadata).toNormalizedString(),
+    )
+  )
+    return true;
   if (range === 'uniqueLocal' && opts?.allowUniqueLocalRange === true) return false;
   if (BLOCKED_IPV6_RANGES.has(range)) return true;
   return (address.parts[0] & 0xffc0) === 0xfec0;
@@ -443,6 +467,9 @@ function decodeIpv4FromHextets(high: number, low: number): ipaddr.IPv4 {
 }
 
 function extractEmbeddedIpv4FromIpv6(address: ipaddr.IPv6): ipaddr.IPv4 | undefined {
+  // RFC 8215 permits multiple embedding layouts across this /48; low 32 bits
+  // cannot safely identify the destination. The entire prefix is blocked above.
+  if (isRfc8215Nat64LocalUseAddress(address)) return;
   if (address.isIPv4MappedAddress()) return address.toIPv4Address();
   if (address.range() === 'rfc6145') return decodeIpv4FromHextets(address.parts[6], address.parts[7]);
   if (address.range() === 'rfc6052') return decodeIpv4FromHextets(address.parts[6], address.parts[7]);
@@ -451,6 +478,18 @@ function extractEmbeddedIpv4FromIpv6(address: ipaddr.IPv6): ipaddr.IPv4 | undefi
     const [high, low] = rule.toHextets(address.parts);
     return decodeIpv4FromHextets(high, low);
   }
+}
+
+function isRfc8215Nat64LocalUseAddress(address: ipaddr.IPv6): boolean {
+  return address.parts[0] === 0x64 && address.parts[1] === 0xff9b && address.parts[2] === 1;
+}
+
+function isBlockedTrustedResolvedIpv6Address(address: string): boolean {
+  const parsed = parseCanonicalIpAddress(address);
+  if (parsed?.kind() !== 'ipv6') return false;
+  const range = parsed.range();
+  if (range !== 'unicast' && range !== 'rfc6052') return false;
+  return isBlockedSpecialUseIpv6Address(parsed as ipaddr.IPv6);
 }
 
 function resolveIpv4SpecialUseBlockOptions(policy?: SsrfPolicy): IsPrivateIpv4Opts {
@@ -674,12 +713,16 @@ export function createPinnedLookup(params: {
     const usable = candidates.length > 0 ? candidates : fallbackPool;
 
     if (opts.all === true) {
-      cb(null, usable);
+      process.nextTick(() => {
+        cb(null, usable);
+      });
       return;
     }
     const chosen = usable[index % usable.length];
     index += 1;
-    cb(null, chosen.address, chosen.family);
+    process.nextTick(() => {
+      cb(null, chosen.address, chosen.family);
+    });
   }) as typeof dnsLookupCb;
 }
 
@@ -700,9 +743,14 @@ function dnsPolicyFingerprint(policy: SsrfPolicy | undefined): string {
   const allowlist = normalizeHostnameAllowlist(policy?.hostnameAllowlist);
   const allowRfc2544 = policy?.allowRfc2544BenchmarkRange === true;
   const allowIpv6Ula = policy?.allowIpv6UniqueLocalRange === true;
-  const allowedKey = [...allowed].sort().join(',');
-  const allowlistKey = allowlist.sort().join(',');
-  return `${allowPrivate ? '1' : '0'}|${allowRfc2544 ? '1' : '0'}|${allowIpv6Ula ? '1' : '0'}|${allowedKey}|${allowlistKey}`;
+  return JSON.stringify([
+    allowPrivate,
+    allowRfc2544,
+    allowIpv6Ula,
+    [...allowed].sort(),
+    allowlist.sort(),
+    normalizeHostnameAllowlist(policy?.blockedHostnames).sort(),
+  ]);
 }
 
 function dnsCacheKey(hostname: string, policy: SsrfPolicy | undefined): string {
@@ -738,8 +786,10 @@ export async function resolvePinnedHostnameWithPolicy(
   params: {
     lookupFn?: LookupFn;
     policy?: SsrfPolicy;
+    signal?: AbortSignal;
   } = {},
 ): Promise<PinnedHostname> {
+  params.signal?.throwIfAborted();
   const normalized = normalizeHostname(hostname);
   if (!normalized) throw new InvalidBrowserNavigationUrlError(`Invalid hostname: "${hostname}"`);
 
@@ -748,6 +798,16 @@ export async function resolvePinnedHostnameWithPolicy(
   const hostnameAllowlist = normalizeHostnameAllowlist(params.policy?.hostnameAllowlist);
   const isExplicitlyAllowed = allowedHostnames.has(normalized);
   const skipPrivateNetworkChecks = allowPrivateNetwork || isExplicitlyAllowed;
+
+  if (
+    normalizeHostnameAllowlist(params.policy?.blockedHostnames).some((pattern) =>
+      isHostnameAllowedByPattern(normalized, pattern),
+    )
+  ) {
+    throw new InvalidBrowserNavigationUrlError(
+      `Navigation blocked: hostname "${hostname}" is in the configured blocklist.`,
+    );
+  }
 
   // hostnameAllowlist is a restriction: if specified, hostname must match a pattern
   if (!matchesHostnameAllowlist(normalized, hostnameAllowlist)) {
@@ -772,12 +832,17 @@ export async function resolvePinnedHostnameWithPolicy(
   const lookupFn = params.lookupFn ?? dnsLookup;
   let results: { address: string; family: number }[];
   try {
-    results = (await lookupFn(normalized, { all: true })) as unknown as { address: string; family: number }[];
+    results = (await runAbortablePreflight(() => lookupFn(normalized, { all: true }), params.signal)) as unknown as {
+      address: string;
+      family: number;
+    }[];
   } catch {
+    params.signal?.throwIfAborted();
     throw new InvalidBrowserNavigationUrlError(
       `Navigation to internal/loopback address blocked: unable to resolve "${hostname}". ssrfPolicy.dangerouslyAllowPrivateNetwork is false (strict mode).`,
     );
   }
+  params.signal?.throwIfAborted();
 
   if (results.length === 0) {
     throw new InvalidBrowserNavigationUrlError(
@@ -812,6 +877,11 @@ export async function resolvePinnedHostnameWithPolicy(
           `Navigation blocked: allow-listed hostname "${hostname}" resolves to a cloud-metadata/link-local address "${r.address}".`,
         );
       }
+      if (isBlockedTrustedResolvedIpv6Address(r.address)) {
+        throw new InvalidBrowserNavigationUrlError(
+          `Navigation blocked: allow-listed hostname "${hostname}" resolves to a special-use IPv6 address "${r.address}".`,
+        );
+      }
     }
   }
 
@@ -831,6 +901,25 @@ export async function resolvePinnedHostnameWithPolicy(
   return pinned;
 }
 
+async function runAbortablePreflight<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return await run();
+  signal.throwIfAborted();
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      // AbortSignal accepts any reason; preserve the caller's cancellation identity.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      reject(signal.reason);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([aborted, run()]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 /**
  * Assert that a URL is allowed for browser navigation under the given SSRF policy.
  * Throws `InvalidBrowserNavigationUrlError` if the URL is blocked.
@@ -841,6 +930,7 @@ export async function assertBrowserNavigationAllowed(
     lookupFn?: LookupFn;
   } & BrowserNavigationPolicyOptions,
 ): Promise<void> {
+  opts.signal?.throwIfAborted();
   const rawUrl = opts.url.trim();
   if (rawUrl === '') throw new InvalidBrowserNavigationUrlError('url is required');
 
@@ -897,6 +987,7 @@ export async function assertBrowserNavigationAllowed(
   await resolvePinnedHostnameWithPolicy(parsed.hostname, {
     lookupFn: opts.lookupFn,
     policy: opts.ssrfPolicy,
+    signal: opts.signal,
   });
 }
 
@@ -1007,23 +1098,36 @@ export function resolvePathWithinRoot(params: {
   scopeLabel: string;
   defaultFileName?: string;
 }): PathResult {
-  const root = resolve(params.rootDir);
+  if (
+    hasWindowsPathAlias(params.rootDir) ||
+    hasWindowsPathAlias(params.requestedPath) ||
+    (params.defaultFileName !== undefined && hasWindowsPathAlias(params.defaultFileName))
+  ) {
+    return { ok: false, error: `Path uses a Windows filesystem namespace alias (${params.scopeLabel}).` };
+  }
+  const root = resolvePathPreservingWindowsRoot(params.rootDir);
   const raw = params.requestedPath.trim();
   const effectivePath =
     raw === '' && params.defaultFileName != null && params.defaultFileName !== '' ? params.defaultFileName : raw;
   if (effectivePath === '') return { ok: false, error: `Empty path is not allowed (${params.scopeLabel}).` };
 
-  const resolved = resolve(root, effectivePath);
+  const resolved = resolvePathPreservingWindowsRoot(root, effectivePath);
   const rel = relative(root, resolved);
-  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || pathIsAbsolute(rel)) {
+  if (
+    hasWindowsPathAlias(root) ||
+    hasWindowsPathAlias(resolved) ||
+    !rel ||
+    rel === '..' ||
+    rel.startsWith(`..${sep}`) ||
+    pathIsAbsolute(rel)
+  ) {
     return { ok: false, error: `Path escapes ${params.scopeLabel}: "${params.requestedPath}".` };
   }
   return { ok: true, path: resolved };
 }
 
 /**
- * Async writable-path check: verifies parent dir realpath is within root,
- * and that the target (if it exists) is not a symlink.
+ * Validate an existing parent and a regular, non-linked target (or missing leaf).
  */
 export async function resolveWritablePathWithinRoot(params: {
   rootDir: string;
@@ -1034,36 +1138,19 @@ export async function resolveWritablePathWithinRoot(params: {
   const lexical = resolvePathWithinRoot(params);
   if (!lexical.ok) return lexical;
 
-  const root = resolve(params.rootDir);
+  const root = await realRootOf(params.rootDir);
   const target = lexical.path;
-
-  let parentReal: string;
+  const canonicalTarget = resolvePathPreservingWindowsRoot(
+    root,
+    relative(resolvePathPreservingWindowsRoot(params.rootDir), target),
+  );
   try {
-    parentReal = await realpath(dirname(target));
-  } catch {
+    await assertConfinedFilePath(root, canonicalTarget, 'leaf');
+  } catch (e) {
     return {
       ok: false,
-      error: `Parent directory is inaccessible for "${params.requestedPath}" (${params.scopeLabel}).`,
+      error: `Cannot stat "${params.requestedPath}" (${params.scopeLabel}): ${(e as Error).message}`,
     };
-  }
-
-  const parentRel = relative(root, parentReal);
-  if (parentRel === '..' || parentRel.startsWith(`..${sep}`) || pathIsAbsolute(parentRel)) {
-    return { ok: false, error: `Path escapes ${params.scopeLabel} via symlink: "${params.requestedPath}".` };
-  }
-
-  try {
-    const stat = await lstat(target);
-    if (stat.isSymbolicLink()) {
-      return { ok: false, error: `Path is a symbolic link (${params.scopeLabel}): "${params.requestedPath}".` };
-    }
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-      return {
-        ok: false,
-        error: `Cannot stat "${params.requestedPath}" (${params.scopeLabel}): ${(e as Error).message}`,
-      };
-    }
   }
 
   return { ok: true, path: target };
@@ -1078,34 +1165,35 @@ export async function resolveExistingPathsWithinRoot(params: {
   requestedPaths: string[];
   scopeLabel: string;
 }): Promise<PathsResult> {
+  if (hasWindowsPathAlias(params.rootDir)) {
+    return { ok: false, error: `Path uses a Windows filesystem namespace alias (${params.scopeLabel}).` };
+  }
   const root = await realRootOf(params.rootDir);
   const resolved: string[] = [];
 
   for (const raw of params.requestedPaths) {
-    const lexical = resolvePathWithinRoot({ rootDir: root, requestedPath: raw, scopeLabel: params.scopeLabel });
+    const lexical = resolvePathWithinCanonicalRoot(params, root, raw);
     if (!lexical.ok) return lexical;
 
     try {
-      const real = await realpath(lexical.path);
+      await assertConfinedFilePath(root, lexical.path, 'any');
+      const real = await realpath(pathForWindowsFilesystem(lexical.path));
       const rel = relative(root, real);
-      if (rel === '..' || rel.startsWith(`..${sep}`) || pathIsAbsolute(rel)) {
+      if (hasWindowsPathAlias(real) || rel === '..' || rel.startsWith(`..${sep}`) || pathIsAbsolute(rel)) {
         return { ok: false, error: `Path escapes ${params.scopeLabel} via symlink: "${raw}".` };
       }
       resolved.push(real);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-        // Verify parent directory exists and resolves within root to prevent
-        // lexical path from hiding a symlink-based escape via a missing intermediate
         try {
-          const parentReal = await realpath(dirname(lexical.path));
-          const parentRel = relative(root, parentReal);
-          if (parentRel === '..' || parentRel.startsWith(`..${sep}`) || pathIsAbsolute(parentRel)) {
-            return { ok: false, error: `Path escapes ${params.scopeLabel} via parent symlink: "${raw}".` };
-          }
-        } catch {
-          // Parent doesn't exist either — safe since path can't be reached
+          await assertConfinedFilePath(root, lexical.path, 'any');
+          resolved.push(lexical.path);
+        } catch (validationError) {
+          return {
+            ok: false,
+            error: `Cannot resolve "${raw}" (${params.scopeLabel}): ${(validationError as Error).message}`,
+          };
         }
-        resolved.push(lexical.path);
       } else {
         return { ok: false, error: `Cannot resolve "${raw}" (${params.scopeLabel}): ${(e as Error).message}` };
       }
@@ -1117,12 +1205,29 @@ export async function resolveExistingPathsWithinRoot(params: {
 
 /** Escape checks compare realpath'd files, so the root must be realpath'd too (macOS /tmp -> /private/tmp). */
 async function realRootOf(rootDir: string): Promise<string> {
-  const lexical = resolve(rootDir);
+  const lexical = resolvePathPreservingWindowsRoot(rootDir);
   try {
-    return await realpath(lexical);
+    return await realpath(pathForWindowsFilesystem(lexical));
   } catch {
     return lexical;
   }
+}
+
+function resolvePathWithinCanonicalRoot(
+  params: { rootDir: string; scopeLabel: string },
+  canonicalRoot: string,
+  requestedPath: string,
+): PathResult {
+  const lexical = resolvePathWithinRoot({ ...params, requestedPath });
+  if (!lexical.ok) {
+    // Existing callers may already use the canonical spelling of an aliased root.
+    return resolvePathWithinRoot({ ...params, rootDir: canonicalRoot, requestedPath });
+  }
+  const lexicalRoot = resolvePathPreservingWindowsRoot(params.rootDir);
+  return {
+    ok: true,
+    path: resolvePathPreservingWindowsRoot(canonicalRoot, relative(lexicalRoot, lexical.path)),
+  };
 }
 
 /**
@@ -1133,16 +1238,20 @@ export async function resolveStrictExistingPathsWithinRoot(params: {
   requestedPaths: string[];
   scopeLabel: string;
 }): Promise<PathsResult> {
+  if (hasWindowsPathAlias(params.rootDir)) {
+    return { ok: false, error: `Path uses a Windows filesystem namespace alias (${params.scopeLabel}).` };
+  }
   const root = await realRootOf(params.rootDir);
   const resolved: string[] = [];
 
   for (const raw of params.requestedPaths) {
-    const lexical = resolvePathWithinRoot({ rootDir: root, requestedPath: raw, scopeLabel: params.scopeLabel });
+    const lexical = resolvePathWithinCanonicalRoot(params, root, raw);
     if (!lexical.ok) return lexical;
 
     let real: string;
     try {
-      real = await realpath(lexical.path);
+      await assertConfinedFilePath(root, lexical.path, 'reject');
+      real = await realpath(pathForWindowsFilesystem(lexical.path));
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
         return { ok: false, error: `Path does not exist (${params.scopeLabel}): "${raw}".` };
@@ -1151,16 +1260,19 @@ export async function resolveStrictExistingPathsWithinRoot(params: {
     }
 
     const rel = relative(root, real);
-    if (rel === '..' || rel.startsWith(`..${sep}`) || pathIsAbsolute(rel)) {
+    if (hasWindowsPathAlias(real) || rel === '..' || rel.startsWith(`..${sep}`) || pathIsAbsolute(rel)) {
       return { ok: false, error: `Path escapes ${params.scopeLabel} via symlink: "${raw}".` };
     }
 
-    const stat = await lstat(real);
+    const stat = await lstat(pathForWindowsFilesystem(real));
     if (stat.isSymbolicLink()) {
       return { ok: false, error: `Path is a symbolic link (${params.scopeLabel}): "${raw}".` };
     }
     if (!stat.isFile()) {
       return { ok: false, error: `Path is not a regular file (${params.scopeLabel}): "${raw}".` };
+    }
+    if (stat.nlink > 1) {
+      return { ok: false, error: `Path is a hardlinked file (${params.scopeLabel}): "${raw}".` };
     }
 
     resolved.push(real);
@@ -1172,35 +1284,18 @@ export async function resolveStrictExistingPathsWithinRoot(params: {
 // ── Atomic file write utilities ──
 
 /**
- * Sanitize an untrusted file name (e.g. from a download) to prevent path traversal.
- */
-export function sanitizeUntrustedFileName(fileName: string, fallbackName: string): string {
-  const trimmed = fileName.trim();
-  if (trimmed === '') return fallbackName;
-
-  let base = posix.basename(trimmed);
-  base = win32.basename(base);
-
-  let cleaned = '';
-  for (let i = 0; i < base.length; i++) {
-    const code = base.charCodeAt(i);
-    if (code < 32 || code === 127) continue;
-    cleaned += base[i];
-  }
-  base = cleaned.trim();
-
-  if (!base || base === '.' || base === '..') return fallbackName;
-  if (base.length > 200) base = base.slice(0, 200);
-  return base;
-}
-
-/**
  * Build a sibling temp path for atomic writes.
  */
 function buildSiblingTempPath(targetPath: string): string {
   const id = randomUUID();
-  const safeTail = sanitizeUntrustedFileName(basename(targetPath), 'output.bin');
-  return join(dirname(targetPath), `.browserclaw-output-${id}-${safeTail}.part`);
+  const prefix = `.browserclaw-output-${id}-`;
+  const suffix = '.part';
+  const safeTail = fitFileNameToPortableComponent({
+    prefix,
+    fileName: sanitizeUntrustedFileName(basename(targetPath), 'output.bin'),
+    suffix,
+  });
+  return join(dirname(targetPath), `${prefix}${safeTail}${suffix}`);
 }
 
 /**
@@ -1213,24 +1308,35 @@ export async function writeViaSiblingTempPath(params: {
   targetPath: string;
   writeTemp: (tempPath: string) => Promise<void>;
 }): Promise<void> {
+  const assertNoAlias = (value: string): void => {
+    if (hasWindowsPathAlias(value)) throw new Error('Output path uses a Windows filesystem namespace alias');
+  };
+  assertNoAlias(params.rootDir);
+  assertNoAlias(params.targetPath);
   let rootDir: string;
   try {
-    rootDir = await realpath(resolve(params.rootDir));
+    rootDir = await realpath(pathForWindowsFilesystem(resolvePathPreservingWindowsRoot(params.rootDir)));
   } catch {
     console.warn(`[browserclaw] writeViaSiblingTempPath: rootDir realpath failed, using lexical resolve`);
-    rootDir = resolve(params.rootDir);
+    rootDir = resolvePathPreservingWindowsRoot(params.rootDir);
   }
-  const requestedTargetPath = resolve(params.targetPath);
-  const targetPath = await realpath(dirname(requestedTargetPath))
+  assertNoAlias(rootDir);
+  const requestedTargetPath = resolvePathPreservingWindowsRoot(params.targetPath);
+  assertNoAlias(requestedTargetPath);
+  const targetPath = await realpath(pathForWindowsFilesystem(dirname(requestedTargetPath)))
     .then((realDir) => join(realDir, basename(requestedTargetPath)))
     .catch(() => requestedTargetPath);
+  assertNoAlias(targetPath);
 
   const relativeTargetPath = relative(rootDir, targetPath);
   if (
     !relativeTargetPath ||
     relativeTargetPath === '..' ||
     relativeTargetPath.startsWith(`..${sep}`) ||
-    pathIsAbsolute(relativeTargetPath)
+    pathIsAbsolute(relativeTargetPath) ||
+    // Windows can host distinct case-sensitive siblings. Both paths above
+    // are canonical: a case-folded relative match must not authorize another root.
+    (process.platform === 'win32' && resolvePathPreservingWindowsRoot(rootDir, relativeTargetPath) !== targetPath)
   ) {
     throw new Error('Target path is outside the allowed root');
   }
@@ -1268,6 +1374,7 @@ export async function assertBrowserNavigationResultAllowed(
     lookupFn?: LookupFn;
   } & BrowserNavigationPolicyOptions,
 ): Promise<void> {
+  opts.signal?.throwIfAborted();
   const rawUrl = opts.url.trim();
   if (rawUrl === '') return;
 
@@ -1297,6 +1404,7 @@ export async function assertBrowserNavigationRedirectChainAllowed(
     lookupFn?: LookupFn;
   } & BrowserNavigationPolicyOptions,
 ): Promise<void> {
+  opts.signal?.throwIfAborted();
   const chain: string[] = [];
   let current = opts.request ?? null;
   while (current) {
@@ -1309,6 +1417,7 @@ export async function assertBrowserNavigationRedirectChainAllowed(
       lookupFn: opts.lookupFn,
       ssrfPolicy: opts.ssrfPolicy,
       browserProxyMode: opts.browserProxyMode,
+      signal: opts.signal,
     });
   }
 }

@@ -15,13 +15,14 @@ import {
   getRestoredPageForTarget,
   parseRoleRef,
   withPageScopedCdpClient,
-  forceDisconnectPlaywrightConnection,
 } from '../connection.js';
 import { NavigationRaceError } from '../errors.js';
-import { resolveStrictExistingPathsWithinRoot, DEFAULT_UPLOAD_DIR } from '../security.js';
 import type { FormField, SsrfPolicy } from '../types.js';
 
+import { runGuardedInput } from './guarded-input.js';
 import { assertInteractionNavigationCompletedSafely, didCrossDocumentUrlChange } from './navigation.js';
+import { awaitUploadWithAbort, resolveUploadFiles, type UploadOptions } from './upload-files.js';
+import { armPageUpload } from './upload-lifecycle.js';
 
 type MouseButton = 'left' | 'right' | 'middle';
 type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
@@ -29,6 +30,18 @@ type KeyModifier = 'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift';
 const MAX_CLICK_DELAY_MS = 5000;
 const DEFAULT_SCROLL_TIMEOUT_MS = 20_000;
 const CHECKABLE_ROLES = new Set(['menuitemcheckbox', 'menuitemradio', 'checkbox', 'radio', 'switch']);
+
+function interactionError(error: unknown, label: string, signal?: AbortSignal): Error {
+  if (
+    signal?.aborted === true &&
+    error instanceof Error &&
+    error.name === 'AbortError' &&
+    error.cause === signal.reason
+  ) {
+    signal.throwIfAborted();
+  }
+  return toAIFriendlyError(error, label);
+}
 
 export async function awaitActionWithAbort<T>(actionPromise: Promise<T>, abortPromise?: Promise<never>): Promise<T> {
   if (!abortPromise) return await actionPromise;
@@ -72,22 +85,16 @@ export async function mouseClickViaPlaywright(opts: {
   clickCount?: number;
   delayMs?: number;
   ssrfPolicy?: SsrfPolicy;
+  signal?: AbortSignal;
 }): Promise<void> {
+  opts.signal?.throwIfAborted();
   const page = await getRestoredPageForTarget(opts);
-  const previousUrl = page.url();
-  await assertInteractionNavigationCompletedSafely({
-    action: async () => {
-      await page.mouse.click(opts.x, opts.y, {
-        button: opts.button,
-        clickCount: opts.clickCount,
-        delay: opts.delayMs,
-      });
-    },
-    cdpUrl: opts.cdpUrl,
-    page,
-    previousUrl,
-    ssrfPolicy: opts.ssrfPolicy,
-    targetId: opts.targetId,
+  await runGuardedInput(page, opts, async () => {
+    await page.mouse.click(opts.x, opts.y, {
+      button: opts.button,
+      clickCount: opts.clickCount,
+      delay: opts.delayMs,
+    });
   });
 }
 
@@ -217,9 +224,11 @@ export async function clickViaPlaywright(opts: {
   force?: boolean;
   ssrfPolicy?: SsrfPolicy;
   signal?: AbortSignal;
+  /** @internal Keeps atomic chooser clicks on the page that owns their listener. */
+  resolvedPage?: Page;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
-  const page = await getRestoredPageForTarget(opts);
+  const page = opts.resolvedPage ?? (await getRestoredPageForTarget(opts));
   const label = resolved.ref ?? resolved.selector ?? '';
   const locator = resolveLocator(page, resolved);
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
@@ -236,26 +245,10 @@ export async function clickViaPlaywright(opts: {
     abortPromise.catch(() => {
       /* consumed via awaitActionWithAbort */
     });
-    // Unlike JS evaluation (where Runtime.terminateExecution can kill a stuck eval
-    // without closing the browser), Playwright click/hover is orchestrated through
-    // the Playwright protocol and cannot be cancelled via a targeted CDP command.
-    // Tearing down the full connection is the only way to unblock the in-flight action.
-    const disconnect = () => {
-      forceDisconnectPlaywrightConnection({
-        cdpUrl: opts.cdpUrl,
-        targetId: opts.targetId,
-        reason: 'click aborted',
-        ssrfPolicy: opts.ssrfPolicy,
-      }).catch(() => {
-        /* best-effort disconnect */
-      });
-    };
-    if (signal.aborted) {
-      disconnect();
-      throw signal.reason ?? new Error('aborted');
-    }
+    signal.throwIfAborted();
+    // Native locator cancellation leaves unrelated tabs connected. The race
+    // also interrupts BC's checked-state polling and delayed-click waits.
     abortListener = () => {
-      disconnect();
       abortReject?.(signal.reason ?? new Error('aborted'));
     };
     signal.addEventListener('abort', abortListener, { once: true });
@@ -275,45 +268,45 @@ export async function clickViaPlaywright(opts: {
   try {
     await assertInteractionNavigationCompletedSafely({
       action: async () => {
+        signal?.throwIfAborted();
         const delayMs = resolveBoundedDelayMs(opts.delayMs, 'click delayMs', MAX_CLICK_DELAY_MS);
         if (delayMs > 0) {
-          await awaitActionWithAbort(locator.hover({ timeout, force: opts.force }), abortPromise);
+          await locator.hover({ timeout, force: opts.force, signal });
           await awaitActionWithAbort(new Promise<void>((resolve) => setTimeout(resolve, delayMs)), abortPromise);
         }
+        signal?.throwIfAborted();
 
         // Native <input> checkbox/radio expose no aria-checked attr — read .checked.
         const readCheckedState = (readTimeout: number): Promise<string | null | undefined> =>
-          awaitActionWithAbort(
-            locator
-              .evaluate(
-                (el: Element) => {
-                  const input = el as HTMLInputElement;
-                  if (input.tagName === 'INPUT' && (input.type === 'checkbox' || input.type === 'radio')) {
-                    return input.checked ? 'true' : 'false';
-                  }
-                  return el.getAttribute('aria-checked');
-                },
-                undefined,
-                { timeout: readTimeout },
-              )
-              .catch(() => undefined),
-            abortPromise,
-          );
+          locator
+            .evaluate(
+              (el: Element) => {
+                const input = el as HTMLInputElement;
+                if (input.tagName === 'INPUT' && (input.type === 'checkbox' || input.type === 'radio')) {
+                  return input.checked ? 'true' : 'false';
+                }
+                return el.getAttribute('aria-checked');
+              },
+              undefined,
+              { timeout: readTimeout },
+            )
+            .catch(() => undefined);
         let checkedBefore: string | null | undefined;
         if (checkableRole && opts.doubleClick !== true) {
           checkedBefore = await readCheckedState(timeout);
         }
+        signal?.throwIfAborted();
 
         if (opts.doubleClick === true) {
-          await awaitActionWithAbort(
-            locator.dblclick({ timeout, button: opts.button, modifiers: opts.modifiers, force: opts.force }),
-            abortPromise,
-          );
+          await locator.dblclick({
+            timeout,
+            button: opts.button,
+            modifiers: opts.modifiers,
+            force: opts.force,
+            signal,
+          });
         } else {
-          await awaitActionWithAbort(
-            locator.click({ timeout, button: opts.button, modifiers: opts.modifiers, force: opts.force }),
-            abortPromise,
-          );
+          await locator.click({ timeout, button: opts.button, modifiers: opts.modifiers, force: opts.force, signal });
         }
 
         // If this is a checkable role and the checked state didn't change, fall back to JS click.
@@ -325,14 +318,19 @@ export async function clickViaPlaywright(opts: {
           const ATTR_TIMEOUT_MS = Math.min(timeout, POLL_TIMEOUT_MS);
           let changed = false;
           for (let elapsed = 0; elapsed < POLL_TIMEOUT_MS; elapsed += POLL_INTERVAL_MS) {
+            signal?.throwIfAborted();
             const current = await readCheckedState(ATTR_TIMEOUT_MS);
             if (current === undefined || current !== checkedBefore) {
               changed = true;
               break;
             }
-            await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+            await awaitActionWithAbort(
+              new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS)),
+              abortPromise,
+            );
           }
           if (!changed) {
+            signal?.throwIfAborted();
             await locator
               .evaluate((el: Element) => {
                 (el as HTMLElement).click();
@@ -349,8 +347,9 @@ export async function clickViaPlaywright(opts: {
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
     });
+    signal?.throwIfAborted();
   } catch (err) {
-    throw toAIFriendlyError(err, label);
+    throw interactionError(err, label, signal);
   } finally {
     if (signal && abortListener) signal.removeEventListener('abort', abortListener);
     abortReject = undefined;
@@ -364,6 +363,8 @@ export async function hoverViaPlaywright(opts: {
   ref?: string;
   selector?: string;
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
+  signal?: AbortSignal;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   const page = await getRestoredPageForTarget(opts);
@@ -371,9 +372,15 @@ export async function hoverViaPlaywright(opts: {
   const locator = resolveLocator(page, resolved);
 
   try {
-    await locator.hover({ timeout: resolveInteractionTimeoutMs(opts.timeoutMs) });
+    await assertInteractionNavigationCompletedSafely({
+      ...opts,
+      page,
+      previousUrl: page.url(),
+      action: () => locator.hover({ timeout: resolveInteractionTimeoutMs(opts.timeoutMs), signal: opts.signal }),
+    });
+    opts.signal?.throwIfAborted();
   } catch (err) {
-    throw toAIFriendlyError(err, label);
+    throw interactionError(err, label, opts.signal);
   }
 }
 
@@ -387,6 +394,7 @@ export async function typeViaPlaywright(opts: {
   slowly?: boolean;
   timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
+  signal?: AbortSignal;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   const text = opts.text;
@@ -401,13 +409,16 @@ export async function typeViaPlaywright(opts: {
     const previousUrl = page.url();
     await assertInteractionNavigationCompletedSafely({
       action: async () => {
+        opts.signal?.throwIfAborted();
         if (opts.slowly === true) {
-          await locator.click({ timeout });
-          await locator.pressSequentially(text, { timeout, delay: 75 });
+          await locator.click({ timeout, signal: opts.signal });
+          opts.signal?.throwIfAborted();
+          await locator.pressSequentially(text, { timeout, delay: 75, signal: opts.signal });
         } else {
-          await locator.fill(text, { timeout });
+          await locator.fill(text, { timeout, signal: opts.signal });
         }
-        if (opts.submit === true) await locator.press('Enter', { timeout });
+        opts.signal?.throwIfAborted();
+        if (opts.submit === true) await locator.press('Enter', { timeout, signal: opts.signal });
       },
       cdpUrl: opts.cdpUrl,
       page,
@@ -415,8 +426,9 @@ export async function typeViaPlaywright(opts: {
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
     });
+    opts.signal?.throwIfAborted();
   } catch (err) {
-    throw toAIFriendlyError(err, label);
+    throw interactionError(err, label, opts.signal);
   }
 }
 
@@ -428,6 +440,7 @@ export async function selectOptionViaPlaywright(opts: {
   values: string[];
   timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
+  signal?: AbortSignal;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   if (opts.values.length === 0) throw new Error('values are required');
@@ -439,7 +452,10 @@ export async function selectOptionViaPlaywright(opts: {
   try {
     await assertInteractionNavigationCompletedSafely({
       action: async () => {
-        await locator.selectOption(opts.values, { timeout: resolveInteractionTimeoutMs(opts.timeoutMs) });
+        await locator.selectOption(opts.values, {
+          timeout: resolveInteractionTimeoutMs(opts.timeoutMs),
+          signal: opts.signal,
+        });
       },
       cdpUrl: opts.cdpUrl,
       page,
@@ -447,8 +463,9 @@ export async function selectOptionViaPlaywright(opts: {
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
     });
+    opts.signal?.throwIfAborted();
   } catch (err) {
-    throw toAIFriendlyError(err, label);
+    throw interactionError(err, label, opts.signal);
   }
 }
 
@@ -461,6 +478,7 @@ export async function dragViaPlaywright(opts: {
   endSelector?: string;
   timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
+  signal?: AbortSignal;
 }): Promise<void> {
   const resolvedStart = requireRefOrSelector(opts.startRef, opts.startSelector);
   const resolvedEnd = requireRefOrSelector(opts.endRef, opts.endSelector);
@@ -474,7 +492,10 @@ export async function dragViaPlaywright(opts: {
   try {
     await assertInteractionNavigationCompletedSafely({
       action: async () => {
-        await startLocator.dragTo(endLocator, { timeout: resolveInteractionTimeoutMs(opts.timeoutMs) });
+        await startLocator.dragTo(endLocator, {
+          timeout: resolveInteractionTimeoutMs(opts.timeoutMs),
+          signal: opts.signal,
+        });
       },
       cdpUrl: opts.cdpUrl,
       page,
@@ -482,8 +503,9 @@ export async function dragViaPlaywright(opts: {
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
     });
+    opts.signal?.throwIfAborted();
   } catch (err) {
-    throw toAIFriendlyError(err, `${startLabel} -> ${endLabel}`);
+    throw interactionError(err, `${startLabel} -> ${endLabel}`, opts.signal);
   }
 }
 
@@ -493,6 +515,7 @@ export async function fillFormViaPlaywright(opts: {
   fields: FormField[];
   timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
+  signal?: AbortSignal;
 }): Promise<void> {
   const page = await getRestoredPageForTarget(opts);
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
@@ -503,6 +526,7 @@ export async function fillFormViaPlaywright(opts: {
       let filledCount = 0;
       let navigated = false;
       for (const field of opts.fields) {
+        opts.signal?.throwIfAborted();
         if (didCrossDocumentUrlChange(page, previousUrl)) {
           navigated = true;
           break;
@@ -523,8 +547,9 @@ export async function fillFormViaPlaywright(opts: {
         if (type === 'checkbox' || type === 'radio') {
           const checked = rawValue === true || rawValue === 1 || rawValue === '1' || rawValue === 'true';
           try {
-            await locator.setChecked(checked, { timeout, force: true });
+            await locator.setChecked(checked, { timeout, force: true, signal: opts.signal });
           } catch (setCheckedErr) {
+            opts.signal?.throwIfAborted();
             console.warn(
               `[browserclaw] setChecked fallback for ref "${ref}": ${setCheckedErr instanceof Error ? setCheckedErr.message : String(setCheckedErr)}`,
             );
@@ -542,9 +567,9 @@ export async function fillFormViaPlaywright(opts: {
         }
 
         try {
-          await locator.fill(value, { timeout });
+          await locator.fill(value, { timeout, signal: opts.signal });
         } catch (err) {
-          const friendly = toAIFriendlyError(err, ref);
+          const friendly = interactionError(err, ref, opts.signal);
           throw new Error(
             `Failed at field "${ref}" (${String(filledCount)}/${String(opts.fields.length)} filled): ${friendly.message}`,
           );
@@ -552,6 +577,7 @@ export async function fillFormViaPlaywright(opts: {
         filledCount += 1;
       }
       if (navigated) throw new NavigationRaceError({ fromUrl: previousUrl, toUrl: page.url() });
+      opts.signal?.throwIfAborted();
     },
     cdpUrl: opts.cdpUrl,
     page,
@@ -567,6 +593,8 @@ export async function scrollIntoViewViaPlaywright(opts: {
   ref?: string;
   selector?: string;
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
+  signal?: AbortSignal;
 }): Promise<void> {
   const resolved = requireRefOrSelector(opts.ref, opts.selector);
   const page = await getRestoredPageForTarget(opts);
@@ -574,15 +602,25 @@ export async function scrollIntoViewViaPlaywright(opts: {
   const locator = resolveLocator(page, resolved);
 
   try {
-    await locator.waitFor({
-      state: 'attached',
-      timeout: normalizeTimeoutMs(opts.timeoutMs, DEFAULT_SCROLL_TIMEOUT_MS),
+    await assertInteractionNavigationCompletedSafely({
+      ...opts,
+      page,
+      previousUrl: page.url(),
+      action: async () => {
+        await locator.waitFor({
+          state: 'attached',
+          timeout: normalizeTimeoutMs(opts.timeoutMs, DEFAULT_SCROLL_TIMEOUT_MS),
+          signal: opts.signal,
+        });
+        opts.signal?.throwIfAborted();
+        await locator.evaluate((el: Element) => {
+          el.scrollIntoView({ block: 'center', behavior: 'instant' });
+        });
+      },
     });
-    await locator.evaluate((el: Element) => {
-      el.scrollIntoView({ block: 'center', behavior: 'instant' });
-    });
+    opts.signal?.throwIfAborted();
   } catch (err) {
-    throw toAIFriendlyError(err, label);
+    throw interactionError(err, label, opts.signal);
   }
 }
 
@@ -597,14 +635,18 @@ export async function highlightViaPlaywright(opts: { cdpUrl: string; targetId?: 
   }
 }
 
-export async function setInputFilesViaPlaywright(opts: {
-  cdpUrl: string;
-  targetId?: string;
-  ref?: string;
-  element?: string;
-  paths: string[];
-}): Promise<void> {
-  const page = await getRestoredPageForTarget(opts);
+export async function setInputFilesViaPlaywright(
+  opts: UploadOptions & {
+    cdpUrl: string;
+    targetId?: string;
+    ref?: string;
+    element?: string;
+    paths: string[];
+    ssrfPolicy?: SsrfPolicy;
+  },
+): Promise<void> {
+  opts.signal?.throwIfAborted();
+  const page = await awaitUploadWithAbort(getRestoredPageForTarget(opts), opts.signal);
 
   if (!opts.paths.length) throw new Error('paths are required');
 
@@ -615,31 +657,36 @@ export async function setInputFilesViaPlaywright(opts: {
 
   const locator = inputRef ? refLocator(page, inputRef) : page.locator(element).first();
 
-  const uploadPathsResult = await resolveStrictExistingPathsWithinRoot({
-    rootDir: DEFAULT_UPLOAD_DIR,
-    requestedPaths: opts.paths,
-    scopeLabel: `uploads directory (${DEFAULT_UPLOAD_DIR})`,
+  const resolvedFiles = await resolveUploadFiles(opts);
+
+  await assertInteractionNavigationCompletedSafely({
+    ...opts,
+    page,
+    previousUrl: page.url(),
+    action: async () => {
+      try {
+        await locator.setInputFiles(resolvedFiles, {
+          timeout: normalizeTimeoutMs(opts.timeoutMs, 120000),
+          signal: opts.signal,
+        });
+      } catch (err) {
+        throw interactionError(err, inputRef || element, opts.signal);
+      }
+
+      try {
+        opts.signal?.throwIfAborted();
+        const handle = await locator.elementHandle();
+        opts.signal?.throwIfAborted();
+        await handle.evaluate((el: Element) => {
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+      } catch {
+        opts.signal?.throwIfAborted();
+        /* intentional no-op */
+      }
+    },
   });
-  if (!uploadPathsResult.ok) throw new Error(uploadPathsResult.error);
-  const resolvedPaths = uploadPathsResult.paths;
-
-  try {
-    await locator.setInputFiles(resolvedPaths);
-  } catch (err) {
-    throw toAIFriendlyError(err, inputRef || element);
-  }
-
-  try {
-    const handle = await locator.elementHandle();
-    if (handle) {
-      await handle.evaluate((el: Element) => {
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-      });
-    }
-  } catch {
-    /* intentional no-op */
-  }
 }
 
 export async function armDialogViaPlaywright(opts: {
@@ -685,91 +732,161 @@ export async function armDialogViaPlaywright(opts: {
     });
 }
 
-export async function armFileUploadViaPlaywright(opts: {
+interface FileChooserUploadOptions extends UploadOptions {
   cdpUrl: string;
   targetId?: string;
   paths?: string[];
-  timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
-}): Promise<{ done: Promise<void> }> {
-  // Two-phase contract:
-  //   1. Awaiting this function resolves once the filechooser listener is armed.
-  //   2. The returned `done` promise resolves after setFiles completes (or rejects
-  //      on timeout / invalid paths). The caller should:
-  //         const { done } = await page.armFileUpload([...]);
-  //         await page.click('e3');
-  //         await done;
-  //      The outer await closes the listener-arming race that was present when
-  //      `getPageForTargetId` ran async before `waitForEvent` registered.
-  const page = await getPageForTargetId({
-    cdpUrl: opts.cdpUrl,
-    targetId: opts.targetId,
-    ssrfPolicy: opts.ssrfPolicy,
-  });
+}
+
+// Invocation order must survive asynchronous page lookup and completed uploads.
+// The public arm counters remain Page-local; this sequence only orders admission.
+let nextUploadRequestSequence = 0;
+const lastUploadRequestByPage = new WeakMap<Page, number>();
+
+export async function armFileUploadViaPlaywright(opts: FileChooserUploadOptions): Promise<{ done: Promise<void> }> {
+  // Resolve only after the chooser listener is armed; callers trigger the chooser,
+  // then await `done` for file-setting completion or failure.
+  return armFileChooserUpload(opts);
+}
+
+/** Click a ref and complete its file chooser without a listener-registration race. */
+export async function uploadViaPlaywright(
+  opts: FileChooserUploadOptions & { ref: string; paths: string[] },
+): Promise<void> {
+  if (opts.paths.length === 0) throw new Error('paths are required');
+  const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
+  const controller = new AbortController();
+  const signal = opts.signal ? AbortSignal.any([opts.signal, controller.signal]) : controller.signal;
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`Timeout ${String(timeout)}ms exceeded while completing file upload`));
+  }, timeout);
+  try {
+    const { done } = await armFileChooserUpload({ ...opts, signal }, requireRef(opts.ref));
+    await done;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function armFileChooserUpload(
+  opts: FileChooserUploadOptions,
+  clickRef?: string,
+): Promise<{ done: Promise<void> }> {
+  opts.signal?.throwIfAborted();
+  const requestSequence = ++nextUploadRequestSequence;
+  const page = await awaitUploadWithAbort(
+    getPageForTargetId({
+      cdpUrl: opts.cdpUrl,
+      targetId: opts.targetId,
+      ssrfPolicy: opts.ssrfPolicy,
+    }),
+    opts.signal,
+  );
+  opts.signal?.throwIfAborted();
+  if ((lastUploadRequestByPage.get(page) ?? 0) > requestSequence)
+    throw new Error('File upload was superseded by another waiter');
+  lastUploadRequestByPage.set(page, requestSequence);
   const state = ensurePageState(page);
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
   state.armIdUpload = bumpUploadArmId(state);
   const armId = state.armIdUpload;
 
-  const resetArm = () => {
-    if (state.armIdUpload === armId) state.armIdUpload = 0;
-  };
-  page.once('close', resetArm);
-
-  // Listener registration is synchronous in Playwright. Capturing the promise
-  // here — before this function returns — guarantees the listener is in place
-  // for the caller's next action.
-  const fileChooserPromise = page.waitForEvent('filechooser', { timeout });
-
-  const done = (async () => {
-    try {
-      const fileChooser = await fileChooserPromise;
-      if (state.armIdUpload !== armId) return;
-
-      if (opts.paths === undefined || opts.paths.length === 0) {
-        try {
-          await page.keyboard.press('Escape');
-        } catch {
-          /* intentional no-op */
-        }
-        return;
-      }
-
-      const uploadPathsResult = await resolveStrictExistingPathsWithinRoot({
-        rootDir: DEFAULT_UPLOAD_DIR,
-        requestedPaths: opts.paths,
-        scopeLabel: `uploads directory (${DEFAULT_UPLOAD_DIR})`,
-      });
-      if (!uploadPathsResult.ok) {
-        try {
-          await page.keyboard.press('Escape');
-        } catch {
-          /* intentional no-op */
-        }
-        throw new Error(`armFileUpload: path validation failed: ${uploadPathsResult.error}`);
-      }
-
-      await fileChooser.setFiles(uploadPathsResult.paths);
-
+  return armPageUpload(
+    page,
+    { timeoutMs: timeout, signal: opts.signal, awaitStartedCompletion: clickRef !== undefined },
+    async (lifetime, markArmed) => {
+      const assertCurrent = () => {
+        lifetime.assertCurrent();
+        if (state.armIdUpload !== armId) throw new Error('File upload was superseded by another waiter');
+      };
+      const dismiss = async () => {
+        assertCurrent();
+        await lifetime.run(page.keyboard.press('Escape')).catch(() => {
+          lifetime.assertCurrent();
+          // Dismissal is best-effort, but aborts must still terminate the upload.
+        });
+      };
       try {
-        const input = typeof fileChooser.element === 'function' ? await Promise.resolve(fileChooser.element()) : null;
-        if (input !== null) {
-          await input.evaluate((el: Element) => {
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-          });
-        }
-      } catch (e: unknown) {
-        console.warn(
-          `[browserclaw] armFileUpload: dispatch events failed: ${e instanceof Error ? e.message : String(e)}`,
+        assertCurrent();
+        const fileChooserPromise = lifetime.run(
+          page.waitForEvent('filechooser', {
+            timeout: lifetime.remainingMs(),
+            signal: lifetime.signal,
+          }),
         );
-      }
-    } finally {
-      resetArm();
-      page.off('close', resetArm);
-    }
-  })();
+        void fileChooserPromise.catch(() => undefined);
+        markArmed();
+        if (clickRef !== undefined) {
+          await lifetime.run(
+            clickViaPlaywright({
+              ...opts,
+              ref: clickRef,
+              resolvedPage: page,
+              timeoutMs: lifetime.remainingMs(),
+              signal: lifetime.signal,
+            }),
+          );
+        }
+        const fileChooser = await fileChooserPromise;
+        assertCurrent();
 
-  return { done };
+        if (opts.paths === undefined || opts.paths.length === 0) {
+          await dismiss();
+          return;
+        }
+
+        let resolvedFiles: Awaited<ReturnType<typeof resolveUploadFiles>>;
+        try {
+          resolvedFiles = await lifetime.wait(
+            resolveUploadFiles({ ...opts, paths: opts.paths, signal: lifetime.signal }),
+          );
+        } catch (error) {
+          assertCurrent();
+          await dismiss();
+          throw new Error(
+            `armFileUpload: path validation failed: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
+          );
+        }
+        assertCurrent();
+
+        await lifetime.run(
+          assertInteractionNavigationCompletedSafely({
+            ...opts,
+            page,
+            previousUrl: page.url(),
+            action: async () => {
+              assertCurrent();
+              await fileChooser.setFiles(resolvedFiles, {
+                timeout: lifetime.remainingMs(),
+                signal: lifetime.signal,
+              });
+              assertCurrent();
+
+              try {
+                const input =
+                  typeof fileChooser.element === 'function' ? await Promise.resolve(fileChooser.element()) : null;
+                assertCurrent();
+                if (input !== null) {
+                  await input.evaluate((el: Element) => {
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                  });
+                }
+              } catch (e: unknown) {
+                lifetime.assertCurrent();
+                console.warn(
+                  `[browserclaw] armFileUpload: dispatch events failed: ${e instanceof Error ? e.message : String(e)}`,
+                );
+              }
+            },
+          }),
+        );
+      } finally {
+        if (state.armIdUpload === armId) state.armIdUpload = 0;
+      }
+    },
+  );
 }

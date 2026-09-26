@@ -53,7 +53,7 @@ export async function getNetworkRequestsViaPlaywright(opts: {
   const state = ensurePageState(await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId }));
   const raw = [...state.requests];
   const filter = typeof opts.filter === 'string' ? opts.filter.trim() : '';
-  const requests = filter ? raw.filter((r) => r.url.includes(filter)) : raw;
+  const requests = filter ? raw.filter((r) => r.url.includes(filter) || r.resourceType.includes(filter)) : raw;
   if (opts.clear === true) {
     state.requests = [];
     state.requestIds = new WeakMap();

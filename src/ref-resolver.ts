@@ -1,4 +1,4 @@
-import type { Page } from 'playwright-core';
+import type { Frame, Page } from 'playwright-core';
 
 import { StaleRefError } from './errors.js';
 import { ensurePageState, getPageState } from './page-utils.js';
@@ -63,15 +63,24 @@ export function storeRoleRefsForTarget(opts: {
   targetId?: string;
   refs: RoleRefs;
   frameSelector?: string;
+  frame?: Frame;
   mode: 'role' | 'aria';
 }): void {
+  if (opts.frameSelector !== undefined && opts.frameSelector !== '' && !opts.frame) {
+    throw new Error('Frame-scoped role refs require their resolved frame.');
+  }
   const state = ensurePageState(opts.page);
   state.roleRefs = opts.refs;
   state.roleRefsFrameSelector = opts.frameSelector;
+  state.roleRefsFrame = opts.frame;
   state.roleRefsMode = opts.mode;
   state.roleRefsStoredAt = Date.now();
 
   if (opts.targetId === undefined || opts.targetId.trim() === '') return;
+  if (opts.frame) {
+    roleRefsByTarget.delete(roleRefsKey(opts.cdpUrl, opts.targetId.trim()));
+    return;
+  }
   rememberRoleRefsForTarget({
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
@@ -153,20 +162,7 @@ export function refLocator(page: Page, ref: string) {
   const normalized = ref.startsWith('@') ? ref.slice(1) : ref.startsWith('ref=') ? ref.slice(4) : ref;
   if (normalized.trim() === '') throw new Error('ref is required');
 
-  if (AX_REF_PATTERN.test(normalized)) {
-    const state = getPageState(page);
-    const info = state?.roleRefs?.[normalized];
-    if (!info) throw new StaleRefError(normalized);
-    if (info.domMarker === true) return page.locator(`[${BROWSER_REF_MARKER_ATTRIBUTE}="${normalized}"]`);
-    const role = info.role as Parameters<Page['getByRole']>[0];
-    const locator =
-      info.name !== undefined && info.name !== ''
-        ? page.getByRole(role, { name: info.name, exact: true })
-        : page.getByRole(role);
-    return info.nth !== undefined ? locator.nth(info.nth) : locator;
-  }
-
-  if (/^e\d+$/.test(normalized)) {
+  if (/^e\d+$/.test(normalized) || AX_REF_PATTERN.test(normalized)) {
     const state = getPageState(page);
 
     // Warn if refs are stale
@@ -181,34 +177,25 @@ export function refLocator(page: Page, ref: string) {
     }
 
     const info = state?.roleRefs?.[normalized];
+    // Never re-resolve an iframe selector: it could now identify a replacement frame.
+    if (state?.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== '' && !state.roleRefsFrame) {
+      throw new StaleRefError(normalized);
+    }
+    const scope = state?.roleRefsFrame ?? page;
 
     if (info?.selector !== undefined && info.selector !== '') {
-      const base =
-        state?.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''
-          ? page.frameLocator(state.roleRefsFrameSelector)
-          : page;
-      return base.locator(info.selector);
+      return scope.locator(info.selector);
     }
 
-    if (state?.roleRefsMode === 'aria') {
-      return (
-        state.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''
-          ? page.frameLocator(state.roleRefsFrameSelector)
-          : page
-      ).locator(`aria-ref=${normalized}`);
+    if (state?.roleRefsMode === 'aria' && !AX_REF_PATTERN.test(normalized)) {
+      return scope.locator(`aria-ref=${normalized}`);
     }
 
     if (!info) throw new StaleRefError(normalized);
 
-    const locAny =
-      state.roleRefsFrameSelector !== undefined && state.roleRefsFrameSelector !== ''
-        ? page.frameLocator(state.roleRefsFrameSelector)
-        : page;
+    if (info.domMarker === true) return scope.locator(`[${BROWSER_REF_MARKER_ATTRIBUTE}="${normalized}"]`);
     const role = info.role as Parameters<Page['getByRole']>[0];
-    const locator =
-      info.name !== undefined && info.name !== ''
-        ? locAny.getByRole(role, { name: info.name, exact: true })
-        : locAny.getByRole(role);
+    const locator = scope.getByRole(role, { name: info.name ?? /^$|^.{901,}$/s, exact: true });
     return info.nth !== undefined ? locator.nth(info.nth) : locator;
   }
 

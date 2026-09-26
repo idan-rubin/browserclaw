@@ -4,6 +4,7 @@ import https from 'node:https';
 import type { Browser, Page } from 'playwright-core';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+import * as cdpNetwork from './cdp-network.js';
 import {
   BrowserTabNotFoundError,
   BlockedBrowserTargetError,
@@ -247,6 +248,13 @@ describe('blocked target management', () => {
 
 describe('withNoProxyForCdpUrl', () => {
   const savedEnv: Record<string, string | undefined> = {};
+  const deferred = () => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  };
 
   beforeEach(() => {
     savedEnv.HTTP_PROXY = process.env.HTTP_PROXY;
@@ -414,6 +422,18 @@ describe('withNoProxyForCdpUrl', () => {
     expect(process.env.no_proxy).toBeUndefined();
   });
 
+  it.each(['NO_PROXY', 'no_proxy'])('preserves an explicitly empty %s base while leased', async (emptyKey) => {
+    process.env.HTTP_PROXY = 'http://proxy:8080';
+    process.env.NO_PROXY = 'upper.example';
+    process.env.no_proxy = 'lower.example';
+    process.env[emptyKey] = '';
+    await withNoProxyForCdpUrl('ws://localhost:9222', () => {
+      expect(process.env[emptyKey]).toBe('localhost,127.0.0.1,[::1]');
+      return Promise.resolve();
+    });
+    expect(process.env[emptyKey]).toBe('');
+  });
+
   it('copies lower-case base into upper-case casing when NO_PROXY is unset', async () => {
     process.env.HTTP_PROXY = 'http://proxy:8080';
     delete process.env.NO_PROXY;
@@ -441,30 +461,50 @@ describe('withNoProxyForCdpUrl', () => {
     expect(process.env.NO_PROXY).toBeUndefined();
   });
 
-  it('serializes concurrent env mutations', async () => {
+  it.each([0, 1])('keeps bypass until the final staggered caller exits (first exit=%s)', async (first) => {
     process.env.HTTP_PROXY = 'http://proxy:8080';
     delete process.env.NO_PROXY;
     delete process.env.no_proxy;
-
-    const events: string[] = [];
-
-    const p1 = withNoProxyForCdpUrl('ws://localhost:9222', async () => {
-      events.push('fn1-start');
-      await new Promise((r) => setTimeout(r, 50));
-      events.push('fn1-end');
+    const firstStarted = deferred();
+    const secondStarted = deferred();
+    const gates = [deferred(), deferred()];
+    const p1 = withNoProxyForCdpUrl('ws://localhost:9222', () => {
+      firstStarted.resolve();
+      return gates[0].promise;
     });
-
-    const p2 = withNoProxyForCdpUrl('ws://127.0.0.1:9222', async () => {
-      events.push('fn2-start');
-      await new Promise((r) => setTimeout(r, 10));
-      events.push('fn2-end');
+    await firstStarted.promise;
+    const p2 = withNoProxyForCdpUrl('ws://127.0.0.1:9222', () => {
+      secondStarted.resolve();
+      return gates[1].promise;
     });
+    await secondStarted.promise;
+    const pending = [p1, p2];
+    try {
+      gates[first].resolve();
+      await pending[first];
+      expect(process.env.NO_PROXY).toContain('127.0.0.1');
+      expect(process.env.no_proxy).toContain('[::1]');
+    } finally {
+      for (const gate of gates) gate.resolve();
+      await Promise.all(pending);
+    }
+    expect(process.env.NO_PROXY).toBeUndefined();
+    expect(process.env.no_proxy).toBeUndefined();
+  });
 
-    await Promise.all([p1, p2]);
-
-    const fn1EndIdx = events.indexOf('fn1-end');
-    const fn2StartIdx = events.indexOf('fn2-start');
-    expect(fn2StartIdx).toBeGreaterThan(fn1EndIdx);
+  it('handles nested rejection and preserves external changes when the final lease exits', async () => {
+    process.env.HTTP_PROXY = 'http://proxy:8080';
+    process.env.NO_PROXY = 'original.upper';
+    process.env.no_proxy = 'original.lower';
+    await withNoProxyForCdpUrl('ws://localhost:9222', async () => {
+      await expect(
+        withNoProxyForCdpUrl('ws://localhost:9222', () => Promise.reject(new Error('nested'))),
+      ).rejects.toThrow('nested');
+      expect(process.env.NO_PROXY).toContain('127.0.0.1');
+      process.env.NO_PROXY = 'external.change';
+    });
+    expect(process.env.NO_PROXY).toBe('external.change');
+    expect(process.env.no_proxy).toBe('original.lower');
   });
 
   it('returns the function result', async () => {
@@ -782,13 +822,13 @@ describe('isRecoverableStalePageSelectionError', () => {
     expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), true, false)).toBe(true);
   });
 
-  it('returns false for BrowserTabNotFoundError when caller passed an explicit targetId', () => {
-    expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), true, true)).toBe(false);
+  it('returns true for BrowserTabNotFoundError when caller passed an explicit targetId', () => {
+    expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), true, true)).toBe(true);
   });
 
-  it('returns true for "tab not found" message only when no explicit targetId', () => {
+  it('returns true for "tab not found" messages with or without an explicit targetId', () => {
     expect(isRecoverableStalePageSelectionError(new Error('Tab Not Found'), true, false)).toBe(true);
-    expect(isRecoverableStalePageSelectionError(new Error('Tab Not Found'), true, true)).toBe(false);
+    expect(isRecoverableStalePageSelectionError(new Error('Tab Not Found'), true, true)).toBe(true);
   });
 
   it('returns false for unrelated errors', () => {
@@ -832,20 +872,13 @@ describe('isRecoverablePlaywrightDisconnectError', () => {
 
 describe('tryTerminateExecutionViaCdp SSRF validation', () => {
   const craftedList = [{ id: 'T1', webSocketDebuggerUrl: 'ws://192.168.1.100:9222/devtools/page/T1' }];
-  const jsonResponse = (data: unknown) => {
-    const bytes = new TextEncoder().encode(JSON.stringify(data));
-    return { ok: true, body: undefined, arrayBuffer: () => Promise.resolve(bytes.buffer) };
-  };
-
   afterEach(() => {
-    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it('rejects a crafted /json/list webSocketDebuggerUrl pointing at a policy-blocked host', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(craftedList));
-    const webSocketMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-    vi.stubGlobal('WebSocket', webSocketMock);
+    const fetchMock = vi.spyOn(cdpNetwork, 'fetchCdpJson').mockResolvedValue(craftedList);
+    const webSocketMock = vi.spyOn(cdpNetwork, 'openPinnedCdpSocket');
 
     await expect(tryTerminateExecutionViaCdp('http://127.0.0.1:9222', 'T1', {})).rejects.toThrow(
       BrowserCdpEndpointBlockedError,
@@ -855,8 +888,7 @@ describe('tryTerminateExecutionViaCdp SSRF validation', () => {
   });
 
   it('blocks a policy-violating cdpUrl at entry, before /json/list is fetched', async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
+    const fetchMock = vi.spyOn(cdpNetwork, 'fetchCdpJson');
 
     await expect(tryTerminateExecutionViaCdp('http://192.168.1.100:9222', 'T1', {})).rejects.toThrow(
       BrowserCdpEndpointBlockedError,
@@ -865,14 +897,15 @@ describe('tryTerminateExecutionViaCdp SSRF validation', () => {
   });
 
   it('dials the discovered webSocketDebuggerUrl when no policy is provided', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(craftedList));
-    const webSocketMock = vi.fn().mockImplementation(() => {
-      throw new Error('socket unavailable in test');
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    vi.stubGlobal('WebSocket', webSocketMock);
+    vi.spyOn(cdpNetwork, 'fetchCdpJson').mockResolvedValue(craftedList);
+    const webSocketMock = vi
+      .spyOn(cdpNetwork, 'openPinnedCdpSocket')
+      .mockRejectedValue(new Error('socket unavailable in test'));
 
     await expect(tryTerminateExecutionViaCdp('http://127.0.0.1:9222', 'T1')).resolves.toBeUndefined();
-    expect(webSocketMock).toHaveBeenCalledWith('ws://192.168.1.100:9222/devtools/page/T1');
+    expect(webSocketMock).toHaveBeenCalledWith(
+      { url: 'ws://192.168.1.100:9222/devtools/page/T1', lookup: undefined },
+      { timeoutMs: 2000 },
+    );
   });
 });

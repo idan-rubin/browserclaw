@@ -21,10 +21,12 @@ const REQUIRED_EXPORTS = [
   'detectChallengeViaPlaywright',
   'waitForChallengeViaPlaywright',
   'STEALTH_SCRIPT',
+  'uploadViaPlaywright',
+  'UploadOptions',
 ];
 
 // Methods that must exist on CrawlPage (checked via declaration in the .d.ts)
-const REQUIRED_METHODS = ['pressAndHold', 'waitForRequest', 'waitForTab'];
+const REQUIRED_METHODS = ['pressAndHold', 'waitForRequest', 'waitForTab', 'upload', 'text', 'insertText', 'setCookies'];
 
 let dts: string;
 try {

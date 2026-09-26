@@ -69,7 +69,7 @@ Swap Anthropic for any model — the snapshot is plain text in, a ref is plain t
 
 Most browser automation was built for humans writing test scripts; the rest are full agents that own the loop. An agent you've already built needs neither:
 
-- **Deterministic** — refs resolve to exact elements via Playwright locators (`aria-ref` or `getByRole()`), one ref → one element. No coordinate guessing, no LLM re-interpreting targets between calls.
+- **Deterministic** — refs resolve through Playwright locators and bound DOM identities, one ref → one element. No coordinate guessing, no LLM re-interpreting targets between calls.
 - **Cheap & fast** — a text snapshot is a fraction of the tokens of a screenshot, and there's no vision API round-trip in the targeting loop.
 - **Reliable** — built on Playwright's auto-wait and locator engine, not homegrown DOM poking.
 - **Yours to compose** — no framework opinions, no agent loop, no hosted platform. Drop it into whatever architecture you already have.
@@ -97,7 +97,7 @@ browserclaw is deliberately _not_ a complete agent, ships no hosted infrastructu
 
 ### How each tool works under the hood
 
-- **browserclaw** — Accessibility snapshot with numbered refs → Playwright locator (`aria-ref` in default mode, `getByRole()` in role mode). One ref, one element. No vision model, no LLM in the targeting loop. You bring the brain.
+- **browserclaw** — Accessibility snapshot with numbered refs → Playwright locator (`aria-ref` in default mode, bound DOM identities in native role mode). One ref, one element. No vision model, no LLM in the targeting loop. You bring the brain.
 - **browser-use** — An AI agent framework: takes a task, calls an LLM, decides actions, and executes them over raw CDP (it dropped Playwright for its own index-based engine in 2025). The agent loop is the marketed path, so it's hard to compose into a platform that already owns that loop. The open-source library is Python; an official TypeScript SDK drives its hosted cloud API.
 - **Stagehand** — Accessibility tree + natural language primitives (`page.act("click login")`). Convenient, but the LLM re-interprets which element to target on every single call — non-deterministic by design.
 - **Playwright MCP** — Same snapshot philosophy as browserclaw, but locked to the MCP protocol. Great for chat-based agents, but not embeddable as a library — you can't compose it into your own agent loop or call it from application code.
@@ -217,7 +217,9 @@ When a launch fails because Chrome reports the profile is in use by another proc
 
 #### SSRF policy (navigating agent-supplied URLs)
 
-**Secure by default.** browserclaw blocks navigation to private and loopback addresses — `127.0.0.1`, `10.0.0.0/8` and the rest of RFC 1918, link-local, the RFC 2544 range, IPv6 ULA, and cloud metadata endpoints like `169.254.169.254`. Public addresses resolve normally; internal ones are refused. Because an agent's target URLs often come from untrusted sources (LLM output, user input, an external API), blocking internal targets is the right default — and DNS is resolved and pinned up front, so a hostname can't pass the check as a public IP and then be fetched as a private one.
+**Secure by default.** browserclaw validates navigation URLs and DNS answers, blocking private and loopback addresses — `127.0.0.1`, RFC 1918 ranges, link-local, the RFC 2544 range, IPv6 ULA, and cloud metadata endpoints like `169.254.169.254` unless an applicable policy exemption permits them. Explicit hostname denials take precedence over exemptions.
+
+CDP HTTP and WebSocket connections use the validated DNS lookup for the actual dial. Chrome resolves page-navigation hostnames independently, so those navigation checks alone cannot eliminate DNS rebinding. Set `ssrfPolicy.requireAllowlistedHostnames: true` to reject unlisted DNS hostnames; names admitted through `allowedHostnames` or `hostnameAllowlist` must still be trusted. This gate does not apply when private-network access is enabled, and `hostnameAllowlist` alone never grants a private-network exemption.
 
 To reach private or loopback hosts on purpose (local development, a dev tunnel, an internal dashboard), opt out explicitly:
 
@@ -233,7 +235,7 @@ const browser = await BrowserClaw.launch({
 // Or keep the secure default and carve out only what you need:
 const browser2 = await BrowserClaw.launch({
   ssrfPolicy: {
-    allowedHostnames: ['internal.myapp.com'], // exempt one named host from the private-IP block
+    allowedHostnames: ['internal.example.com'], // exempt one named host from the private-IP block
     hostnameAllowlist: ['*.example.com'], // restrict navigation to matching hostnames only
   },
 });
@@ -356,7 +358,7 @@ const { nodes } = await page.ariaSnapshot({ limit: 500 });
 **Snapshot modes:**
 
 - `'aria'` (default) — Uses Playwright's AI-mode snapshot. Refs are resolved via `aria-ref` locators. Best for most use cases. Requires `playwright-core` >= 1.50.
-- `'role'` — Uses Playwright's `ariaSnapshot()` + `getByRole()`. Supports `selector` and `frameSelector` for scoped snapshots.
+- `'role'` — Captures the native accessibility tree and binds refs to DOM identities. Supports `selector` and `frameSelector` for scoped snapshots; navigation or frame replacement invalidates the capture.
 
 > **Security:** All snapshot results include `untrusted: true` to signal that the content originates from an external web page. AI agents consuming snapshots should treat this content as potentially adversarial (e.g. prompt injection via page text).
 
@@ -389,6 +391,7 @@ await page.scrollIntoView('e7');
 await page.press('Enter');
 await page.press('Control+a');
 await page.press('Meta+Shift+p');
+await page.insertText('pasted text'); // inserts into the focused element without individual key events
 
 // Fill multiple form fields at once
 await page.fill([
@@ -400,16 +403,18 @@ await page.fill([
 
 `fill()` field types: `'text'` (default) calls Playwright `fill()` with the string value. `'checkbox'` and `'radio'` call `setChecked()` with `force: true` (works on hidden inputs behind custom styling). Truthy values are `true`, `1`, `'1'`, `'true'`. Type can be omitted and defaults to `'text'`. Fields with an empty or whitespace-only ref are silently skipped — they are not counted in the fill result.
 
-`fill()` is the ergonomic form-filling case of the lower-level `batch()`, which runs a heterogeneous sequence of actions (click, type, press, hover, drag, select, fill, wait, …) in a single call:
+`fill()` is the ergonomic form-filling case of the lower-level `batch()`, which runs a heterogeneous sequence of actions (click, mouseClick, type, insertText, press, hover, drag, select, fill, wait, …) in a single call:
 
 ```typescript
 const { results } = await page.batch([
   { kind: 'type', ref: 'e2', text: 'jane@acme.test' },
   { kind: 'click', ref: 'e5' },
   { kind: 'wait', text: 'Welcome' },
-]); // stops on first failure by default; pass { stopOnError: false } to keep going
+]); // stops on first failure by default; pass { stopOnError: false } to continue after ordinary failures
 // results: [{ ok: true }, { ok: true }, { ok: true } | { ok: false, error }]
 ```
+
+Batches always stop when an action navigates or closes its page, even with `stopOnError: false`. Only dispatched actions appear in `results`; take a fresh snapshot before acting on the new document. Navigation-policy denials are thrown rather than returned as ordinary action failures.
 
 #### No-snapshot actions
 
@@ -458,6 +463,12 @@ await copyFile('/path/to/file.pdf', staged);
 // Direct: set files on an <input type="file">
 await page.uploadFile('e3', [staged]);
 
+// Atomic: arm a chooser, click its trigger, and wait for the upload
+await page.upload('e4', [staged]);
+
+// Remote browser: send bytes instead of a browser-local filename
+await page.uploadFile('e3', [staged], { browserFilesystemLocal: false });
+
 // Arm pattern: for non-input file pickers
 // Awaiting the call resolves once the listener is armed; awaiting `done`
 // resolves after files have been set on the chooser.
@@ -465,6 +476,10 @@ const { done } = await page.armFileUpload([staged]);
 await page.click('e3'); // triggers the file chooser
 await done;
 ```
+
+Upload methods accept `timeoutMs` and `signal`. Remote payloads must total less than 50 MiB; source modification times are not preserved by Playwright's browser transport. The default remains local-file paths, including when an SSRF policy is configured.
+
+Cancelling atomic `upload()` waits for already-started browser work to settle. Two-phase `armFileUpload()` waiters reject promptly, but subsequent uploads still wait for the prior browser mutation to finish.
 
 #### Dialog Handling
 
@@ -505,6 +520,7 @@ await page.waitFor({ fn: () => document.title === 'Done' }); // custom JS (funct
 await page.waitFor({ fn: (name) => document.querySelector('button')?.textContent === name, arg: 'Save' }); // with arg
 await page.waitFor({ timeMs: 1000 }); // sleep
 await page.waitFor({ text: 'Ready', timeoutMs: 5000 }); // custom timeout
+await page.waitFor({ text: 'Ready', signal: AbortSignal.timeout(5000) });
 ```
 
 ### Capture
@@ -516,7 +532,7 @@ const fullPage = await page.screenshot({ fullPage: true }); // full scrollable p
 const element = await page.screenshot({ ref: 'e1' }); // specific element by ref
 const bySelector = await page.screenshot({ element: '.hero' }); // by CSS selector
 const jpeg = await page.screenshot({ type: 'jpeg' }); // JPEG format
-const noTimeout = await page.screenshot({ timeoutMs: 0 }); // disable the default 30s screenshot timeout
+const noTimeout = await page.screenshot({ timeoutMs: 0 }); // disable the default 20s screenshot timeout
 
 // PDF
 const pdf = await page.pdf(); // PDF export (headless only)
@@ -551,7 +567,7 @@ console.log(resp.status, resp.body);
 // { url, status, headers, body, truncated }
 ```
 
-Options: `timeoutMs` (default 30 s), `maxChars` (truncate body).
+Options: `timeoutMs` (default 30 s, including body completion), `maxChars` (truncate body), `signal` (cancel).
 
 #### Wait For Request
 
@@ -569,6 +585,15 @@ console.log(req.responseBody); // '{"id":123}'
 
 Options: `method` (filter by HTTP method), `timeoutMs` (default 30 s), `maxChars` (truncate response body).
 
+### Visible Page Text
+
+```typescript
+const { text, truncated } = await page.text({ maxChars: 12_000 });
+const article = await page.text({ selector: 'article' });
+```
+
+Without a selector, `text()` prefers `article`, then `main`, then `body`. Output is capped at 40,000 characters and supports an abort `signal`. Page text is untrusted external content, just like snapshots.
+
 ### Activity Monitoring
 
 Console messages, errors, and network requests are buffered automatically.
@@ -578,7 +603,7 @@ const logs = await page.consoleLogs(); // all messages
 const errors = await page.consoleLogs({ level: 'error' }); // errors only
 const recent = await page.consoleLogs({ clear: true }); // read and clear buffer
 const pageErrors = await page.pageErrors(); // uncaught exceptions
-const requests = await page.networkRequests({ filter: '/api' }); // filter by URL
+const requests = await page.networkRequests({ filter: '/api' }); // matches URL or resource type
 const fresh = await page.networkRequests({ clear: true }); // read and clear buffer
 ```
 
@@ -588,6 +613,7 @@ const fresh = await page.networkRequests({ clear: true }); // read and clear buf
 // Cookies
 const cookies = await page.cookies();
 await page.setCookie({ name: 'token', value: 'abc', url: 'https://demo.playwright.dev' });
+const { added } = await page.setCookies(cookies); // imports in batches, counting accepted cookies
 await page.clearCookies();
 
 // localStorage / sessionStorage

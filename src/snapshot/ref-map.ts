@@ -69,32 +69,50 @@ function getIndentLevel(line: string): number {
 }
 
 interface ParsedSnapshotLine {
+  prefix: string;
   roleRaw: string;
   role: string;
   name?: string;
+  ref?: string;
   suffix: string;
 }
 
-function matchInteractiveSnapshotLine(line: string, options: SnapshotBuildOptions): ParsedSnapshotLine | null {
-  const depth = getIndentLevel(line);
-  if (options.maxDepth !== undefined && depth > options.maxDepth) {
-    return null;
+// Only formatter-owned attributes immediately after the role/name contain refs.
+// Page text, escaped names, and YAML-quoted entries must not manufacture refs.
+export function parseSnapshotLine(line: string): ParsedSnapshotLine | null {
+  const entry = /^(\s*-\s+)(.*)$/s.exec(line);
+  if (!entry) return null;
+  const prefix = entry[1];
+  const content = entry[2];
+  const quoted = /^'((?:[^']|'')*)'(.*)$/s.exec(content);
+  const match = /^(\w+)(?:\s+("(?:\\.|[^"\\])*"))?(.*)$/s.exec(quoted ? quoted[1].replaceAll("''", "'") : content);
+  if (!match) return null;
+  const roleRaw = match[1];
+  let nameToken = match[2] as string | undefined;
+  let suffix = match[3];
+  if (nameToken === undefined && suffix.startsWith(' /')) {
+    const literal = /^ (\/(?:.*\/)?)/s.exec(quoted ? suffix : suffix.split(/:(?=\s|$)/, 1)[0]);
+    if (literal) {
+      nameToken = literal[1];
+      suffix = suffix.slice(literal[0].length);
+    }
   }
-  const match = /^(\s*-\s*)(\w+)(?:\s+"([^"]*)")?(.*)$/.exec(line);
-  if (!match) {
-    return null;
-  }
-  const [, , roleRaw, name, suffix] = match;
-  if (roleRaw.startsWith('/')) {
-    return null;
-  }
-  const role = roleRaw.toLowerCase();
+  const attributes = /^(?:\s+\[[^\][]*\])*/.exec(suffix)?.[0];
+  const ref = attributes !== undefined && attributes !== '' ? /\[ref=([^\][]+)\]/.exec(attributes)?.[1] : undefined;
+  const name = nameToken?.startsWith('"') === true ? (JSON.parse(nameToken) as string) : nameToken;
   return {
-    roleRaw: roleRaw,
-    role,
-    ...(name ? { name } : {}),
-    suffix: suffix,
+    prefix,
+    roleRaw,
+    role: roleRaw.toLowerCase(),
+    ...(name !== undefined && name !== '' ? { name } : {}),
+    ...(ref !== undefined && ref !== '' ? { ref } : {}),
+    suffix: suffix + (quoted?.[2] ?? ''),
   };
+}
+
+function matchInteractiveSnapshotLine(line: string, options: SnapshotBuildOptions): ParsedSnapshotLine | null {
+  if (options.maxDepth !== undefined && getIndentLevel(line) > options.maxDepth) return null;
+  return parseSnapshotLine(line);
 }
 
 function createRoleNameTracker() {
@@ -157,18 +175,20 @@ function compactTree(tree: string): string {
     while (stack.length > 0 && stack[stack.length - 1].indent >= indent) finishEntry();
     const entry: CompactTreeEntry = {
       line,
-      keep: line.includes('[ref=') || (line.includes(':') && !line.trimEnd().endsWith(':')),
-      hasRef: line.includes('[ref='),
+      keep: Boolean(parseSnapshotLine(line)?.ref) || (line.includes(':') && !line.trimEnd().endsWith(':')),
+      hasRef: Boolean(parseSnapshotLine(line)?.ref),
       indent,
     };
     entries.push(entry);
     stack.push({ entry, indent });
   }
   while (stack.length > 0) finishEntry();
-  return entries
-    .filter((entry) => entry.keep)
-    .map((entry) => entry.line)
-    .join('\n');
+  return (
+    entries
+      .filter((entry) => entry.keep)
+      .map((entry) => entry.line)
+      .join('\n') || '(empty)'
+  );
 }
 
 export interface SnapshotBuildOptions {
@@ -203,16 +223,15 @@ export function buildRoleSnapshotFromAriaSnapshot(
     for (const line of lines) {
       const parsed = matchInteractiveSnapshotLine(line, options);
       if (!parsed) continue;
-      const { roleRaw, role, name, suffix } = parsed;
+      const { prefix, roleRaw, role, name, suffix } = parsed;
       if (!INTERACTIVE_ROLES.has(role)) continue;
-      const prefix = /^(\s*-\s*)/.exec(line)?.[1] ?? '';
       const ref = nextRef();
       const nth = tracker.getNextIndex(role, name);
       tracker.trackRef(role, name, ref);
       const state = parseStateFromSuffix(suffix);
       refs[ref] = { role, name, nth, ...state };
       let enhanced = `${prefix}${roleRaw}`;
-      if (name !== undefined && name !== '') enhanced += ` "${name}"`;
+      if (name !== undefined && name !== '') enhanced += ` ${JSON.stringify(name)}`;
       enhanced += ` [ref=${ref}]`;
       if (nth > 0) enhanced += ` [nth=${String(nth)}]`;
       if (suffix.includes('[')) enhanced += suffix;
@@ -226,22 +245,17 @@ export function buildRoleSnapshotFromAriaSnapshot(
   for (const line of lines) {
     const depth = getIndentLevel(line);
     if (options.maxDepth !== undefined && depth > options.maxDepth) continue;
-    const match = /^(\s*-\s*)(\w+)(?:\s+"([^"]*)")?(.*)$/.exec(line);
-    if (!match) {
+    const parsed = parseSnapshotLine(line);
+    if (!parsed) {
       result.push(line);
       continue;
     }
-    const [, prefix, roleRaw, name, suffix] = match;
-    if (roleRaw.startsWith('/')) {
-      result.push(line);
-      continue;
-    }
-    const role = roleRaw.toLowerCase();
+    const { prefix, roleRaw, role, name, suffix } = parsed;
     const isInteractive = INTERACTIVE_ROLES.has(role);
     const isContent = CONTENT_ROLES.has(role);
     const isStructural = STRUCTURAL_ROLES.has(role);
-    if (options.compact === true && isStructural && !name) continue;
-    if (!(isInteractive || (isContent && name))) {
+    if (options.compact === true && isStructural && (name === undefined || name === '')) continue;
+    if (!(isInteractive || (isContent && name !== undefined && name !== ''))) {
       result.push(line);
       continue;
     }
@@ -253,7 +267,7 @@ export function buildRoleSnapshotFromAriaSnapshot(
     refs[ref] = { role, name, nth, ...state };
 
     let enhanced = `${prefix}${roleRaw}`;
-    if (name) enhanced += ` "${name}"`;
+    if (name !== undefined && name !== '') enhanced += ` ${JSON.stringify(name)}`;
     enhanced += ` [ref=${ref}]`;
     if (nth > 0) enhanced += ` [nth=${String(nth)}]`;
     if (suffix !== '') enhanced += suffix;
@@ -280,15 +294,14 @@ export function buildRoleSnapshotFromAiSnapshot(
   const lines = aiSnapshot.split('\n');
   const refs: RoleRefs = {};
 
-  function parseAiSnapshotRef(suffix: string): string | null {
-    const match = /\[ref=(e\d+)\]/i.exec(suffix);
-    return match ? match[1] : null;
+  function parseAiSnapshotRef(ref: string | undefined): string | null {
+    return ref !== undefined && /^(?:f\d+)?e\d+$|^\d{1,9}$/i.test(ref) ? ref : null;
   }
 
   if (options.interactive === true) {
     let interactiveMaxRef = 0;
     for (const line of lines) {
-      const refMatch = /\[ref=e(\d+)\]/.exec(line);
+      const refMatch = /^e(\d+)$/.exec(parseSnapshotLine(line)?.ref ?? '');
       if (refMatch) interactiveMaxRef = Math.max(interactiveMaxRef, Number.parseInt(refMatch[1], 10));
     }
     let interactiveCounter = interactiveMaxRef;
@@ -301,19 +314,18 @@ export function buildRoleSnapshotFromAiSnapshot(
     for (const line of lines) {
       const parsed = matchInteractiveSnapshotLine(line, options);
       if (!parsed) continue;
-      const { roleRaw, role, name, suffix } = parsed;
+      const { prefix, roleRaw, role, name, suffix } = parsed;
       if (!INTERACTIVE_ROLES.has(role)) continue;
-      const ref = parseAiSnapshotRef(suffix);
-      const prefix = /^(\s*-\s*)/.exec(line)?.[1] ?? '';
+      const ref = parseAiSnapshotRef(parsed.ref);
       const state = parseStateFromSuffix(suffix);
       if (ref !== null) {
         refs[ref] = { role, ...(name !== undefined && name !== '' ? { name } : {}), ...state };
-        out.push(`${prefix}${roleRaw}${name !== undefined && name !== '' ? ` "${name}"` : ''}${suffix}`);
+        out.push(`${prefix}${roleRaw}${name !== undefined && name !== '' ? ` ${JSON.stringify(name)}` : ''}${suffix}`);
       } else {
         const generatedRef = nextInteractiveRef();
         refs[generatedRef] = { role, ...(name !== undefined && name !== '' ? { name } : {}), ...state };
         let enhanced = `${prefix}${roleRaw}`;
-        if (name !== undefined && name !== '') enhanced += ` "${name}"`;
+        if (name !== undefined && name !== '') enhanced += ` ${JSON.stringify(name)}`;
         enhanced += ` [ref=${generatedRef}]`;
         if (suffix.trim() !== '') enhanced += suffix;
         out.push(enhanced);
@@ -324,7 +336,7 @@ export function buildRoleSnapshotFromAiSnapshot(
 
   let maxRef = 0;
   for (const line of lines) {
-    const refMatch = /\[ref=e(\d+)\]/.exec(line);
+    const refMatch = /^e(\d+)$/.exec(parseSnapshotLine(line)?.ref ?? '');
     if (refMatch) maxRef = Math.max(maxRef, Number.parseInt(refMatch[1], 10));
   }
   let generatedCounter = maxRef;
@@ -337,29 +349,24 @@ export function buildRoleSnapshotFromAiSnapshot(
   for (const line of lines) {
     const depth = getIndentLevel(line);
     if (options.maxDepth !== undefined && depth > options.maxDepth) continue;
-    const match = /^(\s*-\s*)(\w+)(?:\s+"([^"]*)")?(.*)$/.exec(line);
-    if (!match) {
+    const parsed = parseSnapshotLine(line);
+    if (!parsed) {
       out.push(line);
       continue;
     }
-    const [, prefix, roleRaw, name, suffix] = match;
-    if (roleRaw.startsWith('/')) {
-      out.push(line);
-      continue;
-    }
-    const role = roleRaw.toLowerCase();
+    const { prefix, roleRaw, role, name, suffix } = parsed;
     const isStructural = STRUCTURAL_ROLES.has(role);
-    if (options.compact === true && isStructural && !name) continue;
-    const ref = parseAiSnapshotRef(suffix);
+    if (options.compact === true && isStructural && (name === undefined || name === '')) continue;
+    const ref = parseAiSnapshotRef(parsed.ref);
     const state = parseStateFromSuffix(suffix);
     if (ref !== null) {
-      refs[ref] = { role, ...(name ? { name } : {}), ...state };
+      refs[ref] = { role, ...(name !== undefined && name !== '' ? { name } : {}), ...state };
       out.push(line);
     } else if (INTERACTIVE_ROLES.has(role)) {
       const generatedRef = nextGeneratedRef();
-      refs[generatedRef] = { role, ...(name ? { name } : {}), ...state };
+      refs[generatedRef] = { role, ...(name !== undefined && name !== '' ? { name } : {}), ...state };
       let enhanced = `${prefix}${roleRaw}`;
-      if (name) enhanced += ` "${name}"`;
+      if (name !== undefined && name !== '') enhanced += ` ${JSON.stringify(name)}`;
       enhanced += ` [ref=${generatedRef}]`;
       if (suffix.trim() !== '') enhanced += suffix;
       out.push(enhanced);

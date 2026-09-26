@@ -1,11 +1,21 @@
-import type { Page, BrowserContext, Browser } from 'playwright-core';
+import { stripVTControlCharacters } from 'node:util';
 
+import type { Page, Frame, BrowserContext, Browser } from 'playwright-core';
+
+import { BlockedBrowserTargetError } from './connection.js';
+import { BrowserTabNotFoundError, NavigationRaceError, SnapshotHydrationError, StaleRefError } from './errors.js';
+import { BrowserCdpEndpointBlockedError, InvalidBrowserNavigationUrlError } from './security.js';
 import { STEALTH_SCRIPT } from './stealth.js';
 import type { PageState, ContextState, NetworkRequest, DialogHandler } from './types.js';
 
 const MAX_CONSOLE_MESSAGES = 500;
 const MAX_PAGE_ERRORS = 200;
 const MAX_NETWORK_REQUESTS = 500;
+const MAX_OBSERVED_PAGE_TEXT_CHARS = 2048;
+
+function truncateObservedPageText(value: string): string {
+  return truncateUtf16Safe(value, MAX_OBSERVED_PAGE_TEXT_CHARS);
+}
 
 const pageStates = new WeakMap<Page, PageState>();
 const contextStates = new WeakMap<BrowserContext, ContextState>();
@@ -84,11 +94,12 @@ export function ensurePageState(page: Page): PageState {
     observedPages.add(page);
 
     page.on('console', (msg) => {
+      const location = msg.location();
       state.console.push({
-        type: msg.type(),
-        text: msg.text(),
+        type: truncateObservedPageText(msg.type()),
+        text: truncateObservedPageText(msg.text()),
         timestamp: new Date().toISOString(),
-        location: msg.location(),
+        location: { ...location, url: truncateObservedPageText(location.url) },
       });
       // Evict oldest entries in bulk to avoid O(n) shift() on every overflow
       if (state.console.length > MAX_CONSOLE_MESSAGES + 50) state.console.splice(0, 50);
@@ -96,9 +107,9 @@ export function ensurePageState(page: Page): PageState {
 
     page.on('pageerror', (err) => {
       state.errors.push({
-        message: err.message !== '' ? err.message : String(err),
-        name: err.name !== '' ? err.name : undefined,
-        stack: err.stack !== undefined && err.stack !== '' ? err.stack : undefined,
+        message: truncateObservedPageText(err.message !== '' ? err.message : String(err)),
+        name: err.name !== '' ? truncateObservedPageText(err.name) : undefined,
+        stack: err.stack !== undefined && err.stack !== '' ? truncateObservedPageText(err.stack) : undefined,
         timestamp: new Date().toISOString(),
       });
       if (state.errors.length > MAX_PAGE_ERRORS + 20) state.errors.splice(0, 20);
@@ -112,7 +123,7 @@ export function ensurePageState(page: Page): PageState {
         id,
         timestamp: new Date().toISOString(),
         method: req.method(),
-        url: req.url(),
+        url: truncateObservedPageText(req.url()),
         resourceType: req.resourceType(),
       });
       if (state.requests.length > MAX_NETWORK_REQUESTS + 50) state.requests.splice(0, 50);
@@ -134,7 +145,8 @@ export function ensurePageState(page: Page): PageState {
       if (id === undefined) return;
       const rec = findNetworkRequestById(state, id);
       if (rec) {
-        rec.failureText = req.failure()?.errorText;
+        const failure = req.failure()?.errorText;
+        rec.failureText = failure !== undefined && failure !== '' ? truncateObservedPageText(failure) : undefined;
         rec.ok = false;
       }
     });
@@ -189,6 +201,17 @@ export function ensurePageState(page: Page): PageState {
         console.warn(`[browserclaw] Failed to dismiss dialog: ${err instanceof Error ? err.message : String(err)}`);
       });
     });
+
+    const invalidateFrameRefs = (frame: Frame) => {
+      if (frame !== page.mainFrame() && state.roleRefsMode !== 'aria' && frame !== state.roleRefsFrame) return;
+      state.roleRefs = undefined;
+      state.roleRefsMode = undefined;
+      state.roleRefsFrame = undefined;
+      state.roleRefsFrameSelector = undefined;
+      state.roleRefsStoredAt = undefined;
+    };
+    page.on('framenavigated', invalidateFrameRefs);
+    page.on('framedetached', invalidateFrameRefs);
 
     page.on('close', () => {
       pageStates.delete(page);
@@ -282,35 +305,78 @@ export async function observeBrowser(browser: Browser, opts?: ObserveOptions): P
 // ── Error Helpers ──
 
 export function toAIFriendlyError(error: unknown, selector: string): Error {
-  const message = error instanceof Error ? error.message : String(error);
-  if (message.includes('strict mode violation')) {
-    const countMatch = /resolved to (\d+) elements/.exec(message);
+  if (
+    error instanceof BrowserTabNotFoundError ||
+    error instanceof NavigationRaceError ||
+    error instanceof SnapshotHydrationError ||
+    error instanceof StaleRefError ||
+    error instanceof InvalidBrowserNavigationUrlError ||
+    error instanceof BrowserCdpEndpointBlockedError ||
+    error instanceof BlockedBrowserTargetError
+  )
+    return error;
+
+  const message = stripVTControlCharacters(error instanceof Error ? error.message : String(error));
+  const headline = (message.split('\n', 1)[0] ?? message).replace(
+    /^(?:Error:\s*)?(?:locator(?:\([^)]*\))?\.\w+:\s*)?(?:Error:\s*)?/,
+    '',
+  );
+  const label = truncateUtf16Safe(stripVTControlCharacters(selector), 200);
+  const timeoutMatch = /^Timeout (\d+)ms exceeded(?:\.|\s|$)/.exec(headline);
+  if (headline.startsWith('strict mode violation')) {
+    const countMatch = /resolved to (\d+) elements/.exec(headline);
     const count = countMatch ? countMatch[1] : 'multiple';
     return new Error(
-      `Selector "${selector}" matched ${count} elements. Run a new snapshot to get updated refs, or use a different ref.`,
+      `Selector "${label}" matched ${count} elements. Run a new snapshot to get updated refs, or use a different ref.`,
     );
   }
-  if (
-    (message.includes('Timeout') || message.includes('waiting for')) &&
-    (message.includes('to be visible') || message.includes('not visible'))
-  ) {
-    return new Error(
-      `Element "${selector}" not found or not visible. Run a new snapshot to see current page elements.`,
-    );
+
+  const inputFailures: readonly (readonly [RegExp, string])[] = [
+    [
+      /^Element is not an <input>/i,
+      'is not editable: this control does not support text input. Use an editable input, textarea, or contenteditable element.',
+    ],
+    [/^Cannot type text into input\[type=number\]/i, 'requires a numeric value. Use a valid number instead of text.'],
+    [
+      /^Input of type "[^"]+" cannot be filled/i,
+      'has an input type that cannot be filled. Use the interaction appropriate for this control.',
+    ],
+    [/^Malformed value/i, 'rejected the value format. Use a value supported by this input type.'],
+  ];
+  for (const [pattern, detail] of inputFailures) {
+    if (pattern.test(headline)) return new Error(`Element "${label}" ${detail}`);
   }
-  if (
-    message.includes('intercepts pointer events') ||
-    message.includes('not visible') ||
-    message.includes('not receive pointer events')
-  ) {
-    return new Error(
-      `Element "${selector}" is not interactable (hidden or covered). Try scrolling it into view, closing overlays, or re-snapshotting.`,
-    );
+
+  // The final retry diagnostic describes the state at timeout, not an earlier transient failure.
+  const diagnostics = timeoutMatch ? message.split('\n').reverse() : [headline];
+  for (const line of diagnostics) {
+    const diagnostic = line.trim().replace(/^(?:-\s*|\d+\s*×\s*)/, '');
+    const state = /^element is not (editable|enabled|visible|stable)$/i.exec(diagnostic)?.[1]?.toLowerCase();
+    if (state === 'editable')
+      return new Error(`Element "${label}" is not editable (for example, read-only). Use an editable control.`);
+    if (state === 'enabled')
+      return new Error(`Element "${label}" is not enabled. Complete any prerequisites that enable the control.`);
+    if (state === 'stable')
+      return new Error(
+        `Element "${label}" is not stable. Wait for movement or animation to finish before interacting.`,
+      );
+    if (
+      state === 'visible' ||
+      /^(?:<.*>.*|element )intercepts pointer events$/i.test(diagnostic) ||
+      /^Element is not (?:receiving|receive) pointer events/i.test(diagnostic)
+    ) {
+      return new Error(
+        `Element "${label}" is not interactable (hidden or covered). Try scrolling it into view, closing overlays, or re-snapshotting.`,
+      );
+    }
   }
-  const timeoutMatch = /Timeout (\d+)ms exceeded/.exec(message);
+  // Do not infer visibility from a generic "waiting for locator" (known difference #66).
+  if (timeoutMatch && !message.includes('locator resolved to') && message.includes('to be visible')) {
+    return new Error(`Element "${label}" not found or not visible. Run a new snapshot to see current page elements.`);
+  }
   if (timeoutMatch) {
     return new Error(
-      `Element "${selector}" timed out after ${timeoutMatch[1]}ms — element may be hidden or not interactable. Run a new snapshot to see current page elements.`,
+      `Element "${label}" timed out after ${timeoutMatch[1]}ms — element may be hidden or not interactable. Run a new snapshot to see current page elements.`,
     );
   }
   // Strip Playwright locator internals so AI agents don't see implementation details
@@ -318,7 +384,7 @@ export function toAIFriendlyError(error: unknown, selector: string): Error {
     .replace(/locator\([^)]*\)\./g, '')
     .replace(/waiting for locator\([^)]*\)/g, '')
     .trim();
-  return new Error(cleaned || message);
+  return error instanceof Error && cleaned === error.message ? error : new Error(cleaned || message);
 }
 
 export function normalizeTimeoutMs(timeoutMs: number | undefined, fallback: number, maxMs = 120000): number {

@@ -1,6 +1,6 @@
 {
   "name": "browserclaw",
-  "version": "0.20.0",
+  "version": "0.20.1",
   "description": "AI-friendly browser automation with snapshot + ref targeting. No CSS selectors, no XPath, no vision — just numbered refs.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -65,11 +65,14 @@
     "esbuild": "^0.28.1"
   },
   "dependencies": {
+    "file-type": "^22.1.0",
     "ipaddr.js": "^2.3.0",
-    "playwright-core": "^1.50.0"
+    "playwright-core": "^1.63.0",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/node": "^25.2.1",
+    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.57.2",
     "@typescript-eslint/parser": "^8.57.2",
     "eslint": "^10.1.0",

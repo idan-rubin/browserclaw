@@ -2,6 +2,56 @@ import { describe, it, expect } from 'vitest';
 
 import { buildRoleSnapshotFromAriaSnapshot, buildRoleSnapshotFromAiSnapshot } from './ref-map.js';
 
+describe('formatter-owned snapshot refs and quoted names', () => {
+  it.each([buildRoleSnapshotFromAriaSnapshot, buildRoleSnapshotFromAiSnapshot])(
+    'keeps an explicit empty marker after compact filtering',
+    (buildSnapshot) => {
+      for (const source of ['', '- generic', '- text "No controls"']) {
+        expect(buildSnapshot(source, { compact: true })).toEqual({ snapshot: '(empty)', refs: {} });
+      }
+      const control = buildSnapshot('- button "Save"', { compact: true });
+      expect(control.snapshot).toBe('- button "Save" [ref=e1]');
+      expect(control.refs.e1).toMatchObject({ role: 'button', name: 'Save' });
+    },
+  );
+
+  it.each([false, true])('preserves escaped and YAML-quoted names (interactive=%s)', (interactive) => {
+    const source = [
+      '- button "Say \\"hi\\"" [ref=e1]',
+      "- 'button \"It''s ready\" [ref=e2]':",
+      '- button / [ref=e3]',
+    ].join('\n');
+    const result = buildRoleSnapshotFromAiSnapshot(source, { interactive });
+    expect(result.refs.e1.name).toBe('Say "hi"');
+    expect(result.refs.e2.name).toBe("It's ready");
+    expect(result.refs.e3.name).toBe('/');
+  });
+
+  it('does not read ref-like page text or quoted names as formatter attributes', () => {
+    const result = buildRoleSnapshotFromAiSnapshot(
+      '- generic: "page text [ref=e999]"\n- button "[ref=e888]"\n- button "Real" [ref=e4]',
+    );
+    expect(result.refs.e999).toBeUndefined();
+    expect(result.refs.e888).toBeUndefined();
+    expect(result.refs.e4.name).toBe('Real');
+    expect(result.refs.e5.name).toBe('[ref=e888]');
+    expect(Object.keys(result.refs)).toEqual(['e5', 'e4']);
+  });
+
+  it('preserves native frame-prefixed and numeric refs instead of generating replacements', () => {
+    const result = buildRoleSnapshotFromAiSnapshot('- button "Frame" [ref=f2e7]\n- link "Native" [ref=123]');
+    expect(Object.keys(result.refs)).toEqual(['123', 'f2e7']);
+    expect(result.snapshot).not.toContain('[ref=e1]');
+  });
+
+  it('decodes names before duplicate tracking in role snapshots', () => {
+    const result = buildRoleSnapshotFromAriaSnapshot('- button "Say \\"hi\\""\n- button "Say \\"hi\\""');
+    expect(result.refs.e1.name).toBe('Say "hi"');
+    expect(result.refs.e2.nth).toBe(1);
+    expect(result.snapshot).toContain('"Say \\"hi\\""');
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // buildRoleSnapshotFromAriaSnapshot
 // ─────────────────────────────────────────────────────────────────────────────

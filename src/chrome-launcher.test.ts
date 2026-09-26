@@ -6,6 +6,8 @@ import path from 'node:path';
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+import * as cdpNetwork from './cdp-network.js';
+
 const { execFileMock } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
 }));
@@ -48,7 +50,53 @@ const {
   markCdpUrlProxyRouted,
   clearCdpUrlProxyRouted,
   isCdpUrlProxyRouted,
+  createChromeLaunchStderrDiagnostics,
+  chromeLaunchStderrHint,
 } = await import('./chrome-launcher.js');
+
+describe('bounded Chrome launch stderr', () => {
+  it('does not begin the final hint with half of a surrogate pair', () => {
+    expect(chromeLaunchStderrHint(`old🙂${'x'.repeat(1999)}`)).toBe(`\nChrome stderr:\n${'x'.repeat(1999)}`);
+  });
+
+  it('control: retains complete characters, the raw diagnostic text, and the ordinary length limit', () => {
+    expect(chromeLaunchStderrHint(`old🙂${'x'.repeat(1998)}`)).toBe(`\nChrome stderr:\n🙂${'x'.repeat(1998)}`);
+    expect(chromeLaunchStderrHint(`old${'x'.repeat(2000)}`)).toBe(`\nChrome stderr:\n${'x'.repeat(2000)}`);
+    expect(chromeLaunchStderrHint('token=raw')).toBe('\nChrome stderr:\ntoken=raw');
+    expect(chromeLaunchStderrHint('')).toBe('');
+  });
+
+  it('keeps only the bounded tail of large and successive chunks', () => {
+    const diagnostics = createChromeLaunchStderrDiagnostics(16);
+    diagnostics.append(Buffer.from('old'.repeat(1000)));
+    diagnostics.append(Buffer.from('latest diagnostic'));
+    expect(diagnostics.text()).toBe('atest diagnostic');
+    expect(Buffer.byteLength(diagnostics.text())).toBeLessThanOrEqual(16);
+  });
+
+  it('retains a split brand-agnostic singleton marker after its text is evicted', () => {
+    const diagnostics = createChromeLaunchStderrDiagnostics(64);
+    diagnostics.append(Buffer.from('The profile appears to be in use by another Goo'));
+    diagnostics.append(Buffer.from('gle Chrome process (123).'));
+    diagnostics.append(Buffer.from('x'.repeat(1000)));
+    expect(diagnostics.text()).toBe('x'.repeat(64));
+    expect(diagnostics.hasSingletonConflict()).toBe(true);
+    diagnostics.clear();
+    expect(diagnostics.text()).toBe('');
+    expect(diagnostics.hasSingletonConflict()).toBe(false);
+    diagnostics.append(Buffer.from('unrelated Chrome error'));
+    expect(diagnostics.hasSingletonConflict()).toBe(false);
+  });
+
+  it('does not split UTF-8 characters at either end of the retained tail', () => {
+    const diagnostics = createChromeLaunchStderrDiagnostics(7);
+    diagnostics.append(Buffer.from('🙂🙂🙂'));
+    expect(diagnostics.text()).toBe('🙂');
+    diagnostics.clear();
+    diagnostics.append(Buffer.from([0x61, 0xf0, 0x9f]));
+    expect(diagnostics.text()).toBe('a');
+  });
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isLoopbackHost
@@ -774,6 +822,20 @@ describe('readJsonResponseBounded', () => {
     await expect(readJsonResponseBounded(new Response('{"a":1}'), 'test')).resolves.toEqual({ a: 1 });
   });
 
+  it.each([true, false])('rejects malformed UTF-8 (stream=%s)', async (stream) => {
+    const bytes = new Uint8Array([34, 128, 34]);
+    const response = stream
+      ? new Response(bytes)
+      : ({ body: undefined, arrayBuffer: () => Promise.resolve(bytes.buffer) } as unknown as Response);
+    await expect(readJsonResponseBounded(response, 'test')).rejects.toThrow('test: malformed JSON response');
+  });
+
+  it('control: preserves valid multibyte characters', async () => {
+    await expect(readJsonResponseBounded(new Response('{"title":"頁面🙂"}'), 'test')).resolves.toEqual({
+      title: '頁面🙂',
+    });
+  });
+
   it('rejects a body that exceeds the byte limit', async () => {
     const res = new Response(`"${'x'.repeat(64)}"`);
     await expect(readJsonResponseBounded(res, 'test', 16)).rejects.toThrow('test: JSON response exceeds 16 bytes');
@@ -799,11 +861,8 @@ describe('readJsonResponseBounded', () => {
 describe('getChromeWebSocketUrl with URL credentials', () => {
   it('moves URL credentials into a Basic Authorization header and never fetches a credentialed URL', async () => {
     const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc' })),
-      );
-    vi.stubGlobal('fetch', fetchMock);
+      .spyOn(cdpNetwork, 'fetchCdpJson')
+      .mockResolvedValue({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc' });
     try {
       const wsUrl = await getChromeWebSocketUrl('http://user:p%40ss@127.0.0.1:9222', 500);
       expect(wsUrl).toContain('/devtools/browser/abc');
@@ -812,37 +871,31 @@ describe('getChromeWebSocketUrl with URL credentials', () => {
       expect(fetchedUrl).toBe('http://127.0.0.1:9222/json/version');
       expect(init.headers.Authorization).toBe(`Basic ${Buffer.from('user:p@ss').toString('base64')}`);
     } finally {
-      vi.unstubAllGlobals();
+      fetchMock.mockRestore();
     }
   });
 
   it('retries /json/version/ when a credentialed endpoint exposes no WebSocket URL', async () => {
     const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({})))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/xyz' })),
-      );
-    vi.stubGlobal('fetch', fetchMock);
+      .spyOn(cdpNetwork, 'fetchCdpJson')
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/xyz' });
     try {
       const wsUrl = await getChromeWebSocketUrl('http://user:pass@127.0.0.1:9222', 500);
       expect(wsUrl).toContain('/devtools/browser/xyz');
       expect(fetchMock).toHaveBeenCalledTimes(2);
-      const secondUrl = (fetchMock.mock.calls[1] as [string])[0];
+      const secondUrl = fetchMock.mock.calls[1][0];
       expect(secondUrl).toBe('http://127.0.0.1:9222/json/version/');
     } finally {
-      vi.unstubAllGlobals();
+      fetchMock.mockRestore();
     }
   });
 
   it('retries /json/version/ for a bearer-authenticated endpoint that exposes no WebSocket URL', async () => {
     const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({})))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/bearer' })),
-      );
-    vi.stubGlobal('fetch', fetchMock);
+      .spyOn(cdpNetwork, 'fetchCdpJson')
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/bearer' });
     try {
       const wsUrl = await getChromeWebSocketUrl('http://127.0.0.1:9222', 500, 'tok3n');
       expect(wsUrl).toContain('/devtools/browser/bearer');
@@ -851,20 +904,19 @@ describe('getChromeWebSocketUrl with URL credentials', () => {
       expect(secondUrl).toBe('http://127.0.0.1:9222/json/version/');
       expect(init.headers.Authorization).toBe('Bearer tok3n');
     } finally {
-      vi.unstubAllGlobals();
+      fetchMock.mockRestore();
     }
   });
 
   it('does not retry the trailing-slash form for credential-free endpoints', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({})));
-    vi.stubGlobal('fetch', fetchMock);
+    const fetchMock = vi.spyOn(cdpNetwork, 'fetchCdpJson').mockResolvedValue({});
     try {
       await getChromeWebSocketUrl('http://127.0.0.1:9222', 500);
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const [, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string> }];
       expect(init.headers.Authorization).toBeUndefined();
     } finally {
-      vi.unstubAllGlobals();
+      fetchMock.mockRestore();
     }
   });
 });

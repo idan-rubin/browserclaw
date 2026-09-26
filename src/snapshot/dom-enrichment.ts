@@ -65,6 +65,10 @@ export interface EnrichmentScope {
   rootSelector?: string;
   /** CSS selector targeting an iframe whose document should be scanned. Empty = main frame. */
   frameSelector?: string;
+  /** Already-resolved frame; prevents a selector from silently switching to a replacement iframe. */
+  frame?: Frame;
+  /** Native role capture has already bound these elements in the current snapshot. */
+  skipNativeMarkedElements?: boolean;
 }
 
 // ── Role mapping ──
@@ -194,8 +198,8 @@ export async function enrichSnapshotFromDom(
   const rootSelector = scope?.rootSelector?.trim() ?? '';
   const frameSelector = scope?.frameSelector?.trim() ?? '';
 
-  let context: Page | Frame = page;
-  if (frameSelector !== '') {
+  let context: Page | Frame = scope?.frame ?? page;
+  if (!scope?.frame && frameSelector !== '') {
     const handle = await page.$(frameSelector);
     const frame = handle ? await handle.contentFrame() : null;
     if (handle) await handle.dispose();
@@ -210,6 +214,7 @@ export async function enrichSnapshotFromDom(
       counter: number;
       maxElements: number;
       maxDataAttrs: number;
+      skipNativeMarkedElements: boolean;
     }): DomEnrichedElement[] => {
       const scanRoot: ParentNode | null =
         args.rootSelector !== '' ? document.querySelector(args.rootSelector) : document;
@@ -226,14 +231,21 @@ export async function enrichSnapshotFromDom(
 
       const processElement = (el: Element): void => {
         if (results.length >= args.maxElements) return;
-        if (el.hasAttribute('aria-ref')) return;
+        if (el.hasAttribute('aria-ref') || (args.skipNativeMarkedElements && el.hasAttribute('data-browserclaw-ref')))
+          return;
 
         const id = (el as HTMLElement).id;
 
         const dataAttrs: { name: string; value: string }[] = [];
         for (let i = 0; i < el.attributes.length && dataAttrs.length < args.maxDataAttrs; i++) {
           const attr = el.attributes.item(i);
-          if (attr && attr.name.startsWith('data-') && attr.name !== 'data-bc-ref') {
+          if (
+            attr &&
+            attr.name.startsWith('data-') &&
+            attr.name !== 'data-bc-ref' &&
+            attr.name !== 'data-browserclaw-ref' &&
+            !attr.name.startsWith('data-browserclaw-capture-')
+          ) {
             dataAttrs.push({ name: attr.name, value: attr.value });
           }
         }
@@ -279,6 +291,7 @@ export async function enrichSnapshotFromDom(
       counter: startRef,
       maxElements: MAX_ENRICHED_ELEMENTS,
       maxDataAttrs: MAX_DATA_ATTRS_PER_ELEMENT,
+      skipNativeMarkedElements: scope?.skipNativeMarkedElements === true,
     },
   );
 

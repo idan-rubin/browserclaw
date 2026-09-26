@@ -1,9 +1,13 @@
-import { BrowserTabNotFoundError, BlockedBrowserTargetError } from '../connection.js';
+import type { Frame, Page } from 'playwright-core';
+
+import { BrowserTabNotFoundError, BlockedBrowserTargetError, getPageForTargetId } from '../connection.js';
+import { InvalidBrowserNavigationUrlError } from '../security.js';
 import type { SsrfPolicy } from '../types.js';
 
 import { evaluateViaPlaywright } from './evaluate.js';
 import {
   clickViaPlaywright,
+  mouseClickViaPlaywright,
   hoverViaPlaywright,
   typeViaPlaywright,
   selectOptionViaPlaywright,
@@ -11,7 +15,7 @@ import {
   fillFormViaPlaywright,
   scrollIntoViewViaPlaywright,
 } from './interaction.js';
-import { pressKeyViaPlaywright } from './keyboard.js';
+import { pressKeyViaPlaywright, insertTextViaPlaywright } from './keyboard.js';
 import { resizeViewportViaPlaywright, closePageViaPlaywright } from './navigation.js';
 import { waitForViaPlaywright } from './wait.js';
 
@@ -21,6 +25,16 @@ const MAX_BATCH_ACTIONS = 100;
 
 /** A single action within a batch. */
 export type BatchAction =
+  | {
+      kind: 'mouseClick';
+      x: number;
+      y: number;
+      button?: 'left' | 'right' | 'middle';
+      clickCount?: number;
+      delayMs?: number;
+      targetId?: string;
+      signal?: AbortSignal;
+    }
   | {
       kind: 'click';
       ref?: string;
@@ -42,7 +56,8 @@ export type BatchAction =
       slowly?: boolean;
       timeoutMs?: number;
     }
-  | { kind: 'press'; key: string; targetId?: string; delayMs?: number }
+  | { kind: 'press'; key: string; targetId?: string; delayMs?: number; signal?: AbortSignal }
+  | { kind: 'insertText'; text: string; targetId?: string; signal?: AbortSignal }
   | { kind: 'hover'; ref?: string; selector?: string; targetId?: string; timeoutMs?: number }
   | { kind: 'scrollIntoView'; ref?: string; selector?: string; targetId?: string; timeoutMs?: number }
   | {
@@ -72,6 +87,7 @@ export type BatchAction =
       loadState?: 'load' | 'domcontentloaded' | 'networkidle';
       fn?: string;
       arg?: unknown;
+      signal?: AbortSignal;
       targetId?: string;
       timeoutMs?: number;
     }
@@ -92,11 +108,28 @@ export async function executeSingleAction(
   evaluateEnabled: boolean,
   depth = 0,
   ssrfPolicy?: SsrfPolicy,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (depth > MAX_BATCH_DEPTH) throw new Error(`Batch nesting depth exceeds maximum of ${String(MAX_BATCH_DEPTH)}`);
   const effectiveTargetId = action.targetId ?? targetId;
+  const actionSignal = 'signal' in action ? action.signal : undefined;
+  const effectiveSignal = signal && actionSignal ? AbortSignal.any([signal, actionSignal]) : (signal ?? actionSignal);
+  effectiveSignal?.throwIfAborted();
 
   switch (action.kind) {
+    case 'mouseClick':
+      await mouseClickViaPlaywright({
+        cdpUrl,
+        targetId: effectiveTargetId,
+        x: action.x,
+        y: action.y,
+        button: action.button,
+        clickCount: action.clickCount,
+        delayMs: action.delayMs,
+        signal: effectiveSignal,
+        ssrfPolicy,
+      });
+      break;
     case 'click':
       await clickViaPlaywright({
         cdpUrl,
@@ -106,6 +139,7 @@ export async function executeSingleAction(
         doubleClick: action.doubleClick,
         button: action.button as 'left' | 'right' | 'middle' | undefined,
         modifiers: action.modifiers as ('Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift')[] | undefined,
+        signal: effectiveSignal,
         delayMs: action.delayMs,
         timeoutMs: action.timeoutMs,
         ssrfPolicy,
@@ -120,6 +154,7 @@ export async function executeSingleAction(
         text: action.text,
         submit: action.submit,
         slowly: action.slowly,
+        signal: effectiveSignal,
         timeoutMs: action.timeoutMs,
         ssrfPolicy,
       });
@@ -130,29 +165,44 @@ export async function executeSingleAction(
         targetId: effectiveTargetId,
         key: action.key,
         delayMs: action.delayMs,
+        signal: effectiveSignal,
         ssrfPolicy,
       });
       break;
     case 'hover':
       await hoverViaPlaywright({
+        signal: effectiveSignal,
         cdpUrl,
         targetId: effectiveTargetId,
         ref: action.ref,
         selector: action.selector,
         timeoutMs: action.timeoutMs,
+        ssrfPolicy,
+      });
+      break;
+    case 'insertText':
+      await insertTextViaPlaywright({
+        cdpUrl,
+        targetId: effectiveTargetId,
+        text: action.text,
+        signal: effectiveSignal,
+        ssrfPolicy,
       });
       break;
     case 'scrollIntoView':
       await scrollIntoViewViaPlaywright({
+        signal: effectiveSignal,
         cdpUrl,
         targetId: effectiveTargetId,
         ref: action.ref,
         selector: action.selector,
         timeoutMs: action.timeoutMs,
+        ssrfPolicy,
       });
       break;
     case 'drag':
       await dragViaPlaywright({
+        signal: effectiveSignal,
         cdpUrl,
         targetId: effectiveTargetId,
         startRef: action.startRef,
@@ -165,6 +215,7 @@ export async function executeSingleAction(
       break;
     case 'select':
       await selectOptionViaPlaywright({
+        signal: effectiveSignal,
         cdpUrl,
         targetId: effectiveTargetId,
         ref: action.ref,
@@ -176,6 +227,7 @@ export async function executeSingleAction(
       break;
     case 'fill':
       await fillFormViaPlaywright({
+        signal: effectiveSignal,
         cdpUrl,
         targetId: effectiveTargetId,
         fields: action.fields,
@@ -185,6 +237,7 @@ export async function executeSingleAction(
       break;
     case 'resize':
       await resizeViewportViaPlaywright({
+        signal: effectiveSignal,
         cdpUrl,
         targetId: effectiveTargetId,
         width: action.width,
@@ -206,12 +259,15 @@ export async function executeSingleAction(
         loadState: action.loadState,
         fn: action.fn,
         arg: action.arg,
+        signal: effectiveSignal,
         timeoutMs: action.timeoutMs,
+        ssrfPolicy,
       });
       break;
     case 'evaluate':
       if (!evaluateEnabled) throw new Error('act:evaluate is disabled by config (browser.evaluateEnabled=false)');
       await evaluateViaPlaywright({
+        signal: effectiveSignal,
         cdpUrl,
         targetId: effectiveTargetId,
         fn: action.fn,
@@ -227,8 +283,9 @@ export async function executeSingleAction(
         ssrfPolicy,
       });
       break;
-    case 'batch':
-      await batchViaPlaywright({
+    case 'batch': {
+      const nested = await batchViaPlaywright({
+        signal: effectiveSignal,
         cdpUrl,
         targetId: effectiveTargetId,
         actions: action.actions,
@@ -237,7 +294,10 @@ export async function executeSingleAction(
         depth: depth + 1,
         ssrfPolicy,
       });
+      const failure = nested.results.find((result) => !result.ok);
+      if (failure?.ok === false) throw new Error(failure.error);
       break;
+    }
     default:
       throw new Error(`Unsupported batch action kind: ${String((action as Record<string, unknown>).kind)}`);
   }
@@ -245,6 +305,7 @@ export async function executeSingleAction(
 
 /**
  * Execute multiple browser actions in sequence.
+ * Stops after a target navigates or closes; results contain only dispatched actions.
  *
  * @param opts.actions - Array of actions to execute
  * @param opts.stopOnError - Stop on first error (default: true)
@@ -259,6 +320,7 @@ export async function batchViaPlaywright(opts: {
   evaluateEnabled?: boolean;
   depth?: number;
   ssrfPolicy?: SsrfPolicy;
+  signal?: AbortSignal;
 }): Promise<{ results: BatchActionResult[] }> {
   const depth = opts.depth ?? 0;
   if (depth > MAX_BATCH_DEPTH) throw new Error(`Batch nesting depth exceeds maximum of ${String(MAX_BATCH_DEPTH)}`);
@@ -268,23 +330,57 @@ export async function batchViaPlaywright(opts: {
   const results: BatchActionResult[] = [];
   const evaluateEnabled = opts.evaluateEnabled !== false;
   const deadline = Date.now() + MAX_BATCH_TIMEOUT_MS;
+  const observed = new Map<Page, (frame: Frame) => void>();
+  const boundary = { navigated: false };
+  const hasClosedPage = () => [...observed.keys()].some((page) => page.isClosed());
+  const crossedBoundary = () => boundary.navigated || hasClosedPage();
+  const observeTarget = async (targetId: string | undefined) => {
+    const page = await getPageForTargetId({ ...opts, targetId });
+    if (observed.has(page)) return;
+    const onNavigated = (frame: Frame) => {
+      if (frame === page.mainFrame()) boundary.navigated = true;
+    };
+    observed.set(page, onNavigated);
+    page.on('framenavigated', onNavigated);
+  };
 
-  for (const action of opts.actions) {
-    if (Date.now() > deadline) {
-      results.push({ ok: false, error: 'Batch timeout exceeded' });
-      break;
+  try {
+    for (const action of opts.actions) {
+      opts.signal?.throwIfAborted();
+      if (crossedBoundary()) break;
+      if (Date.now() > deadline) {
+        results.push({ ok: false, error: 'Batch timeout exceeded' });
+        break;
+      }
+      try {
+        try {
+          await observeTarget(action.targetId ?? opts.targetId);
+        } catch (error) {
+          // Closing an already missing explicit target remains idempotent.
+          if (action.kind !== 'close' || !(error instanceof BrowserTabNotFoundError)) throw error;
+        }
+        if (crossedBoundary()) break;
+        await executeSingleAction(
+          action,
+          opts.cdpUrl,
+          opts.targetId,
+          evaluateEnabled,
+          depth,
+          opts.ssrfPolicy,
+          opts.signal,
+        );
+        results.push({ ok: true });
+      } catch (err) {
+        if (err instanceof InvalidBrowserNavigationUrlError) throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        results.push({ ok: false, error: message });
+        // Always stop on page-destroying errors regardless of stopOnError setting
+        if (err instanceof BrowserTabNotFoundError || err instanceof BlockedBrowserTargetError) break;
+        if (opts.stopOnError !== false) break;
+      }
     }
-    try {
-      await executeSingleAction(action, opts.cdpUrl, opts.targetId, evaluateEnabled, depth, opts.ssrfPolicy);
-      results.push({ ok: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      results.push({ ok: false, error: message });
-      // Always stop on page-destroying errors regardless of stopOnError setting
-      if (err instanceof BrowserTabNotFoundError || err instanceof BlockedBrowserTargetError) break;
-      if (opts.stopOnError !== false) break;
-    }
+    return { results };
+  } finally {
+    for (const [page, onNavigated] of observed) page.off('framenavigated', onNavigated);
   }
-
-  return { results };
 }

@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events';
+
 import type { Page } from 'playwright-core';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -31,9 +33,9 @@ const { snapshotAi } = await import('./ai-snapshot.js');
 
 function makeMockPage(urls: string[]): Page {
   let i = 0;
-  return {
+  return Object.assign(new EventEmitter(), {
     url: () => urls[Math.min(i++, urls.length - 1)] ?? '',
-  } as unknown as Page;
+  }) as unknown as Page;
 }
 
 describe('snapshotAi hydration retry', () => {
@@ -51,6 +53,37 @@ describe('snapshotAi hydration retry', () => {
 
     expect(mockTakeAiSnapshotText).toHaveBeenCalledTimes(1);
     expect(result.refs).toEqual({});
+  });
+
+  it('rejects same-URL navigation during a capture even without hydration', async () => {
+    const page = makeMockPage(['https://example.test/']);
+    mockGetPageForTargetId.mockResolvedValue(page);
+    mockTakeAiSnapshotText.mockImplementation(() => {
+      (page as unknown as EventEmitter).emit('framenavigated', {});
+      return Promise.resolve('- button "Old" [ref=e1]');
+    });
+    await expect(snapshotAi({ cdpUrl: 'http://localhost:9222' })).rejects.toBeInstanceOf(NavigationRaceError);
+    expect(mockStoreRoleRefsForTarget).not.toHaveBeenCalled();
+  });
+
+  it('does not publish refs after cancellation during capture, with a successful control', async () => {
+    const reason = new Error('cancel snapshot');
+    const controller = new AbortController();
+    mockGetPageForTargetId.mockResolvedValue(makeMockPage(['about:blank']));
+    mockTakeAiSnapshotText.mockImplementationOnce(() => {
+      controller.abort(reason);
+      return Promise.resolve('- button "Discard" [ref=e1]');
+    });
+    await expect(snapshotAi({ cdpUrl: 'test', signal: controller.signal })).rejects.toBe(reason);
+    expect(mockStoreRoleRefsForTarget).not.toHaveBeenCalled();
+    mockTakeAiSnapshotText.mockResolvedValue('- button "Keep" [ref=e2]');
+    await snapshotAi({ cdpUrl: 'test' });
+    expect(mockStoreRoleRefsForTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ refs: { e2: { role: 'button', name: 'Keep' } } }),
+    );
+    mockTakeAiSnapshotText.mockClear();
+    await expect(snapshotAi({ cdpUrl: 'test', signal: controller.signal })).rejects.toBe(reason);
+    expect(mockTakeAiSnapshotText).not.toHaveBeenCalled();
   });
 
   it('retries until interactive refs appear when waitForHydration is enabled', async () => {

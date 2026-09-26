@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events';
+
 import type { Page, BrowserContext } from 'playwright-core';
 import { describe, it, expect } from 'vitest';
 
@@ -14,6 +16,57 @@ import {
   truncateUtf16Safe,
 } from './page-utils.js';
 import type { PageState, NetworkRequest } from './types.js';
+
+describe('page-controlled observation bounds', () => {
+  it('bounds every stored text field without cutting a surrogate pair', () => {
+    const events = new EventEmitter();
+    const state = ensurePageState(events as unknown as Page);
+    const long = `${'x'.repeat(2047)}😀${'y'.repeat(3000)}`;
+    events.emit('console', {
+      type: () => long,
+      text: () => long,
+      location: () => ({ url: long, lineNumber: 7, columnNumber: 3 }),
+    });
+    events.emit('pageerror', { name: long, message: long, stack: long });
+    const request = {
+      method: () => 'GET',
+      url: () => long,
+      resourceType: () => 'xhr',
+      failure: () => ({ errorText: long }),
+    };
+    events.emit('request', request);
+    events.emit('requestfailed', request);
+    for (const value of [
+      state.console[0].type,
+      state.console[0].text,
+      state.console[0].location?.url,
+      state.errors[0].name,
+      state.errors[0].message,
+      state.errors[0].stack,
+      state.requests[0].url,
+      state.requests[0].failureText,
+    ]) {
+      expect(value).toBe('x'.repeat(2047));
+    }
+    expect(state.console[0].location?.lineNumber).toBe(7);
+    expect(state.requests[0].resourceType).toBe('xhr');
+  });
+
+  it('preserves short content and existing response correlation', () => {
+    const events = new EventEmitter();
+    const state = ensurePageState(events as unknown as Page);
+    events.emit('console', {
+      type: () => 'log',
+      text: () => 'hello',
+      location: () => ({ url: 'https://example.com/', lineNumber: 1, columnNumber: 2 }),
+    });
+    const request = { method: () => 'GET', url: () => 'https://example.com/', resourceType: () => 'document' };
+    events.emit('request', request);
+    events.emit('response', { request: () => request, status: () => 200, ok: () => true });
+    expect(state.console[0].text).toBe('hello');
+    expect(state.requests[0]).toMatchObject({ url: 'https://example.com/', status: 200, ok: true });
+  });
+});
 
 // ─── Minimal mocks ───
 

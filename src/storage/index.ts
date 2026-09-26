@@ -39,6 +39,40 @@ export async function cookiesClearViaPlaywright(opts: { cdpUrl: string; targetId
   await page.context().clearCookies();
 }
 
+/** Import bounded batches, isolating rejected cookies instead of losing the whole batch. */
+export async function cookiesSetManyViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId?: string;
+  cookies: CookieData[];
+  signal?: AbortSignal;
+}): Promise<{ added: number }> {
+  opts.signal?.throwIfAborted();
+  const page = await getPageForTargetId(opts);
+  ensurePageState(page);
+  const context = page.context();
+  let added = 0;
+  for (let index = 0; index < opts.cookies.length; index += 500) {
+    opts.signal?.throwIfAborted();
+    const batch = opts.cookies.slice(index, index + 500);
+    try {
+      await context.addCookies(batch);
+      added += batch.length;
+    } catch {
+      for (const cookie of batch) {
+        opts.signal?.throwIfAborted();
+        try {
+          await context.addCookies([cookie]);
+          added += 1;
+        } catch {
+          // A rejected cookie does not prevent importing the remaining entries.
+        }
+      }
+    }
+  }
+  opts.signal?.throwIfAborted();
+  return { added };
+}
+
 // ── localStorage / sessionStorage ──
 
 export async function storageGetViaPlaywright(opts: {
@@ -49,26 +83,25 @@ export async function storageGetViaPlaywright(opts: {
 }): Promise<{ values: Record<string, string> }> {
   const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
   ensurePageState(page);
-  return {
-    values: await page.evaluate(
-      ({ kind, key }: { kind: string; key?: string }) => {
-        const store = kind === 'session' ? window.sessionStorage : window.localStorage;
-        if (key !== undefined && key !== '') {
-          const value = store.getItem(key);
-          return value === null ? {} : { [key]: value };
-        }
-        const out: Record<string, string> = {};
-        for (let i = 0; i < store.length; i++) {
-          const k = store.key(i);
-          if (k === null || k === '') continue;
-          const v = store.getItem(k);
-          if (v !== null) out[k] = v;
-        }
-        return out;
-      },
-      { kind: opts.kind, key: opts.key },
-    ),
-  };
+  const entries = await page.evaluate(
+    ({ kind, key }: { kind: string; key?: string }): [string, string][] => {
+      const store = kind === 'session' ? window.sessionStorage : window.localStorage;
+      if (key !== undefined && key !== '') {
+        const value = store.getItem(key);
+        return value === null ? [] : [[key, value]];
+      }
+      const out: [string, string][] = [];
+      for (let i = 0; i < store.length; i++) {
+        const k = store.key(i);
+        if (k === null) continue;
+        const v = store.getItem(k);
+        if (v !== null) out.push([k, v]);
+      }
+      return out;
+    },
+    { kind: opts.kind, key: opts.key },
+  );
+  return { values: Object.fromEntries(entries) };
 }
 
 export async function storageSetViaPlaywright(opts: {

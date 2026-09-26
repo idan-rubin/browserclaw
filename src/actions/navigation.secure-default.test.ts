@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 
 import { assertInteractionNavigationCompletedSafely } from './navigation.js';
 
-const START_URL = 'https://start.example/page';
+const START_URL = 'http://93.184.216.34/page';
 
 function makeFakePage(): Page & { setUrl: (u: string) => void } {
   let current = START_URL;
@@ -13,6 +13,9 @@ function makeFakePage(): Page & { setUrl: (u: string) => void } {
     off: () => undefined,
     mainFrame: () => ({}),
     close: () => Promise.resolve(),
+    route: () => Promise.resolve(),
+    unroute: () => Promise.resolve(),
+    isClosed: () => false,
     setUrl: (u: string) => {
       current = u;
     },

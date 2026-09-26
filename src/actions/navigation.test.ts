@@ -1,4 +1,4 @@
-import type { Browser } from 'playwright-core';
+import type { Browser, Page } from 'playwright-core';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import type * as ConnectionModule from '../connection.js';
@@ -6,6 +6,8 @@ import type * as SecurityModule from '../security.js';
 
 const {
   mockConnectBrowser,
+  mockGetPageForTargetId,
+  mockForceDisconnect,
   mockObserveContext,
   mockEnsurePageState,
   mockClearBlockedPageRef,
@@ -17,11 +19,13 @@ const {
   mockAssertBrowserNavigationRedirectChainAllowed,
 } = vi.hoisted(() => ({
   mockConnectBrowser: vi.fn<() => Promise<{ browser: Browser; cdpUrl: string }>>(),
+  mockGetPageForTargetId: vi.fn<() => Promise<Page>>(),
+  mockForceDisconnect: vi.fn().mockResolvedValue(undefined),
   mockObserveContext: vi.fn().mockResolvedValue(undefined),
   mockEnsurePageState: vi.fn().mockReturnValue({}),
   mockClearBlockedPageRef: vi.fn(),
   mockClearBlockedTarget: vi.fn(),
-  mockPageTargetId: vi.fn().mockResolvedValue('t-new'),
+  mockPageTargetId: vi.fn<(page: FakePage) => Promise<string | null>>().mockResolvedValue('t-new'),
   mockGetStealthEnabledForCdpUrl: vi.fn().mockReturnValue(false),
   mockAssertBrowserNavigationAllowed: vi.fn().mockResolvedValue(undefined),
   mockAssertBrowserNavigationResultAllowed: vi.fn().mockResolvedValue(undefined),
@@ -33,6 +37,8 @@ vi.mock('../connection.js', async (importOriginal) => {
   return {
     ...actual,
     connectBrowser: mockConnectBrowser,
+    getPageForTargetId: mockGetPageForTargetId,
+    forceDisconnectPlaywrightConnection: mockForceDisconnect,
     observeContext: mockObserveContext,
     ensurePageState: mockEnsurePageState,
     clearBlockedPageRef: mockClearBlockedPageRef,
@@ -52,7 +58,14 @@ vi.mock('../security.js', async (importOriginal) => {
   };
 });
 
-const { createPageViaPlaywright, assertPageNavigationCompletedSafely, listPagesViaPlaywright } =
+vi.mock('../page-target.js', () => ({
+  pageTargetInfo: async (page: FakePage) => {
+    const targetId = await mockPageTargetId(page);
+    return targetId === null ? null : { targetId, title: 'browser-owned title' };
+  },
+}));
+
+const { createPageViaPlaywright, assertPageNavigationCompletedSafely, listPagesViaPlaywright, navigateViaPlaywright } =
   await import('./navigation.js');
 const { InvalidBrowserNavigationUrlError } = await import('../security.js');
 
@@ -92,6 +105,32 @@ function buildFakePage(overrides: Partial<FakePage> = {}): FakePage {
 interface FakeContext {
   newPage: ReturnType<typeof vi.fn>;
 }
+
+describe('navigateViaPlaywright retry ownership', () => {
+  it('passes the originating page when retiring a detached navigation adapter', async () => {
+    const origin = buildFakePage({ goto: vi.fn().mockRejectedValue(new Error('Frame has been detached')) });
+    const replacement = buildFakePage();
+    mockGetPageForTargetId.mockReset();
+    mockGetPageForTargetId
+      .mockResolvedValueOnce(origin as unknown as Page)
+      .mockResolvedValueOnce(replacement as unknown as Page);
+    mockForceDisconnect.mockClear();
+    mockEnsurePageState.mockReturnValue({ downloadWaiterDepth: 1 });
+    mockAssertBrowserNavigationAllowed.mockResolvedValue(undefined);
+    mockAssertBrowserNavigationResultAllowed.mockResolvedValue(undefined);
+    mockAssertBrowserNavigationRedirectChainAllowed.mockResolvedValue(undefined);
+    try {
+      await expect(
+        navigateViaPlaywright({ cdpUrl: 'http://localhost:9222', targetId: 'T1', url: 'https://example.test/' }),
+      ).resolves.toEqual({ url: 'https://example.test/' });
+      expect(mockForceDisconnect).toHaveBeenCalledOnce();
+      expect(mockForceDisconnect).toHaveBeenCalledWith(expect.objectContaining({ page: origin, targetId: 'T1' }));
+      expect(replacement.goto).toHaveBeenCalledOnce();
+    } finally {
+      mockEnsurePageState.mockReturnValue({});
+    }
+  });
+});
 
 interface FakeBrowser {
   contexts: () => FakeContext[];
@@ -248,6 +287,7 @@ describe('listPagesViaPlaywright browser-internal filter', () => {
     expect(tabs).toHaveLength(1);
     expect(tabs[0]?.targetId).toBe('t-real');
     expect(tabs[0]?.url).toBe('https://example.test/');
+    expect(tabs[0]?.title).toBe('browser-owned title');
   });
 
   it('keeps default new-tab pages in the listing across vendors', async () => {

@@ -1,14 +1,27 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
+
+import type Ws from 'ws';
 
 const execFileAsync = promisify(execFile);
 
 import {
-  assertCdpEndpointAllowed,
+  cdpMessageText,
+  closeCdpSocket,
+  fetchCdpJson,
+  openPinnedCdpSocket,
+  sendCdpCommand,
+  type CdpEndpoint,
+} from './cdp-network.js';
+import { readProfileJson, writeProfileJson } from './profile-json.js';
+import {
+  resolveCdpEndpointPin,
   getHeadersWithAuth,
   scopeCdpPolicyToConfiguredEndpoint,
   stripUrlCredentials,
@@ -25,10 +38,15 @@ export function processExists(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
-    return true;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EPERM') return true;
-    return false;
+    if ((err as NodeJS.ErrnoException).code !== 'EPERM') return false;
+  }
+  if (process.platform !== 'linux') return true;
+  try {
+    const status = fs.readFileSync(`/proc/${String(pid)}/status`, 'utf8');
+    return !(/^State:\s+(\S)/m.exec(status)?.[1] === 'Z' && /^Threads:[ \t]+1[ \t]*$/m.test(status));
+  } catch {
+    return true;
   }
 }
 
@@ -65,30 +83,38 @@ export function clearStaleChromeSingletonLocks(userDataDir: string, hostname: st
   return true;
 }
 
-async function waitForChromeProcessExit(proc: ChildProcess, timeoutMs: number): Promise<void> {
-  if (proc.exitCode !== null || proc.signalCode !== null) return;
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
+function processHasExited(proc: ChildProcess): boolean {
+  return proc.exitCode !== null || proc.signalCode !== null;
+}
+
+async function waitForChromeProcessExit(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (processHasExited(proc)) return true;
+  return await new Promise<boolean>((resolve) => {
+    const cleanup = () => {
+      clearTimeout(timer);
       proc.off('exit', onExit);
       proc.off('close', onExit);
-      resolve();
-    }, timeoutMs);
+    };
+    const timer = setTimeout(
+      () => {
+        cleanup();
+        resolve(false);
+      },
+      Math.max(0, timeoutMs),
+    );
     const onExit = () => {
-      clearTimeout(timer);
-      resolve();
+      cleanup();
+      resolve(true);
     };
     proc.once('exit', onExit);
     proc.once('close', onExit);
+    if (processHasExited(proc)) onExit();
   });
 }
 
 async function terminateChromeForRetry(proc: ChildProcess, userDataDir: string): Promise<void> {
-  try {
-    proc.kill('SIGKILL');
-  } catch {
-    /* may already be dead */
-  }
-  await waitForChromeProcessExit(proc, 5000);
+  if (!(await signalChromeProcess(proc, 'SIGKILL', 5000)))
+    throw new Error('Chrome process survived singleton recovery cleanup.');
   clearStaleChromeSingletonLocks(userDataDir);
 }
 
@@ -112,6 +138,62 @@ function killProcessTree(proc: ChildProcess, signal: NodeJS.Signals): void {
   } catch {
     /* process may already be dead */
   }
+}
+
+async function signalChromeProcess(proc: ChildProcess, signal: NodeJS.Signals, timeoutMs: number): Promise<boolean> {
+  if (processHasExited(proc)) return true;
+  killProcessTree(proc, signal);
+  return await waitForChromeProcessExit(proc, timeoutMs);
+}
+
+/** @internal Byte-bounded diagnostics retain recovery markers even after their text is evicted. */
+export function createChromeLaunchStderrDiagnostics(maxBytes = 65536) {
+  const storage = Buffer.allocUnsafe(Math.max(0, maxBytes));
+  let totalBytes = 0;
+  let markerScanTail = '';
+  let singletonInUse = false;
+  return {
+    append(chunk: Buffer) {
+      const scanText = markerScanTail + chunk.toString('utf8');
+      singletonInUse ||= CHROME_SINGLETON_IN_USE_PATTERN.test(scanText);
+      markerScanTail = scanText.slice(-256);
+      if (chunk.length >= maxBytes) {
+        chunk.copy(storage, 0, chunk.length - maxBytes);
+        totalBytes = maxBytes;
+        return;
+      }
+      const overflow = Math.max(0, totalBytes + chunk.length - maxBytes);
+      if (overflow > 0) {
+        storage.copyWithin(0, overflow, totalBytes);
+        totalBytes -= overflow;
+      }
+      chunk.copy(storage, totalBytes);
+      totalBytes += chunk.length;
+    },
+    text(): string {
+      let start = 0;
+      while (start < totalBytes && (storage[start] & 0xc0) === 0x80) start += 1;
+      return new StringDecoder('utf8').write(storage.subarray(start, totalBytes));
+    },
+    hasSingletonConflict(): boolean {
+      return singletonInUse;
+    },
+    clear() {
+      totalBytes = 0;
+      markerScanTail = '';
+      singletonInUse = false;
+    },
+  };
+}
+
+/** @internal Keep the final diagnostic hint within its UTF-16 budget without splitting a pair. */
+export function chromeLaunchStderrHint(stderrOutput: string): string {
+  if (!stderrOutput) return '';
+  let start = Math.max(0, stderrOutput.length - 2000);
+  const first = stderrOutput.charCodeAt(start);
+  const previous = stderrOutput.charCodeAt(start - 1);
+  if (first >= 0xdc00 && first <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff) start += 1;
+  return `\nChrome stderr:\n${stderrOutput.slice(start)}`;
 }
 
 // ── Executable Detection ──
@@ -204,6 +286,16 @@ function fileExists(filePath: string): boolean {
   }
 }
 
+function isExecutable(filePath: string): boolean {
+  try {
+    if (!fs.statSync(filePath).isFile()) return false;
+    fs.accessSync(filePath, process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function execText(command: string, args: string[], timeoutMs = 1200, maxBuffer = 1024 * 1024): string | null {
   try {
     const output = execFileSync(command, args, {
@@ -239,7 +331,7 @@ function inferKindFromExeName(name: string): ChromeKind {
 }
 
 function findFirstExe(candidates: ChromeExecutable[]): ChromeExecutable | null {
-  for (const c of candidates) if (fileExists(c.path)) return c;
+  for (const c of candidates) if (isExecutable(c.path)) return c;
   return null;
 }
 
@@ -274,8 +366,8 @@ function detectDefaultBrowserBundleIdMac(): string | null {
       const rec = entry as Record<string, unknown>;
       if (rec.LSHandlerURLScheme !== scheme) continue;
       const role =
-        (typeof rec.LSHandlerRoleAll === 'string' ? rec.LSHandlerRoleAll : null) ??
-        (typeof rec.LSHandlerRoleViewer === 'string' ? rec.LSHandlerRoleViewer : null) ??
+        (typeof rec.LSHandlerRoleAll === 'string' && rec.LSHandlerRoleAll) ||
+        (typeof rec.LSHandlerRoleViewer === 'string' && rec.LSHandlerRoleViewer) ||
         null;
       if (role !== null) candidate = role;
     }
@@ -293,7 +385,7 @@ function detectDefaultChromiumMac(): ChromeExecutable | null {
   const exeName = execText('/usr/bin/defaults', ['read', path.join(appPath, 'Contents', 'Info'), 'CFBundleExecutable']);
   if (exeName === null) return null;
   const exePath = path.join(appPath, 'Contents', 'MacOS', exeName.trim());
-  if (!fileExists(exePath)) return null;
+  if (!isExecutable(exePath)) return null;
   return { kind: inferKindFromIdentifier(bundleId), path: exePath };
 }
 
@@ -392,8 +484,10 @@ function detectDefaultChromiumLinux(): ChromeExecutable | null {
   }
   if (command === null) return null;
 
-  const resolved = command.startsWith('/') ? command : (execText('which', [command], 800)?.trim() ?? null);
-  if (resolved === null || resolved === '') return null;
+  const cleaned = command.trim().replace(/%[a-zA-Z]/g, '');
+  if (!cleaned) return null;
+  const resolved = cleaned.startsWith('/') ? cleaned : (execText('which', [cleaned], 800)?.trim() ?? null);
+  if (resolved === null || resolved === '' || !isExecutable(resolved)) return null;
   const exeName = path.posix.basename(resolved).toLowerCase();
   if (!CHROMIUM_EXE_NAMES.has(exeName)) return null;
   return { kind: inferKindFromExeName(exeName), path: resolved };
@@ -417,15 +511,51 @@ function findChromeLinux(): ChromeExecutable | null {
     { kind: 'chromium', path: '/snap/bin/chromium' },
     { kind: 'chromium', path: '/usr/lib/chromium/chromium' },
     { kind: 'chromium', path: '/usr/lib/chromium-browser/chromium-browser' },
+    ...findPlaywrightChromiumCandidates(),
   ]);
+}
+
+function findPlaywrightChromiumCandidates(): ChromeExecutable[] {
+  const configured = nonEmptyEnvironmentValue('PLAYWRIGHT_BROWSERS_PATH');
+  const cacheDirs = new Set([
+    ...(configured !== undefined && configured !== '0' ? [configured] : []),
+    path.join(os.homedir(), '.cache', 'ms-playwright'),
+  ]);
+  const candidates: ChromeExecutable[] = [];
+  for (const cacheDir of cacheDirs) {
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(cacheDir).sort();
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.startsWith('chromium-')) continue;
+      for (const layout of ['chrome-linux64', 'chrome-linux']) {
+        candidates.push({ kind: 'chromium', path: path.join(cacheDir, entry, layout, 'chrome') });
+      }
+    }
+  }
+  return candidates;
 }
 
 // ── Windows Detection ──
 
+function nonEmptyEnvironmentValue(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value === '' ? undefined : value;
+}
+
+function resolveWindowsInstallRoots(): { localAppData: string; programFiles: string; programFilesX86: string } {
+  return {
+    localAppData: nonEmptyEnvironmentValue('LOCALAPPDATA') ?? path.win32.join(os.homedir(), 'AppData', 'Local'),
+    programFiles: nonEmptyEnvironmentValue('ProgramFiles') ?? 'C:\\Program Files',
+    programFilesX86: nonEmptyEnvironmentValue('ProgramFiles(x86)') ?? 'C:\\Program Files (x86)',
+  };
+}
+
 function findChromeWindows(): ChromeExecutable | null {
-  const localAppData = process.env.LOCALAPPDATA ?? '';
-  const programFiles = process.env.ProgramFiles ?? 'C:\\Program Files';
-  const programFilesX86 = process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)';
+  const { localAppData, programFiles, programFilesX86 } = resolveWindowsInstallRoots();
   const j = path.win32.join;
   const candidates: ChromeExecutable[] = [];
   if (localAppData) {
@@ -463,7 +593,8 @@ function readWindowsProgId(): string | null {
     'ProgId',
   ]);
   if (output === null) return null;
-  return /ProgId\s+REG_\w+\s+(.+)$/im.exec(output)?.[1]?.trim() ?? null;
+  const value = /ProgId\s+REG_\w+\s+(.+)$/im.exec(output)?.[1]?.trim();
+  return value === undefined || value === '' ? null : value;
 }
 
 function readWindowsCommandForProgId(progId: string): string | null {
@@ -473,22 +604,45 @@ function readWindowsCommandForProgId(progId: string): string | null {
     '/ve',
   ]);
   if (output === null) return null;
-  return /REG_\w+\s+(.+)$/im.exec(output)?.[1]?.trim() ?? null;
+  const value = /REG_\w+\s+(.+)$/im.exec(output)?.[1]?.trim();
+  return value === undefined || value === '' ? null : value;
 }
 
 function expandWindowsEnvVars(value: string): string {
+  const roots = resolveWindowsInstallRoots();
+  const installRoots: Partial<Record<string, string>> = {
+    localappdata: roots.localAppData,
+    programfiles: roots.programFiles,
+    'programfiles(x86)': roots.programFilesX86,
+  };
   return value.replace(/%([^%]+)%/g, (_match, name: string) => {
     const key = name.trim();
-    return key !== '' ? (process.env[key] ?? `%${key}%`) : _match;
+    return key !== '' ? (nonEmptyEnvironmentValue(key) ?? installRoots[key.toLowerCase()] ?? `%${key}%`) : _match;
   });
 }
 
 function extractWindowsExecutablePath(command: string): string | null {
   const quoted = /"([^"]+\.exe)"/i.exec(command);
   if (quoted?.[1] !== undefined) return quoted[1];
-  const unquoted = /([^\s]+\.exe)/i.exec(command);
+  const unquoted = /^\s*(\S+\.exe)(?:\s|$)/i.exec(command);
   if (unquoted?.[1] !== undefined) return unquoted[1];
   return null;
+}
+
+function resolveDirectWindowsExecutable(executablePath: string): string | null {
+  if (path.win32.basename(executablePath).toLowerCase() !== 'launcher.exe') return executablePath;
+  const installDir = path.win32.dirname(executablePath);
+  try {
+    const status: unknown = JSON.parse(
+      fs.readFileSync(path.win32.join(installDir, 'installation_status.json'), 'utf8'),
+    );
+    const subfolder: unknown = status !== null && typeof status === 'object' ? Reflect.get(status, '_subfolder') : null;
+    if (typeof subfolder !== 'string' || !/^\d+(?:\.\d+){1,3}$/.test(subfolder)) return null;
+    const candidate = path.win32.join(installDir, subfolder, 'opera.exe');
+    return isExecutable(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
 }
 
 function detectDefaultChromiumWindows(): ChromeExecutable | null {
@@ -497,10 +651,12 @@ function detectDefaultChromiumWindows(): ChromeExecutable | null {
   if (command === null) return null;
   const exePath = extractWindowsExecutablePath(expandWindowsEnvVars(command));
   if (exePath === null) return null;
-  if (!fileExists(exePath)) return null;
-  const exeName = path.win32.basename(exePath).toLowerCase();
+  if (!isExecutable(exePath)) return null;
+  const directPath = resolveDirectWindowsExecutable(exePath);
+  if (directPath === null) return null;
+  const exeName = path.win32.basename(directPath).toLowerCase();
   if (!CHROMIUM_EXE_NAMES.has(exeName)) return null;
-  return { kind: inferKindFromExeName(exeName), path: exePath };
+  return { kind: inferKindFromExeName(exeName), path: directPath };
 }
 
 // ── Resolve Executable ──
@@ -508,7 +664,14 @@ function detectDefaultChromiumWindows(): ChromeExecutable | null {
 export function resolveBrowserExecutable(opts?: { executablePath?: string }): ChromeExecutable | null {
   if (opts?.executablePath !== undefined && opts.executablePath !== '') {
     if (!fileExists(opts.executablePath)) throw new Error(`executablePath not found: ${opts.executablePath}`);
-    return { kind: 'custom', path: opts.executablePath };
+    const directPath =
+      process.platform === 'win32' ? resolveDirectWindowsExecutable(opts.executablePath) : opts.executablePath;
+    if (directPath === null) {
+      throw new Error(
+        `executablePath must point to the browser executable, not a handoff launcher: ${opts.executablePath}`,
+      );
+    }
+    return { kind: 'custom', path: directPath };
   }
   const platform = process.platform;
   if (platform === 'darwin') return detectDefaultChromiumMac() ?? findChromeMac();
@@ -555,19 +718,11 @@ export async function reserveFreePortFromList(candidates: readonly number[]): Pr
 // ── Profile Decoration ──
 
 function safeReadJson(filePath: string): Record<string, unknown> | null {
-  try {
-    if (!fs.existsSync(filePath)) return null;
-    const parsed: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+  return readProfileJson(filePath);
 }
 
 function safeWriteJson(filePath: string, data: Record<string, unknown>): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+  writeProfileJson(filePath, data);
 }
 
 function setDeep(obj: Record<string, unknown>, keys: string[], value: unknown): void {
@@ -645,6 +800,13 @@ function ensureCleanExit(userDataDir: string): void {
   setDeep(prefs, ['exited_cleanly'], true);
   safeWriteJson(preferencesPath, prefs);
   wipeChromeSessionState(userDataDir);
+}
+
+function ensureProfileNetworkPredictionDisabled(userDataDir: string): void {
+  const preferencesPath = path.join(userDataDir, 'Default', 'Preferences');
+  const prefs = safeReadJson(preferencesPath) ?? {};
+  setDeep(prefs, ['net', 'network_prediction_options'], 2);
+  safeWriteJson(preferencesPath, prefs);
 }
 
 const CHROME_SESSION_FILE_PREFIXES = ['Tabs_', 'Session_'];
@@ -759,6 +921,12 @@ export function isLoopbackHost(hostname: string): boolean {
 
 const PROXY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];
 
+function omitChromeProxyEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const childEnv = { ...env };
+  for (const key of [...PROXY_ENV_KEYS, 'NO_PROXY', 'no_proxy']) Reflect.deleteProperty(childEnv, key);
+  return childEnv;
+}
+
 export function hasProxyEnvConfigured(env: Record<string, string | undefined> = process.env): boolean {
   for (const key of PROXY_ENV_KEYS) {
     const value = env[key];
@@ -836,38 +1004,17 @@ export function openCdpWebSocket(url: string, headers?: Record<string, string>):
   return headers !== undefined && Object.keys(headers).length > 0 ? new Ctor(url, { headers }) : new Ctor(url);
 }
 
-async function canOpenWebSocket(url: string, timeoutMs: number, headers?: Record<string, string>): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    let settled = false;
-    const finish = (value: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try {
-        ws.close();
-      } catch {}
-      resolve(value);
-    };
-    const timer = setTimeout(
-      () => {
-        finish(false);
-      },
-      Math.max(1, timeoutMs + Math.min(25, timeoutMs)),
-    );
-    let ws: WebSocket;
-    try {
-      ws = openCdpWebSocket(stripUrlCredentials(url), headers);
-    } catch {
-      finish(false);
-      return;
-    }
-    ws.onopen = () => {
-      finish(true);
-    };
-    ws.onerror = () => {
-      finish(false);
-    };
-  });
+async function canOpenWebSocket(
+  endpoint: CdpEndpoint,
+  timeoutMs: number,
+  headers?: Record<string, string>,
+): Promise<boolean> {
+  try {
+    closeCdpSocket(await openPinnedCdpSocket(endpoint, { timeoutMs, headers }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Cap on CDP `/json/*` response sizes so a hostile endpoint cannot force an unbounded buffer. */
@@ -908,7 +1055,7 @@ export async function readJsonResponseBounded(
     }
   }
   try {
-    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
   } catch (cause) {
     throw new Error(`${label}: malformed JSON response`, { cause });
   }
@@ -922,29 +1069,21 @@ async function fetchChromeVersion(
   versionPath = '/json/version',
 ): Promise<Record<string, unknown> | null> {
   try {
-    await assertCdpEndpointAllowed(cdpUrl, ssrfPolicy);
-  } catch {
-    return null;
-  }
-  const ctrl = new AbortController();
-  const t = setTimeout(() => {
-    ctrl.abort();
-  }, timeoutMs);
-  try {
     const httpBase = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
     const versionUrl = appendCdpPath(httpBase, versionPath);
     const headers: Record<string, string> = getHeadersWithAuth(versionUrl);
     if (authToken !== undefined && authToken !== '' && !headers.Authorization)
       headers.Authorization = `Bearer ${authToken}`;
-    const res = await fetch(stripUrlCredentials(versionUrl), { signal: ctrl.signal, headers });
-    if (!res.ok) return null;
-    const data: unknown = await readJsonResponseBounded(res, 'cdp-version');
+    const data = await fetchCdpJson(stripUrlCredentials(versionUrl), {
+      timeoutMs,
+      headers,
+      ssrfPolicy,
+      configuredUrl: cdpUrl,
+    });
     if (data === null || data === undefined || typeof data !== 'object') return null;
     return data as Record<string, unknown>;
   } catch {
     return null;
-  } finally {
-    clearTimeout(t);
   }
 }
 
@@ -955,12 +1094,15 @@ async function fetchChromeVersionWithCredentialFallback(
   authToken?: string,
   ssrfPolicy?: SsrfPolicy,
 ): Promise<Record<string, unknown> | null> {
+  const deadline = Date.now() + Math.max(1, timeoutMs);
   const primary = await fetchChromeVersion(cdpUrl, timeoutMs, authToken, ssrfPolicy);
   const authenticated = stripUrlCredentials(cdpUrl) !== cdpUrl || (authToken !== undefined && authToken !== '');
   if (!authenticated) return primary;
   const primaryWsUrl = typeof primary?.webSocketDebuggerUrl === 'string' ? primary.webSocketDebuggerUrl.trim() : '';
   if (primaryWsUrl !== '') return primary;
-  const fallback = await fetchChromeVersion(cdpUrl, timeoutMs, authToken, ssrfPolicy, '/json/version/');
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return primary;
+  const fallback = await fetchChromeVersion(cdpUrl, remaining, authToken, ssrfPolicy, '/json/version/');
   return fallback ?? primary;
 }
 
@@ -980,20 +1122,21 @@ export async function isChromeReachable(
   authToken?: string,
   ssrfPolicy?: SsrfPolicy,
 ): Promise<boolean> {
+  let endpoint: CdpEndpoint;
   try {
-    await assertCdpEndpointAllowed(cdpUrl, ssrfPolicy);
+    endpoint = { url: cdpUrl, lookup: (await resolveCdpEndpointPin(cdpUrl, ssrfPolicy))?.lookup };
   } catch {
     return false;
   }
   const probeHeaders = getHeadersWithAuth(cdpUrl);
   if (authToken !== undefined && authToken !== '' && !probeHeaders.Authorization)
     probeHeaders.Authorization = `Bearer ${authToken}`;
-  if (isDirectCdpWebSocketEndpoint(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs, probeHeaders);
+  if (isDirectCdpWebSocketEndpoint(cdpUrl)) return await canOpenWebSocket(endpoint, timeoutMs, probeHeaders);
   const cdpControlPolicy = scopeCdpPolicyToConfiguredEndpoint(cdpUrl, ssrfPolicy);
   const discoveryUrl = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
   const version = await fetchChromeVersionWithCredentialFallback(discoveryUrl, timeoutMs, authToken, cdpControlPolicy);
   if (version !== null) return true;
-  if (isWebSocketUrl(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs, probeHeaders);
+  if (isWebSocketUrl(cdpUrl)) return await canOpenWebSocket(endpoint, timeoutMs, probeHeaders);
   return false;
 }
 
@@ -1003,20 +1146,55 @@ export async function getChromeWebSocketUrl(
   authToken?: string,
   ssrfPolicy?: SsrfPolicy,
 ): Promise<string | null> {
-  await assertCdpEndpointAllowed(cdpUrl, ssrfPolicy);
-  if (isDirectCdpWebSocketEndpoint(cdpUrl)) return cdpUrl;
-  const cdpControlPolicy = scopeCdpPolicyToConfiguredEndpoint(cdpUrl, ssrfPolicy);
-  const discoveryUrl = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
-  const version = await fetchChromeVersionWithCredentialFallback(discoveryUrl, timeoutMs, authToken, cdpControlPolicy);
-  const rawWsUrl = version?.webSocketDebuggerUrl;
-  const wsUrl = typeof rawWsUrl === 'string' ? rawWsUrl.trim() : '';
-  if (wsUrl === '') {
-    if (isWebSocketUrl(cdpUrl)) return cdpUrl;
-    return null;
+  return (await getChromeWebSocketEndpoint(cdpUrl, timeoutMs, authToken, ssrfPolicy))?.url ?? null;
+}
+
+/** @internal The lookup must travel with discovery through the final socket dial. */
+export async function getChromeWebSocketEndpoint(
+  cdpUrl: string,
+  timeoutMs = 500,
+  authToken?: string,
+  ssrfPolicy?: SsrfPolicy,
+): Promise<CdpEndpoint | null> {
+  const deadline = Date.now() + Math.max(1, timeoutMs);
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => {
+      controller.abort();
+    },
+    Math.max(1, timeoutMs),
+  );
+  try {
+    const configured = await resolveCdpEndpointPin(cdpUrl, ssrfPolicy, undefined, controller.signal);
+    if (isDirectCdpWebSocketEndpoint(cdpUrl)) return { url: cdpUrl, lookup: configured?.lookup };
+    const cdpControlPolicy = scopeCdpPolicyToConfiguredEndpoint(cdpUrl, ssrfPolicy);
+    const discoveryUrl = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
+    const version = await fetchChromeVersionWithCredentialFallback(
+      discoveryUrl,
+      Math.max(1, deadline - Date.now()),
+      authToken,
+      cdpControlPolicy,
+    );
+    const rawWsUrl = version?.webSocketDebuggerUrl;
+    const wsUrl = typeof rawWsUrl === 'string' ? rawWsUrl.trim() : '';
+    if (wsUrl === '') {
+      if (isWebSocketUrl(cdpUrl)) return { url: cdpUrl, lookup: configured?.lookup };
+      return null;
+    }
+    const normalized = normalizeCdpWsUrl(wsUrl, discoveryUrl);
+    const pin = await resolveCdpEndpointPin(
+      normalized,
+      cdpControlPolicy,
+      {
+        source: 'discovered',
+        configuredUrl: cdpUrl,
+      },
+      controller.signal,
+    );
+    return { url: normalized, lookup: pin?.lookup };
+  } finally {
+    clearTimeout(timer);
   }
-  const normalized = normalizeCdpWsUrl(wsUrl, discoveryUrl);
-  await assertCdpEndpointAllowed(normalized, cdpControlPolicy, { source: 'discovered', configuredUrl: cdpUrl });
-  return normalized;
 }
 
 export async function isChromeCdpReady(
@@ -1025,12 +1203,19 @@ export async function isChromeCdpReady(
   handshakeTimeoutMs = 800,
   ssrfPolicy?: SsrfPolicy,
 ): Promise<boolean> {
-  const wsUrl = await getChromeWebSocketUrl(cdpUrl, timeoutMs, undefined, ssrfPolicy).catch(() => null);
-  if (wsUrl === null) return false;
-  return await canRunCdpHealthCommand(wsUrl, handshakeTimeoutMs);
+  const endpoint = await getChromeWebSocketEndpoint(cdpUrl, timeoutMs, undefined, ssrfPolicy).catch(() => null);
+  if (endpoint === null) return false;
+  return await canRunCdpHealthCommand(endpoint, handshakeTimeoutMs);
 }
 
-async function canRunCdpHealthCommand(wsUrl: string, timeoutMs = 800): Promise<boolean> {
+async function canRunCdpHealthCommand(endpoint: CdpEndpoint, timeoutMs = 800): Promise<boolean> {
+  let ws: Ws;
+  const deadline = Date.now() + timeoutMs;
+  try {
+    ws = await openPinnedCdpSocket(endpoint, { timeoutMs });
+  } catch {
+    return false;
+  }
   return new Promise<boolean>((resolve) => {
     let settled = false;
     const finish = (value: boolean) => {
@@ -1038,7 +1223,7 @@ async function canRunCdpHealthCommand(wsUrl: string, timeoutMs = 800): Promise<b
       settled = true;
       clearTimeout(timer);
       try {
-        ws.close();
+        closeCdpSocket(ws);
       } catch {}
       resolve(value);
     };
@@ -1047,27 +1232,12 @@ async function canRunCdpHealthCommand(wsUrl: string, timeoutMs = 800): Promise<b
       () => {
         finish(false);
       },
-      Math.max(1, timeoutMs + Math.min(25, timeoutMs)),
+      Math.max(1, deadline - Date.now()),
     );
 
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(wsUrl);
-    } catch {
-      finish(false);
-      return;
-    }
-
-    ws.onopen = () => {
-      try {
-        ws.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' }));
-      } catch {
-        finish(false);
-      }
-    };
     ws.onmessage = (event) => {
       try {
-        const parsed: unknown = JSON.parse(String(event.data));
+        const parsed: unknown = JSON.parse(typeof event.data === 'string' ? event.data : cdpMessageText(event.data));
         if (typeof parsed !== 'object' || parsed === null) return;
         const msg = parsed as Record<string, unknown>;
         if (msg.id !== 1) return;
@@ -1082,6 +1252,11 @@ async function canRunCdpHealthCommand(wsUrl: string, timeoutMs = 800): Promise<b
     ws.onclose = () => {
       finish(false);
     };
+    try {
+      ws.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' }));
+    } catch {
+      finish(false);
+    }
   });
 }
 
@@ -1202,12 +1377,13 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
 
   const localStatePath = path.join(userDataDir, 'Local State');
   const preferencesPath = path.join(userDataDir, 'Default', 'Preferences');
-  const profileIsNew = !fileExists(localStatePath) || !fileExists(preferencesPath);
+  const profileIsNew = !fileExists(localStatePath);
+  const needsBootstrap = profileIsNew || !fileExists(preferencesPath);
   const useMockKeychain =
     process.platform === 'darwin' &&
     (usesBrowserclawMockKeychain(userDataDir) || (profileIsNew && opts.headless === true));
 
-  const spawnChrome = (spawnOpts?: { detached?: boolean }, runOpts?: { forceHeadless?: boolean }) => {
+  const spawnChrome = async (spawnOpts?: { detached?: boolean }, runOpts?: { forceHeadless?: boolean }) => {
     const args = buildChromeLaunchArgs({
       cdpPort,
       userDataDir,
@@ -1219,38 +1395,47 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
       platform: process.platform,
       useMockKeychain,
     });
-    return spawn(exe.path, args, {
+    const proc = spawn(exe.path, args, {
       stdio: ['ignore', 'ignore', 'pipe'],
-      env: { ...process.env, HOME: os.homedir() },
+      env: { ...omitChromeProxyEnv(process.env), HOME: os.homedir() },
       ...spawnOpts,
     });
+    // Keep a listener for the child's whole lifetime: later process errors must
+    // not become unhandled EventEmitter errors in the embedding application.
+    proc.on('error', (error) => {
+      if (process.env.DEBUG !== undefined && process.env.DEBUG !== '')
+        console.warn(`[browserclaw] Chrome process error: ${error.message}`);
+    });
+    if (proc.pid === undefined) await once(proc, 'spawn');
+    if (proc.pid === undefined) throw new Error('Chrome process spawned without a pid.');
+    return proc;
   };
 
   const startedAt = Date.now();
 
-  if (!fileExists(localStatePath) || !fileExists(preferencesPath)) {
+  if (needsBootstrap) {
     const useDetached = process.platform !== 'win32';
-    const bootstrap = spawnChrome(useDetached ? { detached: true } : undefined, { forceHeadless: true });
+    const bootstrap = await spawnChrome(useDetached ? { detached: true } : undefined, { forceHeadless: true });
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
       if (fileExists(localStatePath) && fileExists(preferencesPath)) break;
       await new Promise((r) => setTimeout(r, 100));
     }
-    killProcessTree(bootstrap, 'SIGTERM');
-    const exitDeadline = Date.now() + 5000;
-    while (Date.now() < exitDeadline) {
-      if (bootstrap.exitCode != null) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    if (bootstrap.exitCode == null) {
-      killProcessTree(bootstrap, 'SIGKILL');
-    }
+    if (
+      !(await signalChromeProcess(bootstrap, 'SIGTERM', 5000)) &&
+      !(await signalChromeProcess(bootstrap, 'SIGKILL', 5000))
+    )
+      throw new Error('Chrome bootstrap process survived cleanup.');
   }
 
   try {
     decorateProfile(userDataDir, profileName, opts.profileColor ?? DEFAULT_PROFILE_COLOR, {
       mockKeychain: useMockKeychain,
     });
+  } catch {}
+
+  try {
+    ensureProfileNetworkPredictionDisabled(userDataDir);
   } catch {}
 
   try {
@@ -1267,11 +1452,11 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
 
   const launchOnceAndWait = async (
     allowSingletonRecovery: boolean,
-  ): Promise<{ proc: ReturnType<typeof spawnChrome> }> => {
-    const proc = spawnChrome();
-    const stderrChunks: Buffer[] = [];
+  ): Promise<{ proc: Awaited<ReturnType<typeof spawnChrome>> }> => {
+    const proc = await spawnChrome();
+    const stderrDiagnostics = createChromeLaunchStderrDiagnostics();
     const onStderr = (chunk: Buffer) => {
-      stderrChunks.push(chunk);
+      stderrDiagnostics.append(chunk);
     };
     proc.stderr.on('data', onStderr);
 
@@ -1284,24 +1469,25 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
     }
 
     if (!(await isChromeCdpReady(cdpUrl, 500))) {
-      const stderrOutput = Buffer.concat(stderrChunks).toString('utf8').trim();
+      const stderrOutput = stderrDiagnostics.text().trim();
       if (
         allowSingletonRecovery &&
-        CHROME_SINGLETON_IN_USE_PATTERN.test(stderrOutput) &&
+        stderrDiagnostics.hasSingletonConflict() &&
         clearStaleChromeSingletonLocks(userDataDir)
       ) {
         proc.stderr.off('data', onStderr);
         await terminateChromeForRetry(proc, userDataDir);
         return await launchOnceAndWait(false);
       }
-      const stderrHint = stderrOutput ? `\nChrome stderr:\n${stderrOutput.slice(0, 2000)}` : '';
+      const stderrHint = chromeLaunchStderrHint(stderrOutput);
       const sandboxHint =
         process.platform === 'linux' && opts.noSandbox !== true
           ? '\nHint: If running in a container or as root, try setting noSandbox: true.'
           : '';
-      try {
-        proc.kill('SIGKILL');
-      } catch {}
+      proc.stderr.off('data', onStderr);
+      stderrDiagnostics.clear();
+      if (!(await signalChromeProcess(proc, 'SIGKILL', 5000)))
+        throw new Error('Chrome process survived launch cleanup.');
       try {
         const lockFile = path.join(userDataDir, 'SingletonLock');
         if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
@@ -1311,7 +1497,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
 
     proc.stderr.off('data', onStderr);
     proc.stderr.resume();
-    stderrChunks.length = 0;
+    stderrDiagnostics.clear();
     return { proc };
   };
 
@@ -1332,70 +1518,31 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
 const CHROME_GRACEFUL_CLOSE_COMMAND_TIMEOUT_MS = 500;
 
 /** CDP `Browser.close` flushes profile data (cookies) before any signal reaches the process group. */
-async function requestGracefulChromeClose(cdpPort: number, timeoutMs: number): Promise<boolean> {
+async function requestGracefulChromeClose(running: RunningChrome, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + Math.max(1, Math.min(timeoutMs, CHROME_GRACEFUL_CLOSE_COMMAND_TIMEOUT_MS));
   const remaining = () => Math.max(1, deadline - Date.now());
-  let commandSent = false;
+  let socket: Ws | undefined;
   try {
-    const wsUrl = await getChromeWebSocketUrl(`http://127.0.0.1:${String(cdpPort)}`, Math.min(remaining(), 200));
-    if (wsUrl === null) return false;
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      let ws: WebSocket | undefined;
-      const finish = (err?: Error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        try {
-          ws?.close();
-        } catch {
-          /* noop */
-        }
-        if (err) reject(err);
-        else resolve();
-      };
-      const timer = setTimeout(() => {
-        finish(new Error('Chrome graceful close timed out'));
-      }, remaining());
-      try {
-        ws = new WebSocket(wsUrl);
-      } catch (err) {
-        finish(err instanceof Error ? err : new Error(String(err)));
-        return;
-      }
-      ws.onopen = () => {
-        try {
-          ws.send(JSON.stringify({ id: 1, method: 'Browser.close' }));
-          commandSent = true;
-          finish();
-        } catch (err) {
-          finish(err instanceof Error ? err : new Error(String(err)));
-        }
-      };
-      ws.onerror = () => {
-        finish(new Error('Chrome graceful close socket error'));
-      };
-    });
+    const endpoint = await getChromeWebSocketEndpoint(
+      `http://127.0.0.1:${String(running.cdpPort)}`,
+      Math.min(remaining(), 200),
+    );
+    if (endpoint === null || Date.now() >= deadline) return false;
+    socket = await openPinnedCdpSocket(endpoint, { timeoutMs: remaining() });
+    const result = await sendCdpCommand(socket, 'SystemInfo.getProcessInfo', undefined, undefined, remaining());
+    const processes = result.processInfo as { type?: string; id?: number }[] | undefined;
+    const browserPid = processes?.find(
+      (entry) => entry.type === 'browser' && Number.isSafeInteger(entry.id) && (entry.id ?? 0) > 0,
+    )?.id;
+    // A recycled debugging port must never close a different browser process.
+    if (browserPid !== running.pid || processHasExited(running.proc) || Date.now() >= deadline) return false;
+    socket.send(JSON.stringify({ id: 0, method: 'Browser.close' }));
     return true;
   } catch {
-    return commandSent;
+    return false;
+  } finally {
+    if (socket) closeCdpSocket(socket);
   }
-}
-
-async function waitForChromeCdpShutdown(cdpPort: number, timeoutMs: number): Promise<boolean> {
-  const cdpUrl = `http://127.0.0.1:${String(cdpPort)}`;
-  const deadline = Date.now() + timeoutMs;
-  const remaining = () => deadline - Date.now();
-  while (remaining() > 0) {
-    if (!(await isChromeReachable(cdpUrl, Math.min(200, remaining())))) return true;
-    if (remaining() <= 0) break;
-    await new Promise((r) => setTimeout(r, Math.max(1, Math.min(100, remaining()))));
-  }
-  return false;
-}
-
-function processHasExited(proc: RunningChrome['proc']): boolean {
-  return proc.exitCode !== null;
 }
 
 export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Promise<void> {
@@ -1409,7 +1556,7 @@ export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Prom
       /* best-effort cleanup of isolated profile directory */
     }
   };
-  if (proc.exitCode !== null) {
+  if (processHasExited(proc)) {
     cleanupIsolated();
     return;
   }
@@ -1418,26 +1565,19 @@ export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Prom
   const gracefulDeadline = Date.now() + Math.floor(timeoutMs / 2);
   const gracefulRemaining = () => Math.max(0, gracefulDeadline - Date.now());
   if (
-    (await requestGracefulChromeClose(running.cdpPort, gracefulRemaining())) &&
-    (await waitForChromeCdpShutdown(running.cdpPort, gracefulRemaining()))
+    (await requestGracefulChromeClose(running, gracefulRemaining())) &&
+    (await waitForChromeProcessExit(proc, gracefulRemaining()))
   ) {
-    const exitDeadline = Math.min(Date.now() + 1000, deadline);
-    while (Date.now() < exitDeadline && !processHasExited(proc)) {
-      await new Promise((r) => setTimeout(r, 25));
-    }
-    if (processHasExited(proc)) {
-      cleanupIsolated();
-      return;
-    }
+    cleanupIsolated();
+    return;
   }
-  killProcessTree(proc, 'SIGTERM');
-  while (remaining() > 0) {
-    if (processHasExited(proc)) {
-      cleanupIsolated();
-      return;
-    }
-    await new Promise((r) => setTimeout(r, Math.max(1, Math.min(100, remaining()))));
+  // Reserve part of the same deadline for confirming SIGKILL; never delete a
+  // profile while a surviving child might still be writing to it.
+  if (
+    !(await signalChromeProcess(proc, 'SIGTERM', Math.floor(remaining() * 0.8))) &&
+    !(await signalChromeProcess(proc, 'SIGKILL', remaining()))
+  ) {
+    throw new Error(`Chrome process ${String(running.pid)} survived shutdown; its profile was preserved.`);
   }
-  killProcessTree(proc, 'SIGKILL');
   cleanupIsolated();
 }
