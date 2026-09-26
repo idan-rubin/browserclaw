@@ -39,6 +39,7 @@ import type { SsrfPolicy } from './types.js';
 
 /** Strict policy: private network NOT allowed */
 const STRICT_POLICY: SsrfPolicy = { dangerouslyAllowPrivateNetwork: false };
+const GATED_POLICY: SsrfPolicy = { ...STRICT_POLICY, requireAllowlistedHostnames: true };
 
 /** Permissive policy: private network allowed */
 const PERMISSIVE_POLICY: SsrfPolicy = { dangerouslyAllowPrivateNetwork: true };
@@ -651,14 +652,26 @@ describe('security.ts', () => {
       ).rejects.toThrow(InvalidBrowserNavigationUrlError);
     });
 
-    describe('explicit strict policy (dangerouslyAllowPrivateNetwork: false) — IP-literal gate', () => {
+    describe('requireAllowlistedHostnames — IP-literal / allow-list gate', () => {
       it('blocks a plain hostname that is neither IP-literal nor allow-listed', async () => {
         await withoutProxyEnv(async () => {
           await expect(
             assertBrowserNavigationAllowed({
               url: 'https://example.com',
               lookupFn: mockPublicLookup(),
-              ssrfPolicy: STRICT_POLICY,
+              ssrfPolicy: GATED_POLICY,
+            }),
+          ).rejects.toThrow('requires an IP-literal URL or an allow-listed hostname');
+        });
+      });
+
+      it('fires with the flag alone, without an explicit dangerouslyAllowPrivateNetwork', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://example.com',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: { requireAllowlistedHostnames: true },
             }),
           ).rejects.toThrow('requires an IP-literal URL or an allow-listed hostname');
         });
@@ -667,7 +680,7 @@ describe('security.ts', () => {
       it('allows an IP-literal URL', async () => {
         await withoutProxyEnv(async () => {
           await expect(
-            assertBrowserNavigationAllowed({ url: 'http://93.184.216.34/', ssrfPolicy: STRICT_POLICY }),
+            assertBrowserNavigationAllowed({ url: 'http://93.184.216.34/', ssrfPolicy: GATED_POLICY }),
           ).resolves.toBeUndefined();
         });
       });
@@ -677,7 +690,7 @@ describe('security.ts', () => {
           await expect(
             assertBrowserNavigationAllowed({
               url: 'http://[2606:2800:220:1:248:1893:25c8:1946]/',
-              ssrfPolicy: STRICT_POLICY,
+              ssrfPolicy: GATED_POLICY,
             }),
           ).resolves.toBeUndefined();
         });
@@ -689,7 +702,7 @@ describe('security.ts', () => {
             assertBrowserNavigationAllowed({
               url: 'https://internal.corp',
               lookupFn: mockPublicLookup(),
-              ssrfPolicy: { ...STRICT_POLICY, allowedHostnames: ['internal.corp'] },
+              ssrfPolicy: { ...GATED_POLICY, allowedHostnames: ['internal.corp'] },
             }),
           ).resolves.toBeUndefined();
         });
@@ -701,7 +714,19 @@ describe('security.ts', () => {
             assertBrowserNavigationAllowed({
               url: 'https://api.internal.corp',
               lookupFn: mockPublicLookup(),
-              ssrfPolicy: { ...STRICT_POLICY, hostnameAllowlist: ['*.internal.corp'] },
+              ssrfPolicy: { ...GATED_POLICY, hostnameAllowlist: ['*.internal.corp'] },
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('is inert when private network access is allowed', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://example.com',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: { ...PERMISSIVE_POLICY, requireAllowlistedHostnames: true },
             }),
           ).resolves.toBeUndefined();
         });
@@ -715,7 +740,19 @@ describe('security.ts', () => {
         });
       });
 
-      it('does not fire when the policy is not explicit-strict', async () => {
+      it('does not fire under an explicit dangerouslyAllowPrivateNetwork: false without the flag', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://example.com',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: STRICT_POLICY,
+            }),
+          ).resolves.toBeUndefined();
+        });
+      });
+
+      it('does not fire when the policy only lists other hostnames', async () => {
         await withoutProxyEnv(async () => {
           await expect(
             assertBrowserNavigationAllowed({

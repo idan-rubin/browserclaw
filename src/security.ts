@@ -881,19 +881,16 @@ export async function assertBrowserNavigationAllowed(
     );
   }
 
-  // Under an explicit strict policy, hostnames cannot be safely navigated: the browser
-  // re-resolves DNS independently of this pinned check (a 0-TTL rebind reaches a private
-  // IP). Require an IP literal or an explicitly allow-listed hostname.
   if (
-    requiresInspectableBrowserNavigationRedirects(opts.ssrfPolicy) &&
+    opts.ssrfPolicy?.requireAllowlistedHostnames === true &&
     !isPrivateNetworkAllowedByPolicy(opts.ssrfPolicy) &&
     !isIpLiteralHostname(parsed.hostname) &&
     !isExplicitlyAllowedBrowserHostname(parsed.hostname, opts.ssrfPolicy)
   ) {
     throw new InvalidBrowserNavigationUrlError(
-      'Navigation blocked: strict SSRF policy (dangerouslyAllowPrivateNetwork: false) requires an IP-literal URL ' +
-        'or an allow-listed hostname, because the browser resolves DNS itself and hostname-based rebinding ' +
-        'protection cannot be guaranteed. Add the hostname to ssrfPolicy.allowedHostnames or navigate by IP.',
+      'Navigation blocked: ssrfPolicy.requireAllowlistedHostnames requires an IP-literal URL or an allow-listed ' +
+        'hostname, because the browser resolves DNS itself and a hostname cannot be protected against rebinding. ' +
+        'Add the hostname to ssrfPolicy.allowedHostnames or navigate by IP.',
     );
   }
 
