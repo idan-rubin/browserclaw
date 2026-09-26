@@ -59,7 +59,7 @@
     "url": "https://github.com/idan-rubin/browserclaw/issues"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "overrides": {
     "esbuild": "^0.28.1"
