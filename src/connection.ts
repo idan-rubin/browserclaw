@@ -663,8 +663,13 @@ async function tryTerminateExecutionViaCdp(cdpUrl: string, targetId: string, ssr
     source: 'discovered',
     configuredUrl: cdpUrl,
   });
-  // Node's native WebSocket rejects credential-bearing URLs; never dial with userinfo.
   const wsConnectionUrl = stripUrlCredentials(wsUrl);
+  if (wsConnectionUrl !== wsUrl) {
+    console.warn(
+      `[browserclaw] skipping Runtime.terminateExecution for ${targetId}: native WebSocket cannot send the endpoint credentials`,
+    );
+    return;
+  }
   const needsAttach = cdpSocketNeedsAttach(wsConnectionUrl);
 
   await new Promise<void>((resolve) => {

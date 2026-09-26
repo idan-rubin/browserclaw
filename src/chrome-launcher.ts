@@ -972,12 +972,13 @@ export async function isChromeReachable(
   } catch {
     return false;
   }
-  if (isDirectCdpWebSocketEndpoint(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs);
+  const authenticated = (authToken !== undefined && authToken !== '') || stripUrlCredentials(cdpUrl) !== cdpUrl;
+  if (isDirectCdpWebSocketEndpoint(cdpUrl)) return authenticated || (await canOpenWebSocket(cdpUrl, timeoutMs));
   const cdpControlPolicy = scopeCdpPolicyToConfiguredEndpoint(cdpUrl, ssrfPolicy);
   const discoveryUrl = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
   const version = await fetchChromeVersionWithCredentialFallback(discoveryUrl, timeoutMs, authToken, cdpControlPolicy);
   if (version !== null) return true;
-  if (isWebSocketUrl(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs);
+  if (isWebSocketUrl(cdpUrl)) return authenticated || (await canOpenWebSocket(cdpUrl, timeoutMs));
   return false;
 }
 
@@ -1186,7 +1187,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
 
   const localStatePath = path.join(userDataDir, 'Local State');
   const preferencesPath = path.join(userDataDir, 'Default', 'Preferences');
-  const profileIsNew = !fileExists(localStatePath);
+  const profileIsNew = !fileExists(localStatePath) || !fileExists(preferencesPath);
   const useMockKeychain =
     process.platform === 'darwin' &&
     (usesBrowserclawMockKeychain(userDataDir) || (profileIsNew && opts.headless === true));
@@ -1395,11 +1396,15 @@ export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Prom
     cleanupIsolated();
     return;
   }
+  const deadline = Date.now() + timeoutMs;
+  const remaining = () => Math.max(0, deadline - Date.now());
+  const gracefulDeadline = Date.now() + Math.floor(timeoutMs / 2);
+  const gracefulRemaining = () => Math.max(0, gracefulDeadline - Date.now());
   if (
-    (await requestGracefulChromeClose(running.cdpPort, timeoutMs)) &&
-    (await waitForChromeCdpShutdown(running.cdpPort, timeoutMs))
+    (await requestGracefulChromeClose(running.cdpPort, gracefulRemaining())) &&
+    (await waitForChromeCdpShutdown(running.cdpPort, gracefulRemaining()))
   ) {
-    const exitDeadline = Date.now() + 1000;
+    const exitDeadline = Math.min(Date.now() + 1000, deadline);
     while (Date.now() < exitDeadline && !processHasExited(proc)) {
       await new Promise((r) => setTimeout(r, 25));
     }
@@ -1409,15 +1414,12 @@ export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Prom
     }
   }
   killProcessTree(proc, 'SIGTERM');
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    // exitCode changes asynchronously after SIGTERM; re-read from proc
-    if ((proc as { exitCode: number | null }).exitCode !== null) {
+  while (remaining() > 0) {
+    if (processHasExited(proc)) {
       cleanupIsolated();
       return;
     }
-    const remainingMs = timeoutMs - (Date.now() - start);
-    await new Promise((r) => setTimeout(r, Math.max(1, Math.min(100, remainingMs))));
+    await new Promise((r) => setTimeout(r, Math.max(1, Math.min(100, remaining()))));
   }
   killProcessTree(proc, 'SIGKILL');
   cleanupIsolated();
