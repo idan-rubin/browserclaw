@@ -1334,6 +1334,25 @@ describe('security.ts', () => {
       });
     });
 
+    it('fails closed for a proxy-routed browser under a strict policy', async () => {
+      const chain = { url: () => 'http://93.184.216.34/final', redirectedFrom: () => null };
+      await expect(
+        assertBrowserNavigationRedirectChainAllowed({
+          request: chain,
+          lookupFn: mockPublicLookup(),
+          ssrfPolicy: STRICT_POLICY,
+        }),
+      ).resolves.toBeUndefined();
+      await expect(
+        assertBrowserNavigationRedirectChainAllowed({
+          request: chain,
+          lookupFn: mockPublicLookup(),
+          ssrfPolicy: STRICT_POLICY,
+          browserProxyMode: 'explicit-browser-proxy',
+        }),
+      ).rejects.toThrow(/proxy-routed/);
+    });
+
     it('should block if any URL in redirect chain is private', async () => {
       const chain = {
         url: () => 'http://127.0.0.1',
@@ -2084,6 +2103,38 @@ describe('security.ts', () => {
           configuredUrl: 'http://127.0.0.1:9222',
         }),
       ).resolves.toBeUndefined();
+    });
+
+    it('scopes discovery to a public CDP host without granting it a private-IP exemption', async () => {
+      const scoped = scopeCdpPolicyToConfiguredEndpoint('http://cdp.example.com:9222', STRICT_POLICY);
+      expect(scoped?.allowedHostnames).toEqual([]);
+      expect(scoped?.hostnameAllowlist).toEqual(['cdp.example.com']);
+      await expect(
+        resolvePinnedHostnameWithPolicy('cdp.example.com', { lookupFn: mockPrivateLookup(), policy: scoped }),
+      ).rejects.toThrow(InvalidBrowserNavigationUrlError);
+    });
+
+    it('control: allow-listing the configured host would admit the rebound private answer', async () => {
+      await expect(
+        resolvePinnedHostnameWithPolicy('cdp.example.com', {
+          lookupFn: mockPrivateLookup(),
+          policy: { ...STRICT_POLICY, allowedHostnames: ['cdp.example.com'] },
+        }),
+      ).resolves.toBeDefined();
+    });
+
+    it('keeps the private exemption for a loopback host and for a caller-allow-listed host', async () => {
+      expect(scopeCdpPolicyToConfiguredEndpoint('http://127.0.0.1:9222', STRICT_POLICY)?.allowedHostnames).toEqual([
+        '127.0.0.1',
+      ]);
+      const allowListed = scopeCdpPolicyToConfiguredEndpoint('http://cdp.corp.example:9222', {
+        ...STRICT_POLICY,
+        allowedHostnames: ['cdp.corp.example'],
+      });
+      expect(allowListed?.allowedHostnames).toEqual(['cdp.corp.example']);
+      await expect(
+        resolvePinnedHostnameWithPolicy('cdp.corp.example', { lookupFn: mockPrivateLookup(), policy: allowListed }),
+      ).resolves.toBeDefined();
     });
 
     it('does not enforce discovered-authority matching without a policy', async () => {

@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 
 import type { Page, Download } from 'playwright-core';
 
+import { isCdpUrlProxyRouted } from '../chrome-launcher.js';
 import {
   getPageForTargetId,
   ensurePageState,
@@ -72,9 +73,14 @@ function createPageDownloadWaiter(page: Page, state: PageState, timeoutMs: numbe
   };
 }
 
-async function assertDownloadUrlAllowed(download: Download, ssrfPolicy?: SsrfPolicy): Promise<void> {
+async function assertDownloadUrlAllowed(download: Download, cdpUrl: string, ssrfPolicy?: SsrfPolicy): Promise<void> {
   if (!ssrfPolicy) return;
-  await assertBrowserNavigationResultAllowed({ url: download.url(), ...withBrowserNavigationPolicy(ssrfPolicy) });
+  await assertBrowserNavigationResultAllowed({
+    url: download.url(),
+    ...withBrowserNavigationPolicy(ssrfPolicy, {
+      browserProxyMode: isCdpUrlProxyRouted(cdpUrl) ? 'explicit-browser-proxy' : 'direct',
+    }),
+  });
 }
 
 // Unconditional (secure-by-default) — assertBrowserNavigationResultAllowed blocks
@@ -112,15 +118,37 @@ function buildManagedDownloadPath(fileName: string): string {
   return join(DEFAULT_DOWNLOAD_DIR, `${randomUUID()}-${safeName}`);
 }
 
+export const NAVIGATION_DOWNLOAD_TIMEOUT_MESSAGE = 'Timeout waiting for navigation download';
+
+/** A navigation that aborted because it became a download emits `download` within IPC latency; anything slower is a plain abort. */
+export const NAVIGATION_DOWNLOAD_GRACE_MS = 1500;
+
 /** A passive download capture armed for the duration of a navigation. */
 export interface NavigationDownloadCapture {
   /** False when another download waiter is already active on the page. */
   armed: boolean;
-  promise: Promise<DownloadResult>;
+  /** Waits up to `graceMs` for the navigation's download, then policy-validates and saves it. */
+  settle: (graceMs: number) => Promise<DownloadResult>;
   cancel: () => void;
 }
 
-/** Passive per-navigation download capture: policy-validates the URL before saving bytes; not armed while an explicit waiter is active. */
+function rejectAfter(ms: number, message: string): { promise: Promise<never>; clear: () => void } {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const promise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(message));
+    }, ms);
+  });
+  promise.catch(() => undefined);
+  return {
+    promise,
+    clear: () => {
+      if (timer) clearTimeout(timer);
+    },
+  };
+}
+
+/** Passive per-navigation download capture: nothing is saved until the caller confirms the navigation became a download. */
 export function armNavigationDownloadCapture(
   page: Page,
   state: PageState,
@@ -131,33 +159,40 @@ export function armNavigationDownloadCapture(
   if (state.downloadWaiterDepth > 0) {
     return {
       armed: false,
-      promise: new Promise<DownloadResult>(() => {
-        /* never settles — unarmed captures are cancelled by the caller */
-      }),
+      settle: () => Promise.reject(new Error(NAVIGATION_DOWNLOAD_TIMEOUT_MESSAGE)),
       cancel: () => {
         /* noop */
       },
     };
   }
-  const waiter = createPageDownloadWaiter(page, state, timeoutMs, 'Timeout waiting for navigation download');
-  const promise = waiter.promise.then(async (download) => {
+  const waiter = createPageDownloadWaiter(page, state, timeoutMs, NAVIGATION_DOWNLOAD_TIMEOUT_MESSAGE);
+  const settle = async (graceMs: number): Promise<DownloadResult> => {
+    const grace = rejectAfter(Math.max(1, Math.min(graceMs, timeoutMs)), NAVIGATION_DOWNLOAD_TIMEOUT_MESSAGE);
+    let download: Download;
+    try {
+      download = await Promise.race([waiter.promise, grace.promise]);
+    } catch (err) {
+      waiter.cancel();
+      throw err;
+    } finally {
+      grace.clear();
+    }
     await assertNavigationDownloadUrlAllowed(download, navigationUrl, ssrfPolicy);
     await mkdir(DEFAULT_DOWNLOAD_DIR, { recursive: true });
     return await saveDownloadPayload(
       download,
       buildManagedDownloadPath(download.suggestedFilename() || 'download.bin'),
     );
-  });
-  promise.catch(() => undefined);
-  return { armed: true, promise, cancel: waiter.cancel };
+  };
+  return { armed: true, settle, cancel: waiter.cancel };
 }
 
 /** True when a navigation failed because it started a file download instead. */
 export function isDownloadStartingNavigationError(err: unknown, expectedUrl?: string): boolean {
   const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
   if (message.includes('download is starting')) return true;
-  const normalizedUrl = expectedUrl?.trim().toLowerCase();
-  return Boolean(normalizedUrl && message.includes('net::err_aborted') && message.includes(normalizedUrl));
+  const normalizedUrl = expectedUrl?.trim().toLowerCase() ?? '';
+  return normalizedUrl !== '' && message.includes('net::err_aborted') && message.includes(normalizedUrl);
 }
 
 async function awaitDownloadPayload(params: {
@@ -165,12 +200,13 @@ async function awaitDownloadPayload(params: {
   state: PageState;
   armId: number;
   outPath: string;
+  cdpUrl: string;
   ssrfPolicy?: SsrfPolicy;
 }): Promise<DownloadResult> {
   try {
     const download = await params.waiter.promise;
     if (params.state.armIdDownload !== params.armId) throw new Error('Download was superseded by another waiter');
-    await assertDownloadUrlAllowed(download, params.ssrfPolicy);
+    await assertDownloadUrlAllowed(download, params.cdpUrl, params.ssrfPolicy);
     return await saveDownloadPayload(download, params.outPath);
   } catch (err) {
     params.waiter.cancel();
@@ -207,7 +243,14 @@ export async function downloadViaPlaywright(opts: {
     } catch (err) {
       throw toAIFriendlyError(err, opts.ref);
     }
-    return await awaitDownloadPayload({ waiter, state, armId, outPath, ssrfPolicy: opts.ssrfPolicy });
+    return await awaitDownloadPayload({
+      waiter,
+      state,
+      armId,
+      outPath,
+      cdpUrl: opts.cdpUrl,
+      ssrfPolicy: opts.ssrfPolicy,
+    });
   } catch (err) {
     waiter.cancel();
     throw err;
@@ -244,7 +287,7 @@ export async function waitForDownloadViaPlaywright(opts: {
       savePath = opts.path;
     }
     await assertSafeOutputPath(savePath, opts.allowedOutputRoots);
-    await assertDownloadUrlAllowed(download, opts.ssrfPolicy);
+    await assertDownloadUrlAllowed(download, opts.cdpUrl, opts.ssrfPolicy);
     return await saveDownloadPayload(download, savePath);
   } catch (err) {
     waiter.cancel();

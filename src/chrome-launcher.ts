@@ -616,7 +616,8 @@ function decorateProfile(userDataDir: string, name: string, color: string, opts?
   const preferencesPath = path.join(userDataDir, 'Default', 'Preferences');
 
   const localState = safeReadJson(localStatePath) ?? {};
-  if (opts?.mockKeychain) setDeep(localState, ['profile', 'info_cache', 'Default', 'browserclaw_mock_keychain'], true);
+  if (opts?.mockKeychain === true)
+    setDeep(localState, ['profile', 'info_cache', 'Default', 'browserclaw_mock_keychain'], true);
   setDeep(localState, ['profile', 'info_cache', 'Default', 'name'], name);
   setDeep(localState, ['profile', 'info_cache', 'Default', 'shortcut_name'], name);
   setDeep(localState, ['profile', 'info_cache', 'Default', 'user_name'], name);
@@ -974,7 +975,7 @@ export async function isChromeReachable(
   if (isDirectCdpWebSocketEndpoint(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs);
   const cdpControlPolicy = scopeCdpPolicyToConfiguredEndpoint(cdpUrl, ssrfPolicy);
   const discoveryUrl = isWebSocketUrl(cdpUrl) ? normalizeCdpHttpBaseForJsonEndpoints(cdpUrl) : cdpUrl;
-  const version = await fetchChromeVersion(discoveryUrl, timeoutMs, authToken, cdpControlPolicy);
+  const version = await fetchChromeVersionWithCredentialFallback(discoveryUrl, timeoutMs, authToken, cdpControlPolicy);
   if (version !== null) return true;
   if (isWebSocketUrl(cdpUrl)) return await canOpenWebSocket(cdpUrl, timeoutMs);
   return false;
@@ -1095,7 +1096,9 @@ function hasChromeProxyRoutingArg(args: readonly string[]): boolean {
 const proxyRoutedCdpUrls = new Set<string>();
 
 function proxyRoutedKey(cdpUrl: string): string {
-  return cdpUrl.trim().replace(/\/+$/, '').toLowerCase();
+  let key = cdpUrl.trim();
+  while (key.endsWith('/')) key = key.slice(0, -1);
+  return key.toLowerCase();
 }
 
 export function markCdpUrlProxyRouted(cdpUrl: string): void {
@@ -1345,7 +1348,7 @@ async function requestGracefulChromeClose(cdpPort: number, timeoutMs: number): P
       }
       ws.onopen = () => {
         try {
-          ws?.send(JSON.stringify({ id: 1, method: 'Browser.close' }));
+          ws.send(JSON.stringify({ id: 1, method: 'Browser.close' }));
           commandSent = true;
           finish();
         } catch (err) {
@@ -1373,6 +1376,10 @@ async function waitForChromeCdpShutdown(cdpPort: number, timeoutMs: number): Pro
   return !(await isChromeReachable(cdpUrl, 200));
 }
 
+function processHasExited(proc: RunningChrome['proc']): boolean {
+  return proc.exitCode !== null;
+}
+
 export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Promise<void> {
   const proc = running.proc;
   clearCdpUrlProxyRouted(`http://127.0.0.1:${String(running.cdpPort)}`);
@@ -1393,10 +1400,10 @@ export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Prom
     (await waitForChromeCdpShutdown(running.cdpPort, timeoutMs))
   ) {
     const exitDeadline = Date.now() + 1000;
-    while (Date.now() < exitDeadline && proc.exitCode === null) {
+    while (Date.now() < exitDeadline && !processHasExited(proc)) {
       await new Promise((r) => setTimeout(r, 25));
     }
-    if (proc.exitCode !== null) {
+    if (processHasExited(proc)) {
       cleanupIsolated();
       return;
     }

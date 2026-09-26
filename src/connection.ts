@@ -480,10 +480,11 @@ export async function connectBrowser(
     if (recheckPending) return await observeCached(await recheckPending.promise);
 
     const connectionAttempt: ConnectionAttempt = { cancelled: false };
+    const isCancelled = (): boolean => connectionAttempt.cancelled;
     const connectWithRetry = async () => {
       let lastErr: unknown;
       for (let attempt = 0; attempt < 3; attempt++) {
-        if (connectionAttempt.cancelled) break;
+        if (isCancelled()) break;
         try {
           const timeout = 5000 + attempt * 2000;
           const wsUrl = await getChromeWebSocketUrl(normalized, timeout, authToken, effectivePolicy).catch(() => null);
@@ -508,7 +509,7 @@ export async function connectBrowser(
             if (!isWebSocketUrl(normalized) || endpoint === normalized) throw connectErr;
             browser = await connectAt(normalized);
           }
-          if (connectionAttempt.cancelled) {
+          if (isCancelled()) {
             await browser.close().catch(() => {
               /* noop */
             });
@@ -527,7 +528,7 @@ export async function connectBrowser(
           return connected;
         } catch (err) {
           lastErr = err;
-          if (connectionAttempt.cancelled) break;
+          if (isCancelled()) break;
           if ((err instanceof Error ? err.message : String(err)).includes('rate limit')) {
             // Rate-limit: wait longer before retrying instead of breaking immediately
             await new Promise((r) => setTimeout(r, 1000 + attempt * 1000));
@@ -548,9 +549,9 @@ export async function connectBrowser(
 }
 
 export async function disconnectBrowser(): Promise<void> {
+  for (const pending of connectingByCdpUrl.values()) pending.attempt.cancelled = true;
   return withConnectionLock(async () => {
     if (connectingByCdpUrl.size) {
-      for (const pending of connectingByCdpUrl.values()) pending.attempt.cancelled = true;
       for (const pending of connectingByCdpUrl.values()) {
         try {
           await pending.promise;
@@ -585,6 +586,8 @@ export async function closePlaywrightBrowserConnection(opts?: {
   preserveSsrfState?: boolean;
 }): Promise<void> {
   if (opts?.cdpUrl !== undefined && opts.cdpUrl !== '') {
+    const pendingBeforeLock = connectingByCdpUrl.get(normalizeCdpUrl(opts.cdpUrl));
+    if (pendingBeforeLock) pendingBeforeLock.attempt.cancelled = true;
     return withConnectionLock(async () => {
       const cdpUrl = opts.cdpUrl;
       if (cdpUrl === undefined || cdpUrl === '') return;
@@ -597,8 +600,6 @@ export async function closePlaywrightBrowserConnection(opts?: {
       }
       const cur = cachedByCdpUrl.get(normalized);
       cachedByCdpUrl.delete(normalized);
-      const pending = connectingByCdpUrl.get(normalized);
-      if (pending) pending.attempt.cancelled = true;
       connectingByCdpUrl.delete(normalized);
       if (!cur) return;
       if (cur.onDisconnected && typeof cur.browser.off === 'function')

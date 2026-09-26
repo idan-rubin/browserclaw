@@ -106,7 +106,21 @@ export function stripUrlCredentials(url: string): string {
   }
 }
 
-/** Pin a policy to the configured CDP hostname so `/json/*` discovery cannot use a broader allowlist. */
+function isCdpLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
+}
+
+function hasExplicitCdpAllowlist(policy: SsrfPolicy): boolean {
+  return (
+    (Array.isArray(policy.allowedHostnames) && policy.allowedHostnames.length > 0) ||
+    (Array.isArray(policy.hostnameAllowlist) && policy.hostnameAllowlist.length > 0)
+  );
+}
+
+/**
+ * Pin a policy to the configured CDP hostname so `/json/*` discovery cannot use a broader allowlist.
+ * `allowedHostnames` also skips private-network checks; keep it only if the caller or loopback auto-allow already did.
+ */
 export function scopeCdpPolicyToConfiguredEndpoint(cdpUrl: string, ssrfPolicy?: SsrfPolicy): SsrfPolicy | undefined {
   if (!ssrfPolicy) return undefined;
   let hostname: string;
@@ -115,7 +129,14 @@ export function scopeCdpPolicyToConfiguredEndpoint(cdpUrl: string, ssrfPolicy?: 
   } catch {
     return ssrfPolicy;
   }
-  return { ...ssrfPolicy, allowedHostnames: [hostname], hostnameAllowlist: [hostname] };
+  const keepsPrivateExemption =
+    normalizeHostnameSet(ssrfPolicy.allowedHostnames).has(normalizeHostname(hostname)) ||
+    (isCdpLoopbackHostname(hostname.replace(/\.+$/, '')) && !hasExplicitCdpAllowlist(ssrfPolicy));
+  return {
+    ...ssrfPolicy,
+    allowedHostnames: keepsPrivateExemption ? [hostname] : [],
+    hostnameAllowlist: [hostname],
+  };
 }
 
 function cdpEndpointAuthority(url: string): string {
@@ -178,11 +199,8 @@ export async function assertCdpEndpointAllowed(
       `CDP endpoint blocked: protocol "${parsed.protocol.replace(':', '')}" is not allowed (use http/https/ws/wss)`,
     );
   }
-  const h = parsed.hostname.replace(/\.+$/, '');
-  const isLoopback = h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
-  const hasExplicitAllowlist =
-    (Array.isArray(ssrfPolicy.allowedHostnames) && ssrfPolicy.allowedHostnames.length > 0) ||
-    (Array.isArray(ssrfPolicy.hostnameAllowlist) && ssrfPolicy.hostnameAllowlist.length > 0);
+  const isLoopback = isCdpLoopbackHostname(parsed.hostname.replace(/\.+$/, ''));
+  const hasExplicitAllowlist = hasExplicitCdpAllowlist(ssrfPolicy);
   const effectivePolicy =
     isLoopback && !hasExplicitAllowlist && options?.source !== 'discovered'
       ? {
@@ -1289,7 +1307,12 @@ export async function assertBrowserNavigationRedirectChainAllowed(
     current = current.redirectedFrom();
   }
   for (const url of [...chain].reverse()) {
-    await assertBrowserNavigationAllowed({ url, lookupFn: opts.lookupFn, ssrfPolicy: opts.ssrfPolicy });
+    await assertBrowserNavigationAllowed({
+      url,
+      lookupFn: opts.lookupFn,
+      ssrfPolicy: opts.ssrfPolicy,
+      browserProxyMode: opts.browserProxyMode,
+    });
   }
 }
 

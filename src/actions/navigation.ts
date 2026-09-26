@@ -1,5 +1,6 @@
 import type { Browser, BrowserContext, Page, Route, Request, Frame } from 'playwright-core';
 
+import { isCdpUrlProxyRouted } from '../chrome-launcher.js';
 import {
   BrowserTabNotFoundError,
   closePlaywrightBrowserConnection,
@@ -30,10 +31,14 @@ import {
   assertBrowserNavigationRedirectChainAllowed,
   withBrowserNavigationPolicy,
 } from '../security.js';
-import { isCdpUrlProxyRouted } from '../chrome-launcher.js';
 import type { BrowserTab, DownloadResult, SsrfPolicy } from '../types.js';
 
-import { armNavigationDownloadCapture, isDownloadStartingNavigationError } from './download.js';
+import {
+  NAVIGATION_DOWNLOAD_GRACE_MS,
+  NAVIGATION_DOWNLOAD_TIMEOUT_MESSAGE,
+  armNavigationDownloadCapture,
+  isDownloadStartingNavigationError,
+} from './download.js';
 
 /** Navigation-policy proxy-mode addendum for a cdpUrl whose Chrome is proxy-routed. */
 function proxyModeOpts(cdpUrl: string): { browserProxyMode?: 'explicit-browser-proxy' } {
@@ -537,10 +542,9 @@ export async function navigateViaPlaywright(opts: {
         throw err;
       }
       try {
-        return { response: null, download: await capture.promise };
+        return { response: null, download: await capture.settle(NAVIGATION_DOWNLOAD_GRACE_MS) };
       } catch (downloadErr) {
-        if (downloadErr instanceof Error && downloadErr.message === 'Timeout waiting for navigation download')
-          throw err;
+        if (downloadErr instanceof Error && downloadErr.message === NAVIGATION_DOWNLOAD_TIMEOUT_MESSAGE) throw err;
         if (isPolicyDenyNavigationError(downloadErr))
           await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page, targetId: opts.targetId });
         throw downloadErr;
@@ -611,12 +615,13 @@ async function listPagesViaPlaywrightOnce(cdpUrl: string): Promise<BrowserTab[]>
 
 async function listPagesWithRecovery(cdpUrl: string, attempt?: { cancelled: boolean }): Promise<BrowserTab[]> {
   const reusedCachedBrowser = hasCachedPlaywrightBrowserConnection(cdpUrl);
+  const cancelled = (): boolean => attempt?.cancelled === true;
   try {
     return await listPagesViaPlaywrightOnce(cdpUrl);
   } catch (err) {
-    if (!reusedCachedBrowser || !isRecoverablePlaywrightDisconnectError(err) || attempt?.cancelled) throw err;
+    if (!reusedCachedBrowser || !isRecoverablePlaywrightDisconnectError(err) || cancelled()) throw err;
     await closePlaywrightBrowserConnection({ cdpUrl, preserveSsrfState: true });
-    if (attempt?.cancelled) throw err;
+    if (cancelled()) throw err;
     return await listPagesViaPlaywrightOnce(cdpUrl);
   }
 }
@@ -641,7 +646,7 @@ export async function listPagesViaPlaywright(opts: {
       timeoutError = new Error(`Playwright page enumeration timed out after ${String(timeoutMs)}ms`);
       reject(timeoutError);
     }, timeoutMs);
-    timer.unref?.();
+    timer.unref();
   });
   try {
     return await Promise.race([listPagesWithRecovery(opts.cdpUrl, attempt), timeout]);
