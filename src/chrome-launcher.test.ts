@@ -216,6 +216,14 @@ describe('normalizeCdpWsUrl', () => {
     expect(result).toContain('127.0.0.1:9222');
   });
 
+  it('keeps an explicitly advertised default port instead of inheriting the cdp port', () => {
+    const result = normalizeCdpWsUrl('ws://localhost:80/devtools/browser/abc', 'http://127.0.0.1:9222');
+    expect(new URL(result).port).toBe('');
+    expect(result).not.toContain('9222');
+    const v6 = normalizeCdpWsUrl('ws://[::1]:80/devtools/browser/abc', 'http://127.0.0.1:9222');
+    expect(new URL(v6).port).toBe('');
+  });
+
   it('normalizes loopback aliases in reverse (ws 127.0.0.1, cdp localhost → use cdp alias)', () => {
     const result = normalizeCdpWsUrl('ws://127.0.0.1:9222/devtools/browser/abc', 'http://localhost:9222');
     expect(result).toContain('localhost');
@@ -822,6 +830,26 @@ describe('getChromeWebSocketUrl with URL credentials', () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
       const secondUrl = (fetchMock.mock.calls[1] as [string])[0];
       expect(secondUrl).toBe('http://127.0.0.1:9222/json/version/');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('retries /json/version/ for a bearer-authenticated endpoint that exposes no WebSocket URL', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({})))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/bearer' })),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const wsUrl = await getChromeWebSocketUrl('http://127.0.0.1:9222', 500, 'tok3n');
+      expect(wsUrl).toContain('/devtools/browser/bearer');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const [secondUrl, init] = fetchMock.mock.calls[1] as [string, { headers: Record<string, string> }];
+      expect(secondUrl).toBe('http://127.0.0.1:9222/json/version/');
+      expect(init.headers.Authorization).toBe('Bearer tok3n');
     } finally {
       vi.unstubAllGlobals();
     }

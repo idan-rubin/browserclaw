@@ -772,6 +772,12 @@ export function hasProxyEnvConfigured(env: Record<string, string | undefined> = 
  * external CDP host/port. Handles wildcard binds (`0.0.0.0`, `[::]`),
  * protocol upgrades (HTTP→WSS), and auth/search param inheritance.
  */
+function hasExplicitPort(rawUrl: string): boolean {
+  const authority = rawUrl.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/, 1)[0];
+  const host = authority.slice(authority.lastIndexOf('@') + 1);
+  return /\]:\d+$/.test(host) || (!host.startsWith('[') && /:\d+$/.test(host));
+}
+
 export function normalizeCdpWsUrl(wsUrl: string, cdpUrl: string): string {
   const ws = new URL(wsUrl);
   const cdp = new URL(cdpUrl);
@@ -783,7 +789,7 @@ export function normalizeCdpWsUrl(wsUrl: string, cdpUrl: string): string {
     ws.protocol = cdp.protocol === 'https:' ? 'wss:' : 'ws:';
   } else if (isLoopbackHost(ws.hostname) && isLoopbackHost(cdp.hostname)) {
     ws.hostname = cdp.hostname;
-    if (!ws.port && cdp.port) ws.port = cdp.port;
+    if (!ws.port && !hasExplicitPort(wsUrl) && cdp.port) ws.port = cdp.port;
   }
   if (cdp.protocol === 'https:' && ws.protocol === 'ws:') ws.protocol = 'wss:';
   if (!ws.username && !ws.password && (cdp.username || cdp.password)) {
@@ -950,8 +956,8 @@ async function fetchChromeVersionWithCredentialFallback(
   ssrfPolicy?: SsrfPolicy,
 ): Promise<Record<string, unknown> | null> {
   const primary = await fetchChromeVersion(cdpUrl, timeoutMs, authToken, ssrfPolicy);
-  const hasCredentials = stripUrlCredentials(cdpUrl) !== cdpUrl;
-  if (!hasCredentials) return primary;
+  const authenticated = stripUrlCredentials(cdpUrl) !== cdpUrl || (authToken !== undefined && authToken !== '');
+  if (!authenticated) return primary;
   const primaryWsUrl = typeof primary?.webSocketDebuggerUrl === 'string' ? primary.webSocketDebuggerUrl.trim() : '';
   if (primaryWsUrl !== '') return primary;
   const fallback = await fetchChromeVersion(cdpUrl, timeoutMs, authToken, ssrfPolicy, '/json/version/');
