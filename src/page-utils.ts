@@ -76,6 +76,7 @@ export function ensurePageState(page: Page): PageState {
     nextArmIdUpload: 0,
     nextArmIdDialog: 0,
     nextArmIdDownload: 0,
+    downloadWaiterDepth: 0,
   };
   pageStates.set(page, state);
 
@@ -322,4 +323,13 @@ export function toAIFriendlyError(error: unknown, selector: string): Error {
 
 export function normalizeTimeoutMs(timeoutMs: number | undefined, fallback: number, maxMs = 120000): number {
   return Math.max(500, Math.min(maxMs, timeoutMs ?? fallback));
+}
+
+/** Truncate to `maxLength` UTF-16 code units without splitting a surrogate pair. */
+export function truncateUtf16Safe(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  let end = Math.max(0, Math.trunc(maxLength));
+  const lastCodeUnit = value.charCodeAt(end - 1);
+  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) end -= 1;
+  return value.slice(0, end);
 }

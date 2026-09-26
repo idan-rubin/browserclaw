@@ -396,25 +396,25 @@ export async function typeViaPlaywright(opts: {
   const timeout = resolveInteractionTimeoutMs(opts.timeoutMs);
 
   try {
-    if (opts.slowly === true) {
-      await locator.click({ timeout });
-      await locator.pressSequentially(text, { timeout, delay: 75 });
-    } else {
-      await locator.fill(text, { timeout });
-    }
-    if (opts.submit === true) {
-      const previousUrl = page.url();
-      await assertInteractionNavigationCompletedSafely({
-        action: async () => {
-          await locator.press('Enter', { timeout });
-        },
-        cdpUrl: opts.cdpUrl,
-        page,
-        previousUrl,
-        ssrfPolicy: opts.ssrfPolicy,
-        targetId: opts.targetId,
-      });
-    }
+    // Guard the entire fill/type sequence, not just submit — an input/change
+    // handler can trigger a JS navigation on fill alone.
+    const previousUrl = page.url();
+    await assertInteractionNavigationCompletedSafely({
+      action: async () => {
+        if (opts.slowly === true) {
+          await locator.click({ timeout });
+          await locator.pressSequentially(text, { timeout, delay: 75 });
+        } else {
+          await locator.fill(text, { timeout });
+        }
+        if (opts.submit === true) await locator.press('Enter', { timeout });
+      },
+      cdpUrl: opts.cdpUrl,
+      page,
+      previousUrl,
+      ssrfPolicy: opts.ssrfPolicy,
+      targetId: opts.targetId,
+    });
   } catch (err) {
     throw toAIFriendlyError(err, label);
   }

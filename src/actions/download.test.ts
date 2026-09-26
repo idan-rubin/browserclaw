@@ -1,7 +1,9 @@
 import type { Page } from 'playwright-core';
 import { describe, it, expect, vi } from 'vitest';
 
+import type * as ChromeLauncherModule from '../chrome-launcher.js';
 import type * as ConnectionModule from '../connection.js';
+import type { PageState } from '../types.js';
 
 const { mockGetPageForTargetId, mockEnsurePageState, mockRefLocator, mockNormalizeTimeoutMs, mockBumpDownloadArmId } =
   vi.hoisted(() => ({
@@ -25,7 +27,80 @@ vi.mock('../connection.js', async (importOriginal) => {
   };
 });
 
+const { mockIsCdpUrlProxyRouted } = vi.hoisted(() => ({
+  mockIsCdpUrlProxyRouted: vi.fn<() => boolean>(() => false),
+}));
+
+vi.mock('../chrome-launcher.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof ChromeLauncherModule>()),
+  isCdpUrlProxyRouted: mockIsCdpUrlProxyRouted,
+}));
+
 const { downloadViaPlaywright } = await import('./download.js');
+
+describe('downloadViaPlaywright — proxy-routed browser under a strict policy', () => {
+  function pageWithDownloadEmitter(): { page: Page; emit: (download: unknown) => void } {
+    let downloadHandler: ((download: unknown) => void) | undefined;
+    const page = {
+      on: (event: string, handler: (download: unknown) => void) => {
+        if (event === 'download') downloadHandler = handler;
+      },
+      off: () => undefined,
+    } as unknown as Page;
+    return { page, emit: (d: unknown) => downloadHandler?.(d) };
+  }
+
+  function armClickDownload(page: Page) {
+    mockGetPageForTargetId.mockResolvedValue(page);
+    mockEnsurePageState.mockReturnValue({ armIdDownload: 0, downloadWaiterDepth: 0 });
+    mockBumpDownloadArmId.mockReturnValue(1);
+    mockNormalizeTimeoutMs.mockReturnValue(1000);
+    mockRefLocator.mockReturnValue({ click: () => Promise.resolve() });
+  }
+
+  it('rejects before saving when the browser is proxy-routed', async () => {
+    mockIsCdpUrlProxyRouted.mockReturnValue(true);
+    const { page, emit } = pageWithDownloadEmitter();
+    armClickDownload(page);
+    const saveAs = vi.fn(() => Promise.resolve());
+    const pending = downloadViaPlaywright({
+      cdpUrl: 'http://localhost:9222',
+      ref: 'e1',
+      path: '/tmp/browserclaw-proxy-download.bin',
+      ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    emit({ url: () => 'http://93.184.216.34/file.zip', suggestedFilename: () => 'file.zip', saveAs });
+    await expect(pending).rejects.toThrow(/proxy-routed/);
+    expect(saveAs).not.toHaveBeenCalled();
+  });
+
+  it('control: the same download saves when the browser is direct', async () => {
+    mockIsCdpUrlProxyRouted.mockReturnValue(false);
+    const { mkdtempSync, writeFileSync, existsSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'browserclaw-proxy-control-'));
+    const outPath = join(dir, 'file.zip');
+    const { page, emit } = pageWithDownloadEmitter();
+    armClickDownload(page);
+    const saveAs = vi.fn((tempPath: string) => {
+      writeFileSync(tempPath, 'payload');
+      return Promise.resolve();
+    });
+    const pending = downloadViaPlaywright({
+      cdpUrl: 'http://localhost:9222',
+      ref: 'e1',
+      path: outPath,
+      ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    emit({ url: () => 'http://93.184.216.34/file.zip', suggestedFilename: () => 'file.zip', saveAs });
+    await expect(pending).resolves.toMatchObject({ path: outPath });
+    expect(existsSync(outPath)).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
 
 describe('downloadViaPlaywright — waiter rejection safety', () => {
   it('does not emit an unhandledRejection when the click fails after the waiter timeout', async () => {
@@ -63,5 +138,228 @@ describe('downloadViaPlaywright — waiter rejection safety', () => {
       process.off('unhandledRejection', onUnhandled);
     }
     expect(unhandled).toEqual([]);
+  });
+});
+
+const { waitForDownloadViaPlaywright, isDownloadStartingNavigationError } = await import('./download.js');
+
+describe('isDownloadStartingNavigationError', () => {
+  it('matches the Playwright download-start message', () => {
+    expect(isDownloadStartingNavigationError(new Error('page.goto: Download is starting'))).toBe(true);
+  });
+
+  it('matches net::ERR_ABORTED only when the message includes the expected URL', () => {
+    const err = new Error('page.goto: net::ERR_ABORTED at https://example.com/file.zip');
+    expect(isDownloadStartingNavigationError(err, 'https://example.com/file.zip')).toBe(true);
+    expect(isDownloadStartingNavigationError(err, 'https://other.com/file.zip')).toBe(false);
+    expect(isDownloadStartingNavigationError(err)).toBe(false);
+  });
+
+  it('rejects unrelated errors', () => {
+    expect(isDownloadStartingNavigationError(new Error('boom'), 'https://example.com')).toBe(false);
+  });
+});
+
+describe('download URL validation before saving bytes', () => {
+  function pageWithDownloadEmitter(): { page: Page; emit: (download: unknown) => void } {
+    let downloadHandler: ((download: unknown) => void) | undefined;
+    const page = {
+      on: (event: string, handler: (download: unknown) => void) => {
+        if (event === 'download') downloadHandler = handler;
+      },
+      off: () => undefined,
+    } as unknown as Page;
+    return {
+      page,
+      emit: (download: unknown) => {
+        downloadHandler?.(download);
+      },
+    };
+  }
+
+  it('rejects a policy-blocked download URL without calling saveAs', async () => {
+    const { page, emit } = pageWithDownloadEmitter();
+    mockGetPageForTargetId.mockResolvedValue(page);
+    mockEnsurePageState.mockReturnValue({ armIdDownload: 0, downloadWaiterDepth: 0 });
+    mockBumpDownloadArmId.mockReturnValue(1);
+    mockNormalizeTimeoutMs.mockReturnValue(1000);
+    const saveAs = vi.fn(() => Promise.resolve());
+    const fakeDownload = {
+      url: () => 'data:text/plain,exfiltrated',
+      suggestedFilename: () => 'file.bin',
+      saveAs,
+    };
+
+    const pending = waitForDownloadViaPlaywright({
+      cdpUrl: 'http://localhost:9222',
+      path: '/tmp/browserclaw-download-validate.bin',
+      ssrfPolicy: {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    emit(fakeDownload);
+    await expect(pending).rejects.toThrow('Navigation result blocked');
+    expect(saveAs).not.toHaveBeenCalled();
+  });
+
+  it('saves the same download when no policy is provided (control)', async () => {
+    const { mkdtempSync, writeFileSync, existsSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'bc-dl-test-'));
+    const outPath = join(dir, 'file.bin');
+
+    const { page, emit } = pageWithDownloadEmitter();
+    mockGetPageForTargetId.mockResolvedValue(page);
+    mockEnsurePageState.mockReturnValue({ armIdDownload: 0, downloadWaiterDepth: 0 });
+    mockBumpDownloadArmId.mockReturnValue(1);
+    mockNormalizeTimeoutMs.mockReturnValue(1000);
+    const saveAs = vi.fn((tempPath: string) => {
+      writeFileSync(tempPath, 'payload');
+      return Promise.resolve();
+    });
+    const fakeDownload = {
+      url: () => 'data:text/plain,exfiltrated',
+      suggestedFilename: () => 'file.bin',
+      saveAs,
+    };
+
+    const pending = waitForDownloadViaPlaywright({
+      cdpUrl: 'http://localhost:9222',
+      path: outPath,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    emit(fakeDownload);
+    const result = await pending;
+    expect(saveAs).toHaveBeenCalledTimes(1);
+    expect(result.path).toBe(outPath);
+    expect(existsSync(outPath)).toBe(true);
+  });
+});
+
+const { armNavigationDownloadCapture, NAVIGATION_DOWNLOAD_TIMEOUT_MESSAGE } = await import('./download.js');
+
+describe('armNavigationDownloadCapture — secure-by-default URL validation', () => {
+  function pageWithDownloadEmitter(): { page: Page; emit: (download: unknown) => void } {
+    let downloadHandler: ((download: unknown) => void) | undefined;
+    const page = {
+      on: (event: string, handler: (download: unknown) => void) => {
+        if (event === 'download') downloadHandler = handler;
+      },
+      off: () => undefined,
+    } as unknown as Page;
+    return { page, emit: (d: unknown) => downloadHandler?.(d) };
+  }
+
+  function makeState() {
+    return {
+      armIdDownload: 0,
+      downloadWaiterDepth: 0,
+    } as unknown as PageState;
+  }
+
+  it('blocks a data: download URL even when no ssrfPolicy is set', async () => {
+    const { page, emit } = pageWithDownloadEmitter();
+    const capture = armNavigationDownloadCapture(page, makeState(), 1000, 'https://example.com/page');
+    expect(capture.armed).toBe(true);
+    emit({ url: () => 'data:text/plain,exfil', suggestedFilename: () => 'x.bin', saveAs: vi.fn() });
+    await expect(capture.settle(1000)).rejects.toThrow(/data:|not allowed/i);
+  });
+
+  it('blocks a private-host download URL with no policy (secure-by-default)', async () => {
+    const { page, emit } = pageWithDownloadEmitter();
+    const saveAs = vi.fn(() => Promise.resolve());
+    const capture = armNavigationDownloadCapture(page, makeState(), 1000, 'https://example.com/page');
+    emit({ url: () => 'http://169.254.169.254/latest/meta-data', suggestedFilename: () => 'x.bin', saveAs });
+    await expect(capture.settle(1000)).rejects.toThrow();
+    expect(saveAs).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the navigation URL when the download URL is empty', async () => {
+    const { page, emit } = pageWithDownloadEmitter();
+    const saveAs = vi.fn(() => Promise.resolve());
+    const capture = armNavigationDownloadCapture(page, makeState(), 1000, 'http://169.254.169.254/');
+    emit({ url: () => '', suggestedFilename: () => 'x.bin', saveAs });
+    await expect(capture.settle(1000)).rejects.toThrow();
+    expect(saveAs).not.toHaveBeenCalled();
+  });
+
+  it('saves a download that fired before the navigation error surfaced', async () => {
+    const { writeFileSync, existsSync, rmSync } = await import('node:fs');
+    const { DEFAULT_DOWNLOAD_DIR } = await import('../security.js');
+    const { page, emit } = pageWithDownloadEmitter();
+    const saveAs = vi.fn((tempPath: string) => {
+      writeFileSync(tempPath, 'payload');
+      return Promise.resolve();
+    });
+    const capture = armNavigationDownloadCapture(page, makeState(), 1000, 'https://example.com/report.pdf');
+    emit({ url: () => 'https://example.com/report.pdf', suggestedFilename: () => 'report.pdf', saveAs });
+    const result = await capture.settle(1000);
+    expect(saveAs).toHaveBeenCalledTimes(1);
+    expect(result.path.startsWith(DEFAULT_DOWNLOAD_DIR)).toBe(true);
+    expect(existsSync(result.path)).toBe(true);
+    rmSync(result.path, { force: true });
+  });
+
+  it('does not save a download that arrives during a navigation that then succeeds', async () => {
+    const { page, emit } = pageWithDownloadEmitter();
+    const saveAs = vi.fn(() => Promise.resolve());
+    const capture = armNavigationDownloadCapture(page, makeState(), 1000, 'https://example.com/page');
+    emit({ url: () => 'https://example.com/auto.zip', suggestedFilename: () => 'auto.zip', saveAs });
+    capture.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(saveAs).not.toHaveBeenCalled();
+  });
+
+  it('gives up after the grace window instead of the full navigation timeout', async () => {
+    const { page } = pageWithDownloadEmitter();
+    const capture = armNavigationDownloadCapture(page, makeState(), 60_000, 'https://example.com/page');
+    const started = Date.now();
+    await expect(capture.settle(30)).rejects.toThrow(NAVIGATION_DOWNLOAD_TIMEOUT_MESSAGE);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('is not armed when an explicit download waiter is already active', () => {
+    const { page } = pageWithDownloadEmitter();
+    const state = makeState();
+    (state as { downloadWaiterDepth: number }).downloadWaiterDepth = 1;
+    const capture = armNavigationDownloadCapture(page, state, 1000, 'https://example.com/');
+    expect(capture.armed).toBe(false);
+  });
+});
+
+describe('waitForDownloadViaPlaywright — no-path default location', () => {
+  function pageWithDownloadEmitter(): { page: Page; emit: (download: unknown) => void } {
+    let downloadHandler: ((download: unknown) => void) | undefined;
+    const page = {
+      on: (event: string, handler: (download: unknown) => void) => {
+        if (event === 'download') downloadHandler = handler;
+      },
+      off: () => undefined,
+    } as unknown as Page;
+    return { page, emit: (d: unknown) => downloadHandler?.(d) };
+  }
+
+  it('saves into the managed downloads dir (not CWD) with a UUID prefix when no path is given', async () => {
+    const { writeFileSync, existsSync, rmSync } = await import('node:fs');
+    const { DEFAULT_DOWNLOAD_DIR } = await import('../security.js');
+    const { page, emit } = pageWithDownloadEmitter();
+    mockGetPageForTargetId.mockResolvedValue(page);
+    mockEnsurePageState.mockReturnValue({ armIdDownload: 0, downloadWaiterDepth: 0 });
+    mockBumpDownloadArmId.mockReturnValue(1);
+    mockNormalizeTimeoutMs.mockReturnValue(1000);
+    const saveAs = vi.fn((tempPath: string) => {
+      writeFileSync(tempPath, 'payload');
+      return Promise.resolve();
+    });
+
+    const pending = waitForDownloadViaPlaywright({ cdpUrl: 'http://localhost:9222' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    emit({ url: () => 'https://example.com/report.pdf', suggestedFilename: () => 'report.pdf', saveAs });
+    const result = await pending;
+
+    expect(result.path.startsWith(DEFAULT_DOWNLOAD_DIR)).toBe(true);
+    expect(result.path).toMatch(/[0-9a-f-]{36}-report\.pdf$/);
+    expect(existsSync(result.path)).toBe(true);
+    rmSync(result.path, { force: true });
   });
 });

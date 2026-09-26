@@ -12,6 +12,7 @@ export interface SsrfPolicy {
   /**
    * Allow navigation to private/internal network addresses.
    * Default: `false` — private/internal/loopback addresses are blocked. Set to `true` to allow them.
+   * Hostname navigation stays exposed to browser-side DNS rebinding; see `requireAllowlistedHostnames`.
    */
   dangerouslyAllowPrivateNetwork?: boolean;
   /**
@@ -36,6 +37,14 @@ export interface SsrfPolicy {
    * `dangerouslyAllowPrivateNetwork: true`.
    */
   hostnameAllowlist?: string[];
+  /**
+   * Require every navigation to target an IP-literal URL or a hostname listed in
+   * `allowedHostnames` / `hostnameAllowlist`. The browser resolves DNS itself, so a
+   * hostname validated here can still rebind to a private address before the browser
+   * connects; this closes that window at the cost of plain hostname browsing.
+   * Default: `false`. Has no effect when `dangerouslyAllowPrivateNetwork` is `true`.
+   */
+  requireAllowlistedHostnames?: boolean;
   /**
    * Allow navigation to the RFC 2544 benchmark testing range (198.18.0.0/15).
    * This range is blocked by default. Enable only in proxy/fake-IP networking
@@ -644,6 +653,7 @@ export interface PageState {
   nextArmIdUpload: number;
   nextArmIdDialog: number;
   nextArmIdDownload: number;
+  downloadWaiterDepth: number;
   dialogHandler?: DialogHandler;
 }
 
