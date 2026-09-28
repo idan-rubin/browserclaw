@@ -79,9 +79,7 @@ export async function armPageUpload(
       pending.add(settled);
       void settled.then(() => pending.delete(settled));
       if (opts.awaitStartedCompletion === true) {
-        const result = await promise;
-        signal.throwIfAborted();
-        return result;
+        return await promise;
       }
       return lifetime.wait(promise);
     },
@@ -107,7 +105,10 @@ export async function armPageUpload(
     .catch(async (error: unknown) => {
       // Atomic callers must observe the guarded mutation's actual outcome. Queued
       // requests and two-phase chooser arms still abort without waiting for it.
-      if (opts.awaitStartedCompletion === true && started) await execution;
+      if (opts.awaitStartedCompletion === true && started) {
+        await execution;
+        return;
+      }
       throw error;
     })
     .finally(() => {

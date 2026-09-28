@@ -253,6 +253,23 @@ describe('armed upload lifetime', () => {
     await rejected;
   });
 
+  it('preserves a completed atomic mutation when cancellation arrives during its final guard', async () => {
+    const { page } = fixture();
+    const native = deferred<undefined>();
+    const controller = new AbortController();
+    const { done } = await armPageUpload(
+      page as unknown as Page,
+      { timeoutMs: 1000, signal: controller.signal, awaitStartedCompletion: true },
+      async (lifetime, armed) => {
+        armed();
+        await lifetime.run(native.promise);
+      },
+    );
+    controller.abort(new Error('late cancellation'));
+    native.resolve(undefined);
+    await expect(done).resolves.toBeUndefined();
+  });
+
   it('still aborts an atomic request promptly while queued before starting', async () => {
     const { page } = fixture();
     const native = deferred<undefined>();

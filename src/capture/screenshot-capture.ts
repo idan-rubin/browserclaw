@@ -15,18 +15,20 @@ async function capturePageScreenshot(
   options: CaptureOptions,
   signal: AbortSignal,
   locator?: Locator,
+  deadline?: number,
 ): Promise<Buffer> {
   signal.throwIfAborted();
+  const remaining = () => (deadline === undefined ? 0 : Math.max(1, deadline - Date.now()));
   const state = getPageEmulationState(page);
   const owner = state.metricsOwner;
-  const element = await locator?.elementHandle({ timeout: options.timeoutMs ?? 20_000 });
+  const element = await locator?.elementHandle({ timeout: remaining() });
   try {
-    await element?.scrollIntoViewIfNeeded({ timeout: options.timeoutMs ?? 20_000, signal });
+    await element?.scrollIntoViewIfNeeded({ timeout: remaining(), signal });
     signal.throwIfAborted();
     if (!owner) {
       return await (element
-        ? element.screenshot({ type: options.type, timeout: 0 })
-        : page.screenshot({ type: options.type, fullPage: Boolean(options.fullPage), timeout: 0 }));
+        ? element.screenshot({ type: options.type, timeout: remaining() })
+        : page.screenshot({ type: options.type, fullPage: Boolean(options.fullPage), timeout: remaining() }));
     }
     const box = element ? await element.boundingBox() : undefined;
     if (locator && (box === null || box === undefined || box.width === 0 || box.height === 0)) {
@@ -88,6 +90,7 @@ export async function captureScreenshotWithEmulation(
   const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
   signal.throwIfAborted();
   const timeoutMs = options.timeoutMs ?? 20_000;
+  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : undefined;
   const timer =
     timeoutMs > 0
       ? setTimeout(() => {
@@ -95,7 +98,11 @@ export async function captureScreenshotWithEmulation(
         }, timeoutMs)
       : undefined;
   try {
-    return await runPageEmulationTransition(page, () => capturePageScreenshot(page, options, signal, locator), signal);
+    return await runPageEmulationTransition(
+      page,
+      () => capturePageScreenshot(page, options, signal, locator, deadline),
+      signal,
+    );
   } finally {
     clearTimeout(timer);
   }

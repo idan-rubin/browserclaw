@@ -39,6 +39,15 @@ export async function cookiesClearViaPlaywright(opts: { cdpUrl: string; targetId
   await page.context().clearCookies();
 }
 
+/** Only known input-validation errors can be isolated; unknown failures must surface. */
+function isCookieValidationError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.replace(/^browserContext\.addCookies: /, '');
+  return /^(?:Cookie should have |(?:Blank|Data URL) page can not have cookie |Invalid URL$|Protocol error \(Storage\.setCookies\): Invalid cookie fields|cookies\[\d+\]\.)/.test(
+    message,
+  );
+}
+
 /** Import bounded batches, isolating rejected cookies instead of losing the whole batch. */
 export async function cookiesSetManyViaPlaywright(opts: {
   cdpUrl: string;
@@ -57,13 +66,15 @@ export async function cookiesSetManyViaPlaywright(opts: {
     try {
       await context.addCookies(batch);
       added += batch.length;
-    } catch {
+    } catch (error) {
+      if (!isCookieValidationError(error)) throw error;
       for (const cookie of batch) {
         opts.signal?.throwIfAborted();
         try {
           await context.addCookies([cookie]);
           added += 1;
-        } catch {
+        } catch (error) {
+          if (!isCookieValidationError(error)) throw error;
           // A rejected cookie does not prevent importing the remaining entries.
         }
       }

@@ -1435,7 +1435,8 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   } catch {}
 
   try {
-    ensureProfileNetworkPredictionDisabled(userDataDir);
+    if (isolatedResolved !== null || opts.userDataDir === undefined)
+      ensureProfileNetworkPredictionDisabled(userDataDir);
   } catch {}
 
   try {
@@ -1575,7 +1576,7 @@ export async function stopChrome(running: RunningChrome, timeoutMs = 2500): Prom
   // profile while a surviving child might still be writing to it.
   if (
     !(await signalChromeProcess(proc, 'SIGTERM', Math.floor(remaining() * 0.8))) &&
-    !(await signalChromeProcess(proc, 'SIGKILL', remaining()))
+    !(await signalChromeProcess(proc, 'SIGKILL', Math.max(100, remaining())))
   ) {
     throw new Error(`Chrome process ${String(running.pid)} survived shutdown; its profile was preserved.`);
   }

@@ -628,9 +628,7 @@ export async function connectBrowser(
           const connectionUrl = stripUrlCredentials(target.url);
           // The custom transport only accepts an actual WebSocket endpoint; it
           // never delegates unvalidated HTTP discovery to a dependency.
-          return await withNoProxyForCdpUrl(connectionUrl, () =>
-            connectOverPinnedCdp({ ...target, url: connectionUrl }, { timeoutMs: timeout, headers }),
-          );
+          return await connectOverPinnedCdp({ ...target, url: connectionUrl }, { timeoutMs: timeout, headers });
         };
         let browser: Browser;
         try {
@@ -669,8 +667,12 @@ export async function connectBrowser(
         lastErr = err;
         if (isCancelled()) break;
         const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
-        if (message.includes('rate limit') || message.includes('cdp websocket http 429')) break;
-        await new Promise((r) => setTimeout(r, 250 + attempt * 250));
+        if (attempt === 2) break;
+        const backoff =
+          message.includes('rate limit') || message.includes('cdp websocket http 429')
+            ? 1000 + attempt * 1000
+            : 250 + attempt * 250;
+        await new Promise((r) => setTimeout(r, backoff));
       }
     }
     throw lastErr instanceof Error ? lastErr : new Error('CDP connect failed');
@@ -950,10 +952,9 @@ export function isRecoverableStalePageSelectionError(
   reusedCachedBrowser: boolean,
   hadExplicitTargetId?: boolean,
 ): boolean {
-  // Retained for source compatibility; an explicit target now also gets one reconnect.
-  void hadExplicitTargetId;
   if (!reusedCachedBrowser) return false;
   if (err instanceof Error && err.message.includes('No pages available in the connected browser.')) return true;
+  if (hadExplicitTargetId === true) return false;
   if (err instanceof BrowserTabNotFoundError) return true;
   const message = err instanceof Error ? err.message : String(err);
   return message.toLowerCase().includes('tab not found');
@@ -993,7 +994,11 @@ export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: stri
   try {
     return await getPageForTargetIdOnce(opts);
   } catch (err) {
-    if (!cachedBrowser || !isRecoverableStalePageSelectionError(err, true)) throw err;
+    if (
+      !cachedBrowser ||
+      !isRecoverableStalePageSelectionError(err, true, opts.targetId !== undefined && opts.targetId !== '')
+    )
+      throw err;
     evictStaleConnection(opts.cdpUrl, cachedBrowser);
     return await getPageForTargetIdOnce(opts);
   }

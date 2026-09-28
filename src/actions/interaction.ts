@@ -278,19 +278,22 @@ export async function clickViaPlaywright(opts: {
 
         // Native <input> checkbox/radio expose no aria-checked attr — read .checked.
         const readCheckedState = (readTimeout: number): Promise<string | null | undefined> =>
-          locator
-            .evaluate(
-              (el: Element) => {
-                const input = el as HTMLInputElement;
-                if (input.tagName === 'INPUT' && (input.type === 'checkbox' || input.type === 'radio')) {
-                  return input.checked ? 'true' : 'false';
-                }
-                return el.getAttribute('aria-checked');
-              },
-              undefined,
-              { timeout: readTimeout },
-            )
-            .catch(() => undefined);
+          awaitActionWithAbort(
+            locator
+              .evaluate(
+                (el: Element) => {
+                  const input = el as HTMLInputElement;
+                  if (input.tagName === 'INPUT' && (input.type === 'checkbox' || input.type === 'radio')) {
+                    return input.checked ? 'true' : 'false';
+                  }
+                  return el.getAttribute('aria-checked');
+                },
+                undefined,
+                { timeout: readTimeout },
+              )
+              .catch(() => undefined),
+            abortPromise,
+          );
         let checkedBefore: string | null | undefined;
         if (checkableRole && opts.doubleClick !== true) {
           checkedBefore = await readCheckedState(timeout);

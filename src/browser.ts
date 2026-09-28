@@ -2137,10 +2137,13 @@ export class BrowserClaw {
     if (exitReason !== undefined) this._telemetry.exitReason = exitReason;
     try {
       clearRecordingContext(this.cdpUrl);
-      await closePlaywrightBrowserConnection({ cdpUrl: this.cdpUrl });
-      if (this.chrome) {
-        await stopChrome(this.chrome);
-        this.chrome = null;
+      try {
+        await closePlaywrightBrowserConnection({ cdpUrl: this.cdpUrl });
+      } finally {
+        if (this.chrome) {
+          await stopChrome(this.chrome);
+          this.chrome = null;
+        }
       }
       this._telemetry.cleanupOk = true;
     } catch (err) {

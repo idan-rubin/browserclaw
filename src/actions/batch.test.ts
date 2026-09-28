@@ -106,7 +106,12 @@ describe('batch document boundaries', () => {
       events.emit('framenavigated', mainFrame);
       return Promise.resolve();
     });
-    expect(await batchViaPlaywright(options)).toEqual({ results: [{ ok: true }] });
+    expect(await batchViaPlaywright(options)).toEqual({
+      results: [
+        { ok: true },
+        { ok: false, error: 'Batch stopped before this action because a target navigated or closed.' },
+      ],
+    });
     expect(mocks.click).toHaveBeenCalledOnce();
     expect(events.listenerCount('framenavigated')).toBe(0);
   });
@@ -123,7 +128,12 @@ describe('batch document boundaries', () => {
       closed = true;
       return Promise.resolve();
     });
-    expect(await batchViaPlaywright({ ...options, stopOnError: false })).toEqual({ results: [{ ok: true }] });
+    expect(await batchViaPlaywright({ ...options, stopOnError: false })).toEqual({
+      results: [
+        { ok: true },
+        { ok: false, error: 'Batch stopped before this action because a target navigated or closed.' },
+      ],
+    });
     expect(mocks.click).toHaveBeenCalledOnce();
   });
   it('surfaces nested failures instead of reporting nested success', async () => {

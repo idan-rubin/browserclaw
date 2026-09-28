@@ -19,13 +19,7 @@ export async function insertTextViaPlaywright(
   opts.signal?.throwIfAborted();
   const page = await getPageForTargetId(opts);
   ensurePageState(page);
-  await runGuardedInput(page, opts, async () => {
-    try {
-      await page.keyboard.insertText(opts.text);
-    } catch {
-      throw new Error('Unable to paste text into the browser. Focus an editable field and try again.');
-    }
-  });
+  await runGuardedInput(page, opts, () => page.keyboard.insertText(opts.text));
 }
 
 export async function pressKeyViaPlaywright(

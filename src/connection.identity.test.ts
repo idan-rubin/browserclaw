@@ -18,6 +18,7 @@ import {
   markTargetBlocked,
   pageTargetId,
 } from './connection.js';
+import { ensurePageState } from './page-utils.js';
 
 function makePage(targetId: string | null) {
   const close = vi.fn().mockResolvedValue(undefined);
@@ -218,6 +219,28 @@ describe('exact target identity for lookup and tab mutations', () => {
       expect(action === 'close' ? fixture.close : fixture.bringToFront).toHaveBeenCalledOnce();
       expect(cdp.connections).toBe(2);
       expect((await connectBrowser(cdp.httpUrl)).browser).not.toBe(old.browser);
+    } finally {
+      await disconnectBrowser();
+      await cdp.close();
+    }
+  });
+
+  it('keeps a healthy tab and its refs when an explicit target is missing', async () => {
+    const cdp = await startConnectionCdpServer();
+    try {
+      const connected = await connectBrowser(cdp.httpUrl);
+      const fixture = makePage('T1');
+      exposePages(connected.browser, [fixture.page]);
+      const state = ensurePageState(fixture.page);
+      const refs = { e1: { role: 'button', name: 'Keep' } };
+      state.roleRefs = refs;
+      await expect(getPageForTargetId({ cdpUrl: cdp.httpUrl, targetId: 'missing' })).rejects.toBeInstanceOf(
+        BrowserTabNotFoundError,
+      );
+      expect(connected.browser.isConnected()).toBe(true);
+      expect((await connectBrowser(cdp.httpUrl)).browser).toBe(connected.browser);
+      expect(ensurePageState(fixture.page).roleRefs).toBe(refs);
+      expect(cdp.connections).toBe(1);
     } finally {
       await disconnectBrowser();
       await cdp.close();

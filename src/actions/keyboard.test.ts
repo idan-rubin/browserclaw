@@ -19,9 +19,10 @@ describe('insert focused text', () => {
     expect(mocks.insert).toHaveBeenCalledWith('pasted text');
     expect(mocks.guard).toHaveBeenCalledWith(expect.objectContaining(options));
   });
-  it('reports how to recover when the focused control cannot accept text', async () => {
-    mocks.insert.mockRejectedValue(new Error('protocol error'));
-    await expect(insertTextViaPlaywright({ cdpUrl: 'local', text: 'text' })).rejects.toThrow('Focus an editable field');
+  it('preserves operational errors instead of suggesting a focus change', async () => {
+    const failure = new Error('Target page, context or browser has been closed');
+    mocks.insert.mockRejectedValue(failure);
+    await expect(insertTextViaPlaywright({ cdpUrl: 'local', text: 'text' })).rejects.toBe(failure);
   });
 });
 

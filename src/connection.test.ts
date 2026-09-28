@@ -822,13 +822,13 @@ describe('isRecoverableStalePageSelectionError', () => {
     expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), true, false)).toBe(true);
   });
 
-  it('returns true for BrowserTabNotFoundError when caller passed an explicit targetId', () => {
-    expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), true, true)).toBe(true);
+  it('does not evict a healthy adapter for a missing explicit targetId', () => {
+    expect(isRecoverableStalePageSelectionError(new BrowserTabNotFoundError(), true, true)).toBe(false);
   });
 
-  it('returns true for "tab not found" messages with or without an explicit targetId', () => {
+  it('recovers tab-not-found messages only without an explicit targetId', () => {
     expect(isRecoverableStalePageSelectionError(new Error('Tab Not Found'), true, false)).toBe(true);
-    expect(isRecoverableStalePageSelectionError(new Error('Tab Not Found'), true, true)).toBe(true);
+    expect(isRecoverableStalePageSelectionError(new Error('Tab Not Found'), true, true)).toBe(false);
   });
 
   it('returns false for unrelated errors', () => {

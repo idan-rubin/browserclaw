@@ -123,7 +123,7 @@ export function ensurePageState(page: Page): PageState {
         id,
         timestamp: new Date().toISOString(),
         method: req.method(),
-        url: truncateObservedPageText(req.url()),
+        url: req.url(),
         resourceType: req.resourceType(),
       });
       if (state.requests.length > MAX_NETWORK_REQUESTS + 50) state.requests.splice(0, 50);

@@ -100,6 +100,28 @@ describe.skipIf(executablePath === undefined)('document-bound waits (real Chromi
     });
   });
 
+  it.each(['hash', 'pushState'])(
+    'allows a predicate to become true after same-document %s navigation',
+    async (kind) => {
+      await page.route('http://127.0.0.1:12345/**', (route) =>
+        route.fulfill({ body: '<body></body>', contentType: 'text/html' }),
+      );
+      await page.goto('http://127.0.0.1:12345/');
+      const pending = waitForViaPlaywright({
+        cdpUrl: 'test',
+        fn: '() => { document.body.dataset.started = "yes"; return location.href.endsWith("done"); }',
+        timeoutMs: 1500,
+        ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+      });
+      await page.waitForFunction(() => document.body.dataset.started === 'yes');
+      await page.evaluate((kind) => {
+        if (kind === 'hash') location.hash = 'done';
+        else history.pushState({}, '', '/done');
+      }, kind);
+      await pending;
+    },
+  );
+
   it('rejects after same-URL document replacement and allows a fresh wait', async () => {
     await page.goto('about:blank');
     const pending = waitForViaPlaywright({

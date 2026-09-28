@@ -305,7 +305,7 @@ export async function executeSingleAction(
 
 /**
  * Execute multiple browser actions in sequence.
- * Stops after a target navigates or closes; results contain only dispatched actions.
+ * Stops after a target navigates or closes; the first skipped action receives an error result.
  *
  * @param opts.actions - Array of actions to execute
  * @param opts.stopOnError - Stop on first error (default: true)
@@ -333,7 +333,11 @@ export async function batchViaPlaywright(opts: {
   const observed = new Map<Page, (frame: Frame) => void>();
   const boundary = { navigated: false };
   const hasClosedPage = () => [...observed.keys()].some((page) => page.isClosed());
-  const crossedBoundary = () => boundary.navigated || hasClosedPage();
+  const crossedBoundary = () => {
+    if (!boundary.navigated && !hasClosedPage()) return false;
+    results.push({ ok: false, error: 'Batch stopped before this action because a target navigated or closed.' });
+    return true;
+  };
   const observeTarget = async (targetId: string | undefined) => {
     const page = await getPageForTargetId({ ...opts, targetId });
     if (observed.has(page)) return;

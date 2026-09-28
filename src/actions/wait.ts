@@ -130,12 +130,23 @@ export async function waitForViaPlaywright(
       const signal = opts.signal
         ? AbortSignal.any([opts.signal, documentController.signal])
         : documentController.signal;
-      const onNavigated = (frame: Frame) => {
-        if (frame === page.mainFrame()) documentController.abort(new Error('Wait predicate document changed'));
-      };
-      page.on('framenavigated', onNavigated);
       try {
         const documentHandle = await page.evaluateHandle(() => globalThis.document);
+        const onNavigated = (frame: Frame) => {
+          if (frame !== page.mainFrame()) return;
+          // Hash/history changes keep the document; a replaced context invalidates its handle.
+          void documentHandle
+            .evaluate((document) => document === globalThis.document)
+            .then(
+              (sameDocument) => {
+                if (!sameDocument) documentController.abort(new Error('Wait predicate document changed'));
+              },
+              () => {
+                documentController.abort(new Error('Wait predicate document changed'));
+              },
+            );
+        };
+        page.on('framenavigated', onNavigated);
         try {
           signal.throwIfAborted();
           await step(() =>
@@ -150,13 +161,12 @@ export async function waitForViaPlaywright(
           );
           signal.throwIfAborted();
         } finally {
+          page.off('framenavigated', onNavigated);
           await documentHandle.dispose();
         }
       } catch (error) {
         signal.throwIfAborted();
         throw error;
-      } finally {
-        page.off('framenavigated', onNavigated);
       }
     }
   };

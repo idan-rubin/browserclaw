@@ -2,6 +2,7 @@ import type { Locator, Page } from 'playwright-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as ConnectionModule from '../connection.js';
+import { ensurePageState } from '../page-utils.js';
 
 import { clickViaPlaywright, fillFormViaPlaywright, typeViaPlaywright } from './interaction.js';
 import type * as NavigationModule from './navigation.js';
@@ -77,6 +78,45 @@ describe('native action cancellation', () => {
     click.mockResolvedValue(undefined);
     await clickViaPlaywright({ cdpUrl, selector: '#other' });
     expect(click).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['before click', 'after click'])('cancels a stalled checked-state read %s', async (stage) => {
+    let release!: (value: string) => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const evaluate = vi.fn<Locator['evaluate']>().mockImplementation(() => {
+      entered();
+      return new Promise<string>((resolve) => {
+        release = resolve;
+      });
+    });
+    if (stage === 'after click') evaluate.mockResolvedValueOnce('false');
+    const click = vi.fn<Locator['click']>().mockResolvedValue(undefined);
+    setLocator({ evaluate: evaluate as Locator['evaluate'], click });
+    const page = { url: () => 'about:blank', on: vi.fn() } as unknown as Page;
+    ensurePageState(page).roleRefs = { e1: { role: 'checkbox', name: 'Check' } };
+    mocks.getPage.mockResolvedValue(page);
+    const controller = new AbortController();
+    const reason = new Error('cancel checked read');
+    const settled = vi.fn();
+    const action = clickViaPlaywright({ cdpUrl, ref: 'e1', signal: controller.signal });
+    void action.then(settled, settled);
+    try {
+      await started;
+      controller.abort(reason);
+      await vi.waitFor(
+        () => {
+          expect(settled).toHaveBeenCalledWith(reason);
+        },
+        { timeout: 100 },
+      );
+    } finally {
+      release('false');
+      await action.catch(() => undefined);
+    }
+    expect(click).toHaveBeenCalledTimes(stage === 'after click' ? 1 : 0);
   });
 
   it('never dispatches a pre-aborted click', async () => {

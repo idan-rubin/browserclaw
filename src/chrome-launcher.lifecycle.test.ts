@@ -134,7 +134,7 @@ describe('stopChrome deadline', () => {
       profileExistedAtExit = fs.existsSync(userDataDir);
     });
     try {
-      await stopChrome(running, 500);
+      await stopChrome(running, 0);
       expect(profileExistedAtExit).toBe(true);
       expect(proc.signalCode).toBe('SIGKILL');
       expect(fs.existsSync(userDataDir)).toBe(false);
@@ -174,7 +174,10 @@ describe('launchChrome asynchronous spawn failures', () => {
     if (existing) {
       fs.writeFileSync(path.join(userDataDir, 'Local State'), '{}');
       fs.mkdirSync(path.join(userDataDir, 'Default'));
-      fs.writeFileSync(path.join(userDataDir, 'Default', 'Preferences'), '{}');
+      fs.writeFileSync(
+        path.join(userDataDir, 'Default', 'Preferences'),
+        JSON.stringify({ net: { network_prediction_options: 0 } }),
+      );
     }
     try {
       await expect(launchChrome({ executablePath, userDataDir })).rejects.toThrow(/EACCES/);
@@ -182,7 +185,7 @@ describe('launchChrome asynchronous spawn failures', () => {
         const prefs = JSON.parse(fs.readFileSync(path.join(userDataDir, 'Default', 'Preferences'), 'utf8')) as {
           net: { network_prediction_options: number };
         };
-        expect(prefs.net.network_prediction_options).toBe(2);
+        expect(prefs.net.network_prediction_options).toBe(0);
       }
     } finally {
       fs.rmSync(userDataDir, { recursive: true, force: true });

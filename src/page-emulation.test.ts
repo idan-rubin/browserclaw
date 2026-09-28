@@ -170,7 +170,10 @@ describe('emulation-safe screenshot', () => {
     expect(await captureScreenshotWithEmulation(f.page, { type: 'jpeg', fullPage: true })).toEqual(
       Buffer.from('plain'),
     );
-    expect(f.screenshot).toHaveBeenCalledWith({ type: 'jpeg', fullPage: true, timeout: 0 });
+    expect(f.screenshot).toHaveBeenCalledOnce();
+    const timeout = (f.screenshot.mock.calls[0] as unknown as [{ timeout: number }])[0].timeout;
+    expect(timeout).toBeGreaterThan(0);
+    expect(timeout).toBeLessThanOrEqual(20_000);
     expect(f.attach).not.toHaveBeenCalled();
   });
 

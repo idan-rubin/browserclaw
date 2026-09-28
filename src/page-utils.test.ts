@@ -18,7 +18,7 @@ import {
 import type { PageState, NetworkRequest } from './types.js';
 
 describe('page-controlled observation bounds', () => {
-  it('bounds every stored text field without cutting a surrogate pair', () => {
+  it('bounds diagnostic text without truncating request URLs', () => {
     const events = new EventEmitter();
     const state = ensurePageState(events as unknown as Page);
     const long = `${'x'.repeat(2047)}😀${'y'.repeat(3000)}`;
@@ -43,13 +43,13 @@ describe('page-controlled observation bounds', () => {
       state.errors[0].name,
       state.errors[0].message,
       state.errors[0].stack,
-      state.requests[0].url,
       state.requests[0].failureText,
     ]) {
       expect(value).toBe('x'.repeat(2047));
     }
     expect(state.console[0].location?.lineNumber).toBe(7);
     expect(state.requests[0].resourceType).toBe('xhr');
+    expect(state.requests[0].url).toBe(long);
   });
 
   it('preserves short content and existing response correlation', () => {

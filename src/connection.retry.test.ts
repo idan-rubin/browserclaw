@@ -8,25 +8,29 @@ describe('CDP connection retry classification', () => {
     await disconnectBrowser();
   });
 
-  it('does not retry an actual HTTP429 websocket handshake', async () => {
+  it('backs off and retries an HTTP429 websocket handshake', async () => {
     const cdp = await startConnectionCdpServer({ handshakeStatuses: [429, 101] });
     try {
-      await expect(connectBrowser(cdp.httpUrl)).rejects.toThrow('CDP WebSocket HTTP 429');
-      expect(cdp.handshakes).toBe(1);
-      expect(cdp.connections).toBe(0);
+      const started = Date.now();
+      expect((await connectBrowser(cdp.httpUrl)).browser.isConnected()).toBe(true);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(950);
+      expect(cdp.handshakes).toBe(2);
+      expect(cdp.connections).toBe(1);
     } finally {
+      await disconnectBrowser();
       await cdp.close();
     }
   });
 
-  it('does not retry a rate-limit error during the real Playwright handshake', async () => {
+  it('retries a rate-limit error during the real Playwright handshake', async () => {
     const cdp = await startConnectionCdpServer({
       commandFailures: [{ method: 'Browser.getVersion', message: 'rate limit exceeded' }],
     });
     try {
-      await expect(connectBrowser(cdp.httpUrl)).rejects.toThrow('rate limit exceeded');
-      expect(cdp.connections).toBe(1);
+      expect((await connectBrowser(cdp.httpUrl)).browser.isConnected()).toBe(true);
+      expect(cdp.connections).toBe(2);
     } finally {
+      await disconnectBrowser();
       await cdp.close();
     }
   });

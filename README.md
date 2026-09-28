@@ -209,7 +209,7 @@ Pass `isolated: true` (or `isolated: 'some-label'`) to launch in a dedicated per
 - When `isolated` is set, `profileName` and `userDataDir` options are ignored.
 - Any cookies, logins, extensions, or localStorage from prior runs are not available — by design.
 
-For a stable, shared profile across runs (persistent login state, preserved history), omit `isolated` and use `profileName` / `userDataDir` instead.
+For a stable, shared profile across runs (persistent login state, preserved history), omit `isolated` and use `profileName` / `userDataDir` instead. Browserclaw disables network prediction in its managed profiles. An explicit `userDataDir` retains its existing prediction preference, so Chrome may perform speculative networking outside page-request guards.
 
 #### Stale-lock recovery (persistent profiles)
 
@@ -219,7 +219,7 @@ When a launch fails because Chrome reports the profile is in use by another proc
 
 **Secure by default.** browserclaw validates navigation URLs and DNS answers, blocking private and loopback addresses — `127.0.0.1`, RFC 1918 ranges, link-local, the RFC 2544 range, IPv6 ULA, and cloud metadata endpoints like `169.254.169.254` unless an applicable policy exemption permits them. Explicit hostname denials take precedence over exemptions.
 
-CDP HTTP and WebSocket connections use the validated DNS lookup for the actual dial. Chrome resolves page-navigation hostnames independently, so those navigation checks alone cannot eliminate DNS rebinding. Set `ssrfPolicy.requireAllowlistedHostnames: true` to reject unlisted DNS hostnames; names admitted through `allowedHostnames` or `hostnameAllowlist` must still be trusted. This gate does not apply when private-network access is enabled, and `hostnameAllowlist` alone never grants a private-network exemption.
+CDP HTTP and WebSocket connections use direct sockets with the validated DNS lookup for the actual dial. They do not use `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY`; remote CDP endpoints must be directly reachable. Chrome page-navigation proxy settings are separate. Chrome resolves page-navigation hostnames independently, so those navigation checks alone cannot eliminate DNS rebinding. Set `ssrfPolicy.requireAllowlistedHostnames: true` to reject unlisted DNS hostnames; names admitted through `allowedHostnames` or `hostnameAllowlist` must still be trusted. This gate does not apply when private-network access is enabled, and `hostnameAllowlist` alone never grants a private-network exemption.
 
 To reach private or loopback hosts on purpose (local development, a dev tunnel, an internal dashboard), opt out explicitly:
 

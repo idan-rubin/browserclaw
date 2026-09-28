@@ -48,13 +48,27 @@ describe('bulk cookie import', () => {
   });
   it('isolates a rejected cookie and counts the accepted ones', async () => {
     const addCookies = vi.fn((cookies: CookieData[]) =>
-      cookies.some((entry) => entry.name === 'bad') ? Promise.reject(new Error('rejected cookie')) : Promise.resolve(),
+      cookies.some((entry) => entry.name === 'bad')
+        ? Promise.reject(
+            new Error('browserContext.addCookies: Protocol error (Storage.setCookies): Invalid cookie fields'),
+          )
+        : Promise.resolve(),
     );
     getPage.mockResolvedValue({ context: () => ({ addCookies }) });
     expect(
       await cookiesSetManyViaPlaywright({ cdpUrl: 'local', cookies: [cookie('first'), cookie('bad'), cookie('last')] }),
     ).toEqual({ added: 2 });
     expect(addCookies).toHaveBeenCalledTimes(4);
+  });
+  it.each([false, true])('propagates operational failures during import (fallback=%s)', async (fallback) => {
+    const failure = new Error('browserContext.addCookies: Target page, context or browser has been closed');
+    const addCookies = vi.fn().mockRejectedValue(failure);
+    if (fallback) addCookies.mockRejectedValueOnce(new Error('Cookie should have a url or a domain/path pair'));
+    getPage.mockResolvedValue({ context: () => ({ addCookies }) });
+    await expect(cookiesSetManyViaPlaywright({ cdpUrl: 'local', cookies: [cookie('a'), cookie('b')] })).rejects.toBe(
+      failure,
+    );
+    expect(addCookies).toHaveBeenCalledTimes(fallback ? 2 : 1);
   });
   it('does not dispatch another batch after cancellation', async () => {
     const controller = new AbortController();
