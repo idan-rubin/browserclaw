@@ -2,6 +2,8 @@ import { assertPageNavigationCompletedSafely } from '../actions/navigation.js';
 import { getPageForTargetId, ensurePageState, refLocator } from '../connection.js';
 import type { SsrfPolicy } from '../types.js';
 
+import { captureScreenshotWithEmulation } from './screenshot-capture.js';
+
 export async function takeScreenshotViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
@@ -11,13 +13,16 @@ export async function takeScreenshotViaPlaywright(opts: {
   type?: 'png' | 'jpeg';
   timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
+  signal?: AbortSignal;
 }): Promise<{ buffer: Buffer }> {
+  opts.signal?.throwIfAborted();
   const page = await getPageForTargetId({
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
     ssrfPolicy: opts.ssrfPolicy,
   });
   ensurePageState(page);
+  opts.signal?.throwIfAborted();
 
   if (opts.ssrfPolicy) {
     await assertPageNavigationCompletedSafely({
@@ -30,17 +35,19 @@ export async function takeScreenshotViaPlaywright(opts: {
   }
 
   const type = opts.type ?? 'png';
-  const timeout = opts.timeoutMs;
-
-  if (opts.ref !== undefined && opts.ref !== '') {
-    if (opts.fullPage === true) throw new Error('fullPage is not supported for element screenshots');
-    return { buffer: await refLocator(page, opts.ref).screenshot({ type, timeout }) };
-  }
-  if (opts.element !== undefined && opts.element !== '') {
-    if (opts.fullPage === true) throw new Error('fullPage is not supported for element screenshots');
-    return { buffer: await page.locator(opts.element).first().screenshot({ type, timeout }) };
-  }
-  return { buffer: await page.screenshot({ type, fullPage: Boolean(opts.fullPage), timeout }) };
+  const locator =
+    opts.ref !== undefined && opts.ref !== ''
+      ? refLocator(page, opts.ref)
+      : opts.element !== undefined && opts.element !== ''
+        ? page.locator(opts.element).first()
+        : undefined;
+  return {
+    buffer: await captureScreenshotWithEmulation(
+      page,
+      { type, fullPage: opts.fullPage, timeoutMs: opts.timeoutMs, signal: opts.signal },
+      locator,
+    ),
+  };
 }
 
 export async function screenshotWithLabelsViaPlaywright(opts: {

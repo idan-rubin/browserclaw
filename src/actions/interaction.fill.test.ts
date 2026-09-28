@@ -26,6 +26,8 @@ describe('fillFormViaPlaywright — mid-fill navigation', () => {
   it('throws NavigationRaceError instead of silently returning after a benign mid-fill navigation', async () => {
     let url = 'http://93.184.216.34/form';
     const page = {
+      route: vi.fn().mockResolvedValue(undefined),
+      unroute: vi.fn().mockResolvedValue(undefined),
       url: () => url,
       on: () => undefined,
       off: () => undefined,

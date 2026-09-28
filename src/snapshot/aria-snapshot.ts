@@ -1,359 +1,253 @@
-import type { CDPSession, Page } from 'playwright-core';
+import type { Frame, Page } from 'playwright-core';
 
 import { assertPageNavigationCompletedSafely } from '../actions/navigation.js';
 import {
   getPageForTargetId,
   ensurePageState,
   storeRoleRefsForTarget,
-  normalizeTimeoutMs,
   withPlaywrightPageCdpSession,
   takeAiSnapshotText,
 } from '../connection.js';
-import { BROWSER_REF_MARKER_ATTRIBUTE } from '../ref-resolver.js';
-import type { SnapshotResult, AriaSnapshotResult, AriaNode, RoleRefs, SsrfPolicy } from '../types.js';
+import type { SnapshotResult, AriaSnapshotResult, AriaNode, RoleRefs, SnapshotOptions, SsrfPolicy } from '../types.js';
 
+import { withSnapshotFrameGuard } from './capture-guard.js';
 import { enrichSnapshotFromDom, mergeSnapshotWithEnrichment, nextRefCounter } from './dom-enrichment.js';
-import { buildRoleSnapshotFromAriaSnapshot, buildRoleSnapshotFromAiSnapshot, getRoleSnapshotStats } from './ref-map.js';
+import { finalizeSnapshot } from './finalize.js';
+import { captureNativeRoleSnapshot } from './native-capture.js';
+import { markNativeRefs } from './native-markers.js';
+import { axValue, type AXNode } from './native-tree.js';
+import { buildRoleSnapshotFromAiSnapshot } from './ref-map.js';
 
-/**
- * Take a role-based snapshot using Playwright's ariaSnapshot().
- * This produces a tree with ref IDs that can be targeted by actions.
- *
- * When `refsMode === 'aria'`, uses Playwright's AI-mode snapshot API instead
- * and stores refs in aria mode (resolved via aria-ref locators).
- */
-export async function snapshotRole(opts: {
+interface SnapshotPageOptions {
   cdpUrl: string;
   targetId?: string;
-  selector?: string;
-  frameSelector?: string;
-  refsMode?: 'role' | 'aria';
   timeoutMs?: number;
-  options?: {
-    interactive?: boolean;
-    compact?: boolean;
-    maxDepth?: number;
-  };
   ssrfPolicy?: SsrfPolicy;
-}): Promise<SnapshotResult> {
-  const page = await getPageForTargetId({
-    cdpUrl: opts.cdpUrl,
-    targetId: opts.targetId,
-    ssrfPolicy: opts.ssrfPolicy,
-  });
+  signal?: AbortSignal;
+}
+
+function snapshotTimeout(timeoutMs?: number): number {
+  return typeof timeoutMs === 'number' && Number.isFinite(timeoutMs)
+    ? Math.max(500, Math.min(60000, Math.floor(timeoutMs)))
+    : 5000;
+}
+
+async function prepareSnapshotPage(opts: SnapshotPageOptions): Promise<Page> {
+  opts.signal?.throwIfAborted();
+  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: opts.ssrfPolicy });
   ensurePageState(page);
+  opts.signal?.throwIfAborted();
+  if (opts.ssrfPolicy) await assertPageNavigationCompletedSafely({ ...opts, page, response: null });
+  return page;
+}
 
-  if (opts.ssrfPolicy) {
-    await assertPageNavigationCompletedSafely({
-      cdpUrl: opts.cdpUrl,
-      page,
-      response: null,
-      ssrfPolicy: opts.ssrfPolicy,
-      targetId: opts.targetId,
-    });
-  }
+async function resolveSnapshotFrame(
+  page: Page,
+  selector: string,
+  timeout: number,
+  signal?: AbortSignal,
+): Promise<Frame | undefined> {
+  if (!selector) return undefined;
+  return await withSnapshotFrameGuard({
+    page,
+    signal,
+    timeoutMs: timeout,
+    run: async (assertCurrent) => {
+      const element = await page.locator(selector).elementHandle({ timeout });
+      try {
+        assertCurrent();
+        const frame = await element.contentFrame();
+        assertCurrent();
+        if (!frame) throw new Error('Frame was unavailable while its browser snapshot was being captured.');
+        return frame;
+      } finally {
+        await element.dispose();
+      }
+    },
+  });
+}
 
-  const sourceUrl = page.url();
-
-  // refs=aria sub-path: use the AI-mode snapshot instead of role-based ariaSnapshot
-  if (opts.refsMode === 'aria') {
-    if (
-      (opts.selector !== undefined && opts.selector.trim() !== '') ||
-      (opts.frameSelector !== undefined && opts.frameSelector.trim() !== '')
-    ) {
-      throw new Error('refs=aria does not support selector/frame snapshots yet.');
-    }
-    const snapshotText = await takeAiSnapshotText(page, normalizeTimeoutMs(opts.timeoutMs, 5000));
-    const built = buildRoleSnapshotFromAiSnapshot(snapshotText, opts.options);
-
-    const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs));
-    const merged = mergeSnapshotWithEnrichment(built, enriched);
-
-    storeRoleRefsForTarget({
-      page,
-      cdpUrl: opts.cdpUrl,
-      targetId: opts.targetId,
-      refs: merged.refs,
-      mode: 'aria',
-    });
-
-    return {
-      snapshot: merged.snapshot,
-      refs: merged.refs,
-      stats: getRoleSnapshotStats(merged.snapshot, merged.refs),
-      untrusted: true,
-      contentMeta: {
-        sourceUrl,
-        contentType: 'browser-snapshot',
-        capturedAt: new Date().toISOString(),
-      },
-    };
-  }
-
+/** Capture a native, document-bound AX tree, or preserve Playwright AI refs in aria mode. */
+export async function snapshotRole(
+  opts: SnapshotPageOptions & {
+    selector?: string;
+    frameSelector?: string;
+    refsMode?: 'role' | 'aria';
+    maxChars?: number;
+    options?: Pick<SnapshotOptions, 'interactive' | 'compact' | 'maxDepth'>;
+  },
+): Promise<SnapshotResult> {
+  const page = await prepareSnapshotPage(opts);
+  const timeoutMs = snapshotTimeout(opts.timeoutMs);
+  const deadline = Date.now() + timeoutMs;
   const frameSelector = opts.frameSelector?.trim() ?? '';
   const selector = opts.selector?.trim() ?? '';
-  const locator = frameSelector
-    ? selector
-      ? page.frameLocator(frameSelector).locator(selector)
-      : page.frameLocator(frameSelector).locator(':root')
-    : selector
-      ? page.locator(selector)
-      : page.locator(':root');
-
-  const ariaSnapshot = await locator.ariaSnapshot({ timeout: normalizeTimeoutMs(opts.timeoutMs, 5000) });
-  const built = buildRoleSnapshotFromAriaSnapshot(ariaSnapshot, opts.options);
-
-  const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs), {
-    rootSelector: selector,
-    frameSelector,
-  });
-  const merged = mergeSnapshotWithEnrichment(built, enriched);
-
-  storeRoleRefsForTarget({
+  if (opts.refsMode === 'aria' && (selector || frameSelector))
+    throw new Error('refs=aria does not support selector/frame snapshots yet.');
+  const frame = await resolveSnapshotFrame(page, frameSelector, timeoutMs, opts.signal);
+  return await withSnapshotFrameGuard({
     page,
-    cdpUrl: opts.cdpUrl,
-    targetId: opts.targetId,
-    refs: merged.refs,
-    frameSelector: frameSelector !== '' ? frameSelector : undefined,
-    mode: 'role',
-  });
-
-  return {
-    snapshot: merged.snapshot,
-    refs: merged.refs,
-    stats: getRoleSnapshotStats(merged.snapshot, merged.refs),
-    untrusted: true,
-    contentMeta: {
-      sourceUrl,
-      contentType: 'browser-snapshot',
-      capturedAt: new Date().toISOString(),
-    },
-  };
-}
-
-/** CDP accessibility tree node from Accessibility.getFullAXTree. */
-interface CdpAXNode {
-  nodeId: string;
-  childIds?: string[];
-  role?: { value?: string | number | boolean };
-  name?: { value?: string | number | boolean };
-  value?: { value?: string | number | boolean };
-  description?: { value?: string | number | boolean };
-  backendDOMNodeId?: number;
-}
-
-/**
- * Take a raw ARIA accessibility tree snapshot via CDP.
- */
-export async function snapshotAria(opts: {
-  cdpUrl: string;
-  targetId?: string;
-  limit?: number;
-  timeoutMs?: number;
-  ssrfPolicy?: SsrfPolicy;
-}): Promise<AriaSnapshotResult> {
-  const limit = Math.max(1, Math.min(2000, Math.floor(opts.limit ?? 500)));
-  const ariaTimeoutMs =
-    typeof opts.timeoutMs === 'number' && Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
-      ? Math.max(500, Math.min(60_000, Math.floor(opts.timeoutMs)))
-      : undefined;
-  const page = await getPageForTargetId({
-    cdpUrl: opts.cdpUrl,
-    targetId: opts.targetId,
-    ssrfPolicy: opts.ssrfPolicy,
-  });
-  ensurePageState(page);
-
-  if (opts.ssrfPolicy) {
-    await assertPageNavigationCompletedSafely({
-      cdpUrl: opts.cdpUrl,
-      page,
-      response: null,
-      ssrfPolicy: opts.ssrfPolicy,
-      targetId: opts.targetId,
-    });
-  }
-
-  const sourceUrl = page.url();
-
-  let activeSession: CDPSession | undefined;
-  const collectAxTree = withPlaywrightPageCdpSession(page, async (session) => {
-    activeSession = session;
-    await session.send('Accessibility.enable' as unknown as Parameters<typeof session.send>[0]).catch(() => {
-      /* intentional no-op */
-    });
-    return (await session.send('Accessibility.getFullAXTree' as unknown as Parameters<typeof session.send>[0])) as {
-      nodes?: CdpAXNode[];
-    };
-  });
-  const res =
-    ariaTimeoutMs === undefined
-      ? await collectAxTree
-      : await (async () => {
-          let timer: NodeJS.Timeout | undefined;
-          const timeout = new Promise<never>((_, reject) => {
-            timer = setTimeout(() => {
-              reject(new Error(`Aria snapshot via Playwright timed out after ${String(ariaTimeoutMs)}ms.`));
-            }, ariaTimeoutMs);
-            timer.unref();
+    frame: opts.refsMode === 'aria' ? undefined : (frame ?? page.mainFrame()),
+    signal: opts.signal,
+    timeoutMs: Math.max(1, deadline - Date.now()),
+    run: async (assertCurrent) => {
+      const sourceUrl = page.url();
+      const remaining = () => {
+        assertCurrent();
+        return Math.max(1, deadline - Date.now());
+      };
+      let built: { snapshot: string; refs: RoleRefs; truncated?: boolean };
+      if (opts.refsMode === 'aria') {
+        built = buildRoleSnapshotFromAiSnapshot(await takeAiSnapshotText(page, remaining()), opts.options);
+      } else {
+        const locator = (frame ?? page).locator(selector || ':root');
+        if (selector && (await locator.count()) === 0) {
+          assertCurrent();
+          const empty = finalizeSnapshot(
+            opts.options?.interactive === true ? '(no interactive elements)' : '(empty)',
+            {},
+            opts.maxChars,
+          );
+          storeRoleRefsForTarget({
+            ...opts,
+            page,
+            frame,
+            frameSelector: frameSelector || undefined,
+            refs: {},
+            mode: 'role',
           });
-          try {
-            return await Promise.race([collectAxTree, timeout]);
-          } catch (err) {
-            if (activeSession) activeSession.detach().catch(() => undefined);
-            collectAxTree.catch(() => undefined);
-            throw err;
-          } finally {
-            if (timer) clearTimeout(timer);
-          }
-        })();
-
-  const formatted = formatAriaNodes(Array.isArray(res.nodes) ? res.nodes : [], limit);
-  const markedRefs = await markBackendDomRefsOnPage(page, formatted);
-  storeRoleRefsForTarget({
-    page,
-    cdpUrl: opts.cdpUrl,
-    targetId: opts.targetId,
-    refs: buildAriaSnapshotRefs(formatted, markedRefs),
-    mode: 'role',
-  });
-
-  return {
-    nodes: formatted,
-    untrusted: true,
-    contentMeta: {
-      sourceUrl,
-      contentType: 'browser-aria-tree',
-      capturedAt: new Date().toISOString(),
-    },
-  };
-}
-
-async function markBackendDomRefsOnPage(page: Page, nodes: AriaNode[]): Promise<Set<string>> {
-  await page
-    .locator(`[${BROWSER_REF_MARKER_ATTRIBUTE}]`)
-    .evaluateAll((elements, attr) => {
-      for (const element of elements) if (element instanceof Element) element.removeAttribute(attr);
-    }, BROWSER_REF_MARKER_ATTRIBUTE)
-    .catch(() => {
-      /* best-effort cleanup of stale markers */
-    });
-  const targetable = nodes.filter(
-    (n) => typeof n.backendDOMNodeId === 'number' && Number.isFinite(n.backendDOMNodeId) && n.backendDOMNodeId > 0,
-  );
-  const marked = new Set<string>();
-  if (!targetable.length) return marked;
-  return await withPlaywrightPageCdpSession(page, async (session) => {
-    type Send = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
-    const send: Send = (method, params) =>
-      session.send(method as Parameters<typeof session.send>[0], params as Parameters<typeof session.send>[1]);
-    await send('DOM.enable').catch(() => {
-      /* best-effort */
-    });
-    const backendNodeIds = [...new Set(targetable.map((n) => Math.floor(n.backendDOMNodeId ?? 0)))];
-    const pushed = (await send('DOM.pushNodesByBackendIdsToFrontend', { backendNodeIds }).catch(() => ({}))) as {
-      nodeIds?: unknown;
-    };
-    const nodeIds = Array.isArray(pushed.nodeIds) ? (pushed.nodeIds as number[]) : [];
-    const nodeIdByBackendId = new Map<number, number>();
-    for (let i = 0; i < backendNodeIds.length; i++) {
-      const backendNodeId = backendNodeIds[i];
-      const nodeId = nodeIds[i];
-      if (backendNodeId && typeof nodeId === 'number' && nodeId > 0) nodeIdByBackendId.set(backendNodeId, nodeId);
-    }
-    for (const node of targetable) {
-      const nodeId = nodeIdByBackendId.get(Math.floor(node.backendDOMNodeId ?? 0));
-      if (nodeId === undefined || nodeId <= 0) continue;
-      try {
-        await send('DOM.setAttributeValue', { nodeId, name: BROWSER_REF_MARKER_ATTRIBUTE, value: node.ref });
-        marked.add(node.ref);
-      } catch {
-        /* node may have been detached between push and set; skip */
+          return {
+            ...empty,
+            untrusted: true,
+            contentMeta: { sourceUrl, contentType: 'browser-snapshot', capturedAt: new Date().toISOString() },
+          };
+        }
+        built = await captureNativeRoleSnapshot({
+          page,
+          frame,
+          locator,
+          remaining,
+          assertCurrent,
+          options: opts.options,
+        });
       }
-    }
-    return marked;
+      assertCurrent();
+      const enriched = await enrichSnapshotFromDom(page, nextRefCounter(built.refs), {
+        rootSelector: selector,
+        frame,
+        skipNativeMarkedElements: opts.refsMode !== 'aria',
+      });
+      assertCurrent();
+      const merged = mergeSnapshotWithEnrichment(built, enriched);
+      const finalized = finalizeSnapshot(merged.snapshot, merged.refs, opts.maxChars);
+      assertCurrent();
+      storeRoleRefsForTarget({
+        ...opts,
+        page,
+        frame,
+        frameSelector: frameSelector || undefined,
+        refs: finalized.refs,
+        mode: opts.refsMode ?? 'role',
+      });
+      return {
+        ...finalized,
+        ...(built.truncated === true ? { truncated: true } : {}),
+        untrusted: true,
+        contentMeta: { sourceUrl, contentType: 'browser-snapshot', capturedAt: new Date().toISOString() },
+      };
+    },
   });
 }
 
-function buildAriaSnapshotRefs(nodes: AriaNode[], markedRefs: Set<string>): RoleRefs {
+/** Capture and bind a raw accessibility tree through one owned, bounded CDP session. */
+export async function snapshotAria(opts: SnapshotPageOptions & { limit?: number }): Promise<AriaSnapshotResult> {
+  const page = await prepareSnapshotPage(opts);
+  const timeoutMs = snapshotTimeout(opts.timeoutMs);
+  const limit = Math.max(1, Math.min(2000, Math.floor(opts.limit ?? 500)));
+  return await withSnapshotFrameGuard({
+    page,
+    frame: page.mainFrame(),
+    signal: opts.signal,
+    timeoutMs,
+    run: async (assertCurrent) => {
+      const sourceUrl = page.url();
+      const { nodes, refs } = await withPlaywrightPageCdpSession(
+        page,
+        async (session) => {
+          await session.send('Accessibility.enable');
+          const response = await session.send('Accessibility.getFullAXTree');
+          assertCurrent();
+          const nodes = formatAriaNodes(response.nodes, limit);
+          const backendRefs = nodes.flatMap((node) =>
+            node.backendDOMNodeId !== undefined && node.backendDOMNodeId > 0
+              ? [{ ref: node.ref, backendDOMNodeId: node.backendDOMNodeId }]
+              : [],
+          );
+          const marked = await markNativeRefs({ session, refs: backendRefs, assertCurrent });
+          return { nodes, refs: buildAriaSnapshotRefs(nodes, marked) };
+        },
+        timeoutMs,
+      );
+      assertCurrent();
+      storeRoleRefsForTarget({ ...opts, page, refs, mode: 'role' });
+      return {
+        nodes,
+        untrusted: true,
+        contentMeta: { sourceUrl, contentType: 'browser-aria-tree', capturedAt: new Date().toISOString() },
+      };
+    },
+  });
+}
+
+function buildAriaSnapshotRefs(nodes: AriaNode[], marked: Set<string>): RoleRefs {
   const refs: RoleRefs = {};
-  const counts = new Map<string, number>();
-  const refsByKey = new Map<string, string[]>();
+  const groups = new Map<string, string[]>();
   for (const node of nodes) {
     const role = (node.role || 'unknown').toLowerCase();
-    const name = node.name.trim() || undefined;
-    const key = `${role}:${name ?? ''}`;
-    const nth = counts.get(key) ?? 0;
-    counts.set(key, nth + 1);
-    const refsForKey = refsByKey.get(key);
-    if (refsForKey) refsForKey.push(node.ref);
-    else refsByKey.set(key, [node.ref]);
+    const name = node.name.trim();
+    const key = `${role}:${name}`;
+    const group = groups.get(key) ?? [];
     refs[node.ref] = {
       role,
-      ...(name !== undefined ? { name } : {}),
-      nth,
-      ...(markedRefs.has(node.ref) ? { domMarker: true } : {}),
+      name,
+      nth: group.length,
+      ...(marked.has(node.ref) ? { domMarker: true } : {}),
     };
+    group.push(node.ref);
+    groups.set(key, group);
   }
-  for (const refsForKey of refsByKey.values()) {
-    if (refsForKey.length > 1) continue;
-    const ref = refsForKey[0];
-    delete refs[ref].nth;
-  }
+  for (const group of groups.values()) if (group.length === 1) delete refs[group[0]].nth;
   return refs;
 }
 
-function axValue(v: { value?: string | number | boolean } | undefined): string {
-  if (!v || typeof v !== 'object') return '';
-  const value = v.value;
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return '';
-}
-
-function formatAriaNodes(nodes: CdpAXNode[], limit: number): AriaNode[] {
-  if (nodes.length === 0) return [];
-
-  const byId = new Map<string, CdpAXNode>();
-  for (const n of nodes) if (n.nodeId) byId.set(n.nodeId, n);
-
-  const referenced = new Set<string>();
-  for (const n of nodes) for (const c of n.childIds ?? []) referenced.add(c);
-
-  const root = nodes.find((n) => n.nodeId !== '' && !referenced.has(n.nodeId)) ?? nodes[0];
-  if (root.nodeId === '') return [];
-
+function formatAriaNodes(nodes: AXNode[], limit: number): AriaNode[] {
+  if (!nodes.length) return [];
+  const byId = new Map(nodes.map((node) => [node.nodeId, node]));
+  const referenced = new Set(nodes.flatMap((node) => node.childIds ?? []));
+  const root = nodes.find((node) => node.nodeId !== '' && !referenced.has(node.nodeId)) ?? nodes[0];
+  const pending = [{ id: root.nodeId, depth: 0 }];
+  const seen = new Set<string>();
   const out: AriaNode[] = [];
-  const stack: { id: string; depth: number }[] = [{ id: root.nodeId, depth: 0 }];
-
-  while (stack.length && out.length < limit) {
-    const popped = stack.pop();
-    if (!popped) break;
-    const { id, depth } = popped;
-    const n = byId.get(id);
-    if (!n) continue;
-
-    const role = axValue(n.role);
-    const name = axValue(n.name);
-    const value = axValue(n.value);
-    const description = axValue(n.description);
-    const ref = `ax${String(out.length + 1)}`;
-
+  while (pending.length && out.length < limit) {
+    const next = pending.pop();
+    if (!next || seen.has(next.id)) continue;
+    const node = byId.get(next.id);
+    if (!node) continue;
+    seen.add(next.id);
+    const value = axValue(node.value);
+    const description = axValue(node.description);
     out.push({
-      ref,
-      role: role || 'unknown',
-      name: name || '',
+      ref: `ax${String(out.length + 1)}`,
+      role: axValue(node.role) || 'unknown',
+      name: axValue(node.name),
+      depth: next.depth,
       ...(value ? { value } : {}),
       ...(description ? { description } : {}),
-      ...(typeof n.backendDOMNodeId === 'number' ? { backendDOMNodeId: n.backendDOMNodeId } : {}),
-      depth,
+      ...(node.backendDOMNodeId !== undefined && node.backendDOMNodeId > 0
+        ? { backendDOMNodeId: node.backendDOMNodeId }
+        : {}),
     });
-
-    const children = (n.childIds ?? []).filter((c: string) => byId.has(c));
-    for (let i = children.length - 1; i >= 0; i--) {
-      if (children[i]) stack.push({ id: children[i], depth: depth + 1 });
-    }
+    for (const id of [...(node.childIds ?? [])].reverse()) pending.push({ id, depth: next.depth + 1 });
   }
-
   return out;
 }

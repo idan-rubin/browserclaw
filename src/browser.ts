@@ -30,8 +30,9 @@ import {
   setInputFilesViaPlaywright,
   armDialogViaPlaywright,
   armFileUploadViaPlaywright,
+  uploadViaPlaywright,
 } from './actions/interaction.js';
-import { pressKeyViaPlaywright } from './actions/keyboard.js';
+import { pressKeyViaPlaywright, insertTextViaPlaywright } from './actions/keyboard.js';
 import {
   navigateViaPlaywright,
   listPagesViaPlaywright,
@@ -42,6 +43,7 @@ import {
   resizeViewportViaPlaywright,
   clearRecordingContext,
 } from './actions/navigation.js';
+import type { UploadOptions } from './actions/upload-files.js';
 import { waitForViaPlaywright } from './actions/wait.js';
 import { detectChallengeViaPlaywright, waitForChallengeViaPlaywright } from './anti-bot.js';
 import {
@@ -52,6 +54,7 @@ import {
 import { pdfViaPlaywright } from './capture/pdf.js';
 import { responseBodyViaPlaywright, waitForRequestViaPlaywright } from './capture/response.js';
 import { takeScreenshotViaPlaywright, screenshotWithLabelsViaPlaywright } from './capture/screenshot.js';
+import { getPageTextViaPlaywright } from './capture/text.js';
 import { traceStartViaPlaywright, traceStopViaPlaywright } from './capture/trace.js';
 import {
   launchChrome,
@@ -78,6 +81,7 @@ import { snapshotRole, snapshotAria } from './snapshot/aria-snapshot.js';
 import {
   cookiesGetViaPlaywright,
   cookiesSetViaPlaywright,
+  cookiesSetManyViaPlaywright,
   cookiesClearViaPlaywright,
   storageGetViaPlaywright,
   storageSetViaPlaywright,
@@ -247,7 +251,7 @@ export class CrawlPage {
    * // Interactive elements only, compact
    * const result = await page.snapshot({ interactive: true, compact: true });
    *
-   * // Role-based mode (uses getByRole resolution)
+   * // Role-based mode (uses native DOM identity resolution)
    * const result = await page.snapshot({ mode: 'role' });
    * ```
    */
@@ -259,7 +263,9 @@ export class CrawlPage {
         selector: opts.selector,
         frameSelector: opts.frameSelector,
         refsMode: opts.refsMode,
+        signal: opts.signal,
         timeoutMs: opts.timeoutMs,
+        maxChars: opts.maxChars,
         options: {
           interactive: opts.interactive,
           compact: opts.compact,
@@ -279,6 +285,7 @@ export class CrawlPage {
     return snapshotAi({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
+      signal: opts?.signal,
       maxChars: opts?.maxChars,
       timeoutMs: opts?.timeoutMs,
       options: {
@@ -301,11 +308,12 @@ export class CrawlPage {
    * @param opts - Options (limit: max nodes to return, default 500)
    * @returns Array of accessibility tree nodes
    */
-  async ariaSnapshot(opts?: { limit?: number; timeoutMs?: number }): Promise<AriaSnapshotResult> {
+  async ariaSnapshot(opts?: { limit?: number; timeoutMs?: number; signal?: AbortSignal }): Promise<AriaSnapshotResult> {
     return snapshotAria({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       limit: opts?.limit,
+      signal: opts?.signal,
       timeoutMs: opts?.timeoutMs,
       ssrfPolicy: this.ssrfPolicy,
     });
@@ -392,7 +400,7 @@ export class CrawlPage {
   async mouseClick(
     x: number,
     y: number,
-    opts?: { button?: 'left' | 'right' | 'middle'; clickCount?: number; delayMs?: number },
+    opts?: { button?: 'left' | 'right' | 'middle'; clickCount?: number; delayMs?: number; signal?: AbortSignal },
   ): Promise<void> {
     return mouseClickViaPlaywright({
       cdpUrl: this.cdpUrl,
@@ -402,6 +410,7 @@ export class CrawlPage {
       button: opts?.button,
       clickCount: opts?.clickCount,
       delayMs: opts?.delayMs,
+      signal: opts?.signal,
       ssrfPolicy: this.ssrfPolicy,
     });
   }
@@ -533,6 +542,7 @@ export class CrawlPage {
       text,
       submit: opts?.submit,
       slowly: opts?.slowly,
+      signal: opts?.signal,
       timeoutMs: opts?.timeoutMs,
       ssrfPolicy: this.ssrfPolicy,
     });
@@ -544,12 +554,14 @@ export class CrawlPage {
    * @param ref - Ref ID from a snapshot
    * @param opts - Timeout options
    */
-  async hover(ref: string, opts?: { timeoutMs?: number }): Promise<void> {
+  async hover(ref: string, opts?: { timeoutMs?: number; signal?: AbortSignal }): Promise<void> {
     return hoverViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       ref,
       timeoutMs: opts?.timeoutMs,
+      signal: opts?.signal,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -582,12 +594,13 @@ export class CrawlPage {
    * @param endRef - Ref ID of the drop target
    * @param opts - Timeout options
    */
-  async drag(startRef: string, endRef: string, opts?: { timeoutMs?: number }): Promise<void> {
+  async drag(startRef: string, endRef: string, opts?: { timeoutMs?: number; signal?: AbortSignal }): Promise<void> {
     return dragViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       startRef,
       endRef,
+      signal: opts?.signal,
       timeoutMs: opts?.timeoutMs,
       ssrfPolicy: this.ssrfPolicy,
     });
@@ -609,11 +622,12 @@ export class CrawlPage {
    * ]);
    * ```
    */
-  async fill(fields: FormField[]): Promise<void> {
+  async fill(fields: FormField[], opts?: { signal?: AbortSignal }): Promise<void> {
     return fillFormViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       fields,
+      signal: opts?.signal,
       ssrfPolicy: this.ssrfPolicy,
     });
   }
@@ -624,12 +638,14 @@ export class CrawlPage {
    * @param ref - Ref ID of the element to scroll to
    * @param opts - Timeout options
    */
-  async scrollIntoView(ref: string, opts?: { timeoutMs?: number }): Promise<void> {
+  async scrollIntoView(ref: string, opts?: { timeoutMs?: number; signal?: AbortSignal }): Promise<void> {
     return scrollIntoViewViaPlaywright({
+      signal: opts?.signal,
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       ref,
       timeoutMs: opts?.timeoutMs,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -652,12 +668,26 @@ export class CrawlPage {
    * @param ref - Ref ID of the file input element
    * @param paths - Array of file paths to upload
    */
-  async uploadFile(ref: string, paths: string[]): Promise<void> {
+  async uploadFile(ref: string, paths: string[], opts?: UploadOptions): Promise<void> {
     return setInputFilesViaPlaywright({
+      ...opts,
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       ref,
       paths,
+      ssrfPolicy: this.ssrfPolicy,
+    });
+  }
+
+  /** Click a ref and complete its file chooser as one operation. */
+  async upload(ref: string, paths: string[], opts?: UploadOptions): Promise<void> {
+    return uploadViaPlaywright({
+      ...opts,
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ref,
+      paths,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -753,12 +783,14 @@ export class CrawlPage {
    * await done;             // wait for files to be set
    * ```
    */
-  async armFileUpload(paths?: string[], opts?: { timeoutMs?: number }): Promise<{ done: Promise<void> }> {
+  async armFileUpload(paths?: string[], opts?: UploadOptions): Promise<{ done: Promise<void> }> {
     return armFileUploadViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       paths,
       timeoutMs: opts?.timeoutMs,
+      signal: opts?.signal,
+      browserFilesystemLocal: opts?.browserFilesystemLocal,
       ssrfPolicy: this.ssrfPolicy,
     });
   }
@@ -772,7 +804,7 @@ export class CrawlPage {
    */
   async batch(
     actions: BatchAction[],
-    opts?: { stopOnError?: boolean; evaluateEnabled?: boolean },
+    opts?: { stopOnError?: boolean; evaluateEnabled?: boolean; signal?: AbortSignal },
   ): Promise<{ results: BatchActionResult[] }> {
     return batchViaPlaywright({
       cdpUrl: this.cdpUrl,
@@ -780,6 +812,7 @@ export class CrawlPage {
       actions,
       stopOnError: opts?.stopOnError,
       evaluateEnabled: opts?.evaluateEnabled,
+      signal: opts?.signal,
       ssrfPolicy: this.ssrfPolicy,
     });
   }
@@ -801,12 +834,38 @@ export class CrawlPage {
    * await page.press('Meta+Shift+p');
    * ```
    */
-  async press(key: string, opts?: { delayMs?: number }): Promise<void> {
+  async press(key: string, opts?: { delayMs?: number; signal?: AbortSignal }): Promise<void> {
     return pressKeyViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       key,
       delayMs: opts?.delayMs,
+      signal: opts?.signal,
+      ssrfPolicy: this.ssrfPolicy,
+    });
+  }
+
+  /** Paste text into the focused editable control without simulating individual keystrokes. */
+  async insertText(text: string, opts?: { signal?: AbortSignal }): Promise<void> {
+    return insertTextViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      text,
+      signal: opts?.signal,
+      ssrfPolicy: this.ssrfPolicy,
+    });
+  }
+
+  /** Read visible article/main/body text, or a chosen selector, capped at 40,000 characters. */
+  async text(opts?: {
+    selector?: string;
+    maxChars?: number;
+    signal?: AbortSignal;
+  }): Promise<{ text: string; truncated: boolean }> {
+    return getPageTextViaPlaywright({
+      ...opts,
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
       ssrfPolicy: this.ssrfPolicy,
     });
   }
@@ -921,6 +980,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       ...opts,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1005,6 +1065,7 @@ export class CrawlPage {
       element: opts?.element,
       type: opts?.type,
       timeoutMs: opts?.timeoutMs,
+      signal: opts?.signal,
       ssrfPolicy: this.ssrfPolicy,
     });
     return result.buffer;
@@ -1106,13 +1167,17 @@ export class CrawlPage {
    * console.log(resp.status, resp.body);
    * ```
    */
-  async responseBody(url: string, opts?: { timeoutMs?: number; maxChars?: number }): Promise<ResponseBodyResult> {
+  async responseBody(
+    url: string,
+    opts?: { timeoutMs?: number; maxChars?: number; signal?: AbortSignal },
+  ): Promise<ResponseBodyResult> {
     return responseBodyViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       url,
       timeoutMs: opts?.timeoutMs,
       maxChars: opts?.maxChars,
+      signal: opts?.signal,
     });
   }
 
@@ -1212,12 +1277,13 @@ export class CrawlPage {
    * @param width - Viewport width in pixels
    * @param height - Viewport height in pixels
    */
-  async resize(width: number, height: number): Promise<void> {
+  async resize(width: number, height: number, opts?: { signal?: AbortSignal }): Promise<void> {
     return resizeViewportViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       width,
       height,
+      signal: opts?.signal,
       ssrfPolicy: this.ssrfPolicy,
     });
   }
@@ -1250,6 +1316,16 @@ export class CrawlPage {
    */
   async setCookie(cookie: CookieData): Promise<void> {
     return cookiesSetViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId, cookie });
+  }
+
+  /** Import cookies in bounded batches and report how many were accepted. */
+  async setCookies(cookies: CookieData[], opts?: { signal?: AbortSignal }): Promise<{ added: number }> {
+    return cookiesSetManyViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      cookies,
+      signal: opts?.signal,
+    });
   }
 
   /** Clear all cookies in the browser context. */
@@ -1323,7 +1399,7 @@ export class CrawlPage {
   async download(
     ref: string,
     path: string,
-    opts?: { timeoutMs?: number; allowedOutputRoots?: string[] },
+    opts?: { timeoutMs?: number; allowedOutputRoots?: string[]; signal?: AbortSignal },
   ): Promise<DownloadResult> {
     return downloadViaPlaywright({
       cdpUrl: this.cdpUrl,
@@ -1332,6 +1408,7 @@ export class CrawlPage {
       path,
       timeoutMs: opts?.timeoutMs,
       allowedOutputRoots: opts?.allowedOutputRoots,
+      signal: opts?.signal,
       ssrfPolicy: this.ssrfPolicy,
     });
   }
@@ -1348,6 +1425,7 @@ export class CrawlPage {
     path?: string;
     timeoutMs?: number;
     allowedOutputRoots?: string[];
+    signal?: AbortSignal;
   }): Promise<DownloadResult> {
     return waitForDownloadViaPlaywright({
       cdpUrl: this.cdpUrl,
@@ -1355,6 +1433,7 @@ export class CrawlPage {
       path: opts?.path,
       timeoutMs: opts?.timeoutMs,
       allowedOutputRoots: opts?.allowedOutputRoots,
+      signal: opts?.signal,
       ssrfPolicy: this.ssrfPolicy,
     });
   }
@@ -1484,11 +1563,12 @@ export class CrawlPage {
    * await page.setDevice('iPhone 13');
    * ```
    */
-  async setDevice(name: string): Promise<void> {
+  async setDevice(name: string, opts?: { signal?: AbortSignal }): Promise<void> {
     return setDeviceViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       name,
+      signal: opts?.signal,
     });
   }
 
@@ -2057,10 +2137,13 @@ export class BrowserClaw {
     if (exitReason !== undefined) this._telemetry.exitReason = exitReason;
     try {
       clearRecordingContext(this.cdpUrl);
-      await closePlaywrightBrowserConnection({ cdpUrl: this.cdpUrl });
-      if (this.chrome) {
-        await stopChrome(this.chrome);
-        this.chrome = null;
+      try {
+        await closePlaywrightBrowserConnection({ cdpUrl: this.cdpUrl });
+      } finally {
+        if (this.chrome) {
+          await stopChrome(this.chrome);
+          this.chrome = null;
+        }
       }
       this._telemetry.cleanupOk = true;
     } catch (err) {

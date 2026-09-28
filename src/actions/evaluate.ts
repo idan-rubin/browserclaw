@@ -4,7 +4,7 @@ import {
   refLocator,
   normalizeTimeoutMs,
   forceDisconnectPlaywrightConnection,
-  tryTerminateExecutionViaCdp,
+  tryTerminateExecutionForPage,
 } from '../connection.js';
 import { assertBrowserNavigationResultAllowed } from '../security.js';
 import type { SsrfPolicy } from '../types.js';
@@ -79,22 +79,6 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
   }
 
   return results;
-}
-
-/**
- * Race an eval promise against an abort promise.
- */
-async function awaitEvalWithAbort(evalPromise: Promise<unknown>, abortPromise?: Promise<never>): Promise<unknown> {
-  if (!abortPromise) return await evalPromise;
-  try {
-    return await Promise.race([evalPromise, abortPromise]);
-  } catch (err) {
-    // Suppress unhandled rejection from the eval promise if abort won the race
-    evalPromise.catch(() => {
-      /* suppress unhandled rejection */
-    });
-    throw err;
-  }
 }
 
 // Browser-side evaluators: intentionally use eval() to execute user-provided
@@ -193,9 +177,8 @@ export async function evaluateViaPlaywright(opts: {
   }
 
   const outerTimeout = normalizeTimeoutMs(opts.timeoutMs, 20000);
-  // Browser-side timeout must be strictly less than outer timeout so Playwright
-  // can surface its own timeout error instead of hanging indefinitely
-  const evaluateTimeout = Math.max(1000, Math.min(120000, outerTimeout - 1000));
+  // Reserve time for Playwright to surface the error without exceeding a small caller budget.
+  const evaluateTimeout = Math.min(outerTimeout, Math.max(1000, Math.min(120000, outerTimeout - 1000)));
 
   const signal = opts.signal;
   let abortListener: (() => void) | undefined;
@@ -216,7 +199,12 @@ export async function evaluateViaPlaywright(opts: {
       const targetId = opts.targetId?.trim() ?? '';
       if (targetId !== '') {
         // Targeted: only terminate execution on this target, preserving the shared connection
-        tryTerminateExecutionViaCdp(opts.cdpUrl, targetId, opts.ssrfPolicy).catch(() => {
+        tryTerminateExecutionForPage({
+          cdpUrl: opts.cdpUrl,
+          targetId,
+          page,
+          ssrfPolicy: opts.ssrfPolicy,
+        }).catch(() => {
           /* intentional no-op */
         });
       } else {
@@ -224,6 +212,7 @@ export async function evaluateViaPlaywright(opts: {
         console.warn('[browserclaw] evaluate abort: no targetId, forcing full disconnect');
         forceDisconnectPlaywrightConnection({
           cdpUrl: opts.cdpUrl,
+          page,
           reason: 'evaluate aborted (no targetId)',
           ssrfPolicy: opts.ssrfPolicy,
         }).catch(() => {
@@ -253,14 +242,14 @@ export async function evaluateViaPlaywright(opts: {
     if (opts.ref !== undefined && opts.ref !== '') {
       const locator = refLocator(page, opts.ref);
       return await assertInteractionNavigationCompletedSafely({
-        action: () =>
-          awaitEvalWithAbort(
-            locator.evaluate(ELEMENT_EVALUATOR as (...args: unknown[]) => unknown, {
-              fnBody: fnText,
-              timeoutMs: evaluateTimeout,
-            }),
-            abortPromise,
-          ),
+        action: () => {
+          signal?.throwIfAborted();
+          return locator.evaluate(ELEMENT_EVALUATOR as (...args: unknown[]) => unknown, {
+            fnBody: fnText,
+            timeoutMs: evaluateTimeout,
+          });
+        },
+        abortPromise,
         cdpUrl: opts.cdpUrl,
         page,
         previousUrl,
@@ -270,14 +259,14 @@ export async function evaluateViaPlaywright(opts: {
     }
 
     return await assertInteractionNavigationCompletedSafely({
-      action: () =>
-        awaitEvalWithAbort(
-          page.evaluate(BROWSER_EVALUATOR as (...args: unknown[]) => unknown, {
-            fnBody: fnText,
-            timeoutMs: evaluateTimeout,
-          }),
-          abortPromise,
-        ),
+      action: () => {
+        signal?.throwIfAborted();
+        return page.evaluate(BROWSER_EVALUATOR as (...args: unknown[]) => unknown, {
+          fnBody: fnText,
+          timeoutMs: evaluateTimeout,
+        });
+      },
+      abortPromise,
       cdpUrl: opts.cdpUrl,
       page,
       previousUrl,

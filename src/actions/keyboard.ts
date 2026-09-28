@@ -1,15 +1,34 @@
 import { getPageForTargetId, ensurePageState } from '../connection.js';
 import type { SsrfPolicy } from '../types.js';
 
-import { assertInteractionNavigationCompletedSafely } from './navigation.js';
+import { runGuardedInput } from './guarded-input.js';
 
-export async function pressKeyViaPlaywright(opts: {
+interface KeyboardOptions {
   cdpUrl: string;
   targetId?: string;
-  key: string;
-  delayMs?: number;
   ssrfPolicy?: SsrfPolicy;
-}): Promise<void> {
+  signal?: AbortSignal;
+}
+
+/** Paste text into the currently focused editable control. */
+export async function insertTextViaPlaywright(
+  opts: KeyboardOptions & {
+    text: string;
+  },
+): Promise<void> {
+  opts.signal?.throwIfAborted();
+  const page = await getPageForTargetId(opts);
+  ensurePageState(page);
+  await runGuardedInput(page, opts, () => page.keyboard.insertText(opts.text));
+}
+
+export async function pressKeyViaPlaywright(
+  opts: KeyboardOptions & {
+    key: string;
+    delayMs?: number;
+  },
+): Promise<void> {
+  opts.signal?.throwIfAborted();
   const key = opts.key.trim();
   if (!key) throw new Error('key is required');
   const page = await getPageForTargetId({
@@ -18,15 +37,7 @@ export async function pressKeyViaPlaywright(opts: {
     ssrfPolicy: opts.ssrfPolicy,
   });
   ensurePageState(page);
-  const previousUrl = page.url();
-  await assertInteractionNavigationCompletedSafely({
-    action: async () => {
-      await page.keyboard.press(key, { delay: Math.max(0, Math.floor(opts.delayMs ?? 0)) });
-    },
-    cdpUrl: opts.cdpUrl,
-    page,
-    previousUrl,
-    ssrfPolicy: opts.ssrfPolicy,
-    targetId: opts.targetId,
+  await runGuardedInput(page, opts, async () => {
+    await page.keyboard.press(key, { delay: Math.max(0, Math.floor(opts.delayMs ?? 0)) });
   });
 }

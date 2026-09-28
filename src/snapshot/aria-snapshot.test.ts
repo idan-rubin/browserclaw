@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events';
+
 import type { CDPSession, Page } from 'playwright-core';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -54,13 +56,15 @@ vi.mock('../connection.js', () => ({
   takeAiSnapshotText: () => Promise.resolve(''),
 }));
 
-const { snapshotAria } = await import('./aria-snapshot.js');
+const { snapshotAria, snapshotRole } = await import('./aria-snapshot.js');
 
 function makeMockPage(): Page {
-  return {
+  const frame = { isDetached: () => false };
+  return Object.assign(new EventEmitter(), {
     url: () => 'https://example.test/',
+    mainFrame: () => frame,
     locator: () => ({ evaluateAll: () => Promise.resolve() }),
-  } as unknown as Page;
+  }) as unknown as Page;
 }
 
 function makeSession(opts: { hang?: boolean }): { session: CDPSession; detach: ReturnType<typeof vi.fn> } {
@@ -70,7 +74,11 @@ function makeSession(opts: { hang?: boolean }): { session: CDPSession; detach: R
       ? opts.hang === true
         ? new Promise(() => undefined)
         : Promise.resolve({ nodes: [] })
-      : Promise.resolve({}),
+      : method === 'DOM.getDocument'
+        ? Promise.resolve({ root: { backendNodeId: 1 } })
+        : method === 'DOM.resolveNode'
+          ? Promise.resolve({ object: { objectId: 'document' } })
+          : Promise.resolve({}),
   );
   return { session: { send, detach } as unknown as CDPSession, detach };
 }
@@ -83,17 +91,74 @@ describe('snapshotAria timeout', () => {
     mockGetPageForTargetId.mockResolvedValue(makeMockPage());
   });
 
-  it('rejects (clamping below the 500ms floor) and detaches the session when the AX-tree fetch hangs', async () => {
-    const { session, detach } = makeSession({ hang: true });
+  it('rejects an aborted raw capture before marking or publishing refs', async () => {
+    const controller = new AbortController();
+    const reason = new Error('cancel raw snapshot');
+    const { session } = makeSession({ hang: false });
+    const send = vi.spyOn(session, 'send');
+    mockWithCdpSession.mockImplementation((_page: Page, fn: (s: CDPSession) => Promise<unknown>) => {
+      controller.abort(reason);
+      return fn(session);
+    });
+    await expect(snapshotAria({ cdpUrl: 'test', signal: controller.signal })).rejects.toBe(reason);
+    expect(mockStoreRoleRefsForTarget).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalledWith('DOM.getDocument', expect.anything());
+    mockWithCdpSession.mockClear();
+    await expect(snapshotAria({ cdpUrl: 'test', signal: controller.signal })).rejects.toBe(reason);
+    await expect(snapshotRole({ cdpUrl: 'test', signal: controller.signal })).rejects.toBe(reason);
+    expect(mockWithCdpSession).not.toHaveBeenCalled();
+  });
+
+  it('cancels a pending iframe lookup and disposes a handle that arrives afterward', async () => {
+    const page = makeMockPage();
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const contentFrame = vi.fn().mockResolvedValue({});
+    let release!: (handle: unknown) => void;
+    const elementHandle = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    vi.spyOn(page, 'locator').mockReturnValue({ elementHandle } as unknown as ReturnType<Page['locator']>);
+    mockGetPageForTargetId.mockResolvedValue(page);
+    const controller = new AbortController();
+    const reason = new Error('cancel iframe lookup');
+    const settled = vi.fn();
+    const operation = snapshotRole({ cdpUrl: 'test', frameSelector: '#late', signal: controller.signal });
+    void operation.then(settled, settled);
+    try {
+      await vi.waitFor(() => {
+        expect(elementHandle).toHaveBeenCalledOnce();
+      });
+      controller.abort(reason);
+      await vi.waitFor(
+        () => {
+          expect(settled).toHaveBeenCalledWith(reason);
+        },
+        { timeout: 100 },
+      );
+      expect(mockStoreRoleRefsForTarget).not.toHaveBeenCalled();
+    } finally {
+      release({ contentFrame, dispose });
+      await operation.catch(() => undefined);
+    }
+    await vi.waitFor(() => {
+      expect(dispose).toHaveBeenCalledOnce();
+    });
+    expect(contentFrame).not.toHaveBeenCalled();
+  });
+
+  it('clamps below the 500ms floor and passes the deadline to the bounded session owner', async () => {
+    const { session } = makeSession({ hang: true });
     mockWithCdpSession.mockImplementation((_page: Page, fn: (s: CDPSession) => Promise<unknown>) => fn(session));
 
     await expect(snapshotAria({ cdpUrl: 'http://localhost:9222', targetId: 't1', timeoutMs: 50 })).rejects.toThrow(
-      'Aria snapshot via Playwright timed out after 500ms.',
+      'Browser snapshot capture timed out.',
     );
 
-    // The leak fix: the live session must be detached so the in-flight
-    // getFullAXTree unwinds instead of holding the CDP session open.
-    expect(detach).toHaveBeenCalledTimes(1);
+    // The shared bounded helper owns detach, including late session attachment.
+    expect(mockWithCdpSession).toHaveBeenCalledWith(expect.anything(), expect.any(Function), 500);
     expect(mockStoreRoleRefsForTarget).not.toHaveBeenCalled();
   });
 
@@ -108,7 +173,7 @@ describe('snapshotAria timeout', () => {
     expect(mockStoreRoleRefsForTarget).toHaveBeenCalledTimes(1);
   });
 
-  it('does not arm a timeout when timeoutMs is omitted (additive default)', async () => {
+  it('uses a bounded 5000ms default when timeoutMs is omitted', async () => {
     const { session, detach } = makeSession({ hang: false });
     mockWithCdpSession.mockImplementation((_page: Page, fn: (s: CDPSession) => Promise<unknown>) => fn(session));
 
@@ -116,5 +181,6 @@ describe('snapshotAria timeout', () => {
 
     expect(result.nodes).toEqual([]);
     expect(detach).not.toHaveBeenCalled();
+    expect(mockWithCdpSession).toHaveBeenCalledWith(expect.anything(), expect.any(Function), 5000);
   });
 });

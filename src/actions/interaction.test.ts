@@ -116,6 +116,11 @@ interface FakeKeyboard {
 }
 
 interface FakePage {
+  url: () => string;
+  route: ReturnType<typeof vi.fn>;
+  unroute: ReturnType<typeof vi.fn>;
+  on: ReturnType<typeof vi.fn>;
+  mainFrame: () => object;
   waitForEvent: ReturnType<typeof vi.fn>;
   once: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
@@ -136,6 +141,11 @@ function buildFakePage(): {
   });
 
   const page: FakePage = {
+    url: () => 'about:blank',
+    route: vi.fn().mockResolvedValue(undefined),
+    unroute: vi.fn().mockResolvedValue(undefined),
+    on: vi.fn(),
+    mainFrame: () => ({}),
     waitForEvent: vi.fn((eventName: string) => {
       // Mark the listener as armed at the moment waitForEvent is called.
       if (eventName === 'filechooser') signalRegistered();

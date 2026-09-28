@@ -9,6 +9,7 @@ export interface FakeCdpOptions {
   versionWsUrl?: (port: number) => string;
   listTargets?: (port: number) => unknown[];
   stallOnBrowserClose?: boolean;
+  browserProcessId?: number;
 }
 
 export interface FakeCdpServer {
@@ -103,6 +104,12 @@ export async function startFakeCdpServer(opts: FakeCdpOptions = {}): Promise<Fak
       try {
         const frame = JSON.parse(text) as Record<string, unknown>;
         frames.push(frame);
+        if (frame.method === 'SystemInfo.getProcessInfo' && opts.browserProcessId !== undefined) {
+          const payload = Buffer.from(
+            JSON.stringify({ id: frame.id, result: { processInfo: [{ type: 'browser', id: opts.browserProcessId }] } }),
+          );
+          socket.write(Buffer.concat([Buffer.from([0x81, payload.length]), payload]));
+        }
         if (opts.stallOnBrowserClose === true && frame.method === 'Browser.close') stalled = true;
       } catch (err) {
         console.warn(`[fake-cdp] non-JSON text frame: ${err instanceof Error ? err.message : String(err)}`);

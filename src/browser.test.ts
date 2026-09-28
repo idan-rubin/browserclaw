@@ -3,16 +3,23 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import type * as InteractionModule from './actions/interaction.js';
 import type * as ScreenshotModule from './capture/screenshot.js';
+import type * as ChromeModule from './chrome-launcher.js';
 import type * as ConnectionModule from './connection.js';
 import { BrowserTabNotFoundError } from './errors.js';
 
 const {
+  mockCloseAdapter,
+  mockLaunchChrome,
+  mockStopChrome,
   mockGetPageForTargetId,
   mockResolveActiveTargetId,
   mockPageTargetId,
   mockClickViaPlaywright,
   mockTakeScreenshotViaPlaywright,
 } = vi.hoisted(() => ({
+  mockCloseAdapter: vi.fn(),
+  mockLaunchChrome: vi.fn(),
+  mockStopChrome: vi.fn(),
   mockGetPageForTargetId: vi.fn<(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: unknown }) => Promise<Page>>(),
   mockResolveActiveTargetId:
     vi.fn<
@@ -30,6 +37,7 @@ vi.mock('./connection.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ConnectionModule>();
   return {
     ...actual,
+    closePlaywrightBrowserConnection: mockCloseAdapter,
     getPageForTargetId: mockGetPageForTargetId,
     resolveActiveTargetId: mockResolveActiveTargetId,
     pageTargetId: mockPageTargetId,
@@ -53,7 +61,25 @@ vi.mock('./capture/screenshot.js', async (importOriginal) => {
   };
 });
 
-const { CrawlPage } = await import('./browser.js');
+vi.mock('./chrome-launcher.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof ChromeModule>()),
+  launchChrome: mockLaunchChrome,
+  stopChrome: mockStopChrome,
+}));
+
+const { CrawlPage, BrowserClaw } = await import('./browser.js');
+
+it('stops owned Chrome even when closing its adapter fails', async () => {
+  const chrome = { cdpPort: 9222, launchMs: 1 };
+  const failure = new Error('adapter disconnect timed out');
+  mockLaunchChrome.mockResolvedValue(chrome);
+  mockStopChrome.mockResolvedValue(undefined);
+  mockCloseAdapter.mockRejectedValueOnce(failure);
+  const browser = await BrowserClaw.launch();
+  await expect(browser.stop()).rejects.toBe(failure);
+  expect(mockStopChrome).toHaveBeenCalledWith(chrome);
+  expect(browser.telemetry().cleanupOk).toBe(false);
+});
 
 describe('CrawlPage.reacquire', () => {
   beforeEach(() => {

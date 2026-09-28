@@ -1,4 +1,4 @@
-import type { Page } from 'playwright-core';
+import type { Frame, Page } from 'playwright-core';
 import { describe, it, expect, beforeEach } from 'vitest';
 
 import { ensurePageState } from './page-utils.js';
@@ -47,6 +47,10 @@ function mockPage(overrides: Record<string, unknown> = {}): Page {
     evaluate: () => Promise.resolve(undefined),
     ...overrides,
   } as unknown as Page;
+}
+
+function mockFrame(selector: string): Frame {
+  return mockPage().frameLocator(selector) as unknown as Frame;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -308,6 +312,7 @@ describe('role refs storage', () => {
         targetId: 'tgt1',
         refs: { e1: { role: 'button' } },
         frameSelector: 'iframe#main',
+        frame: mockFrame('iframe#main'),
         mode: 'role',
       });
       const state = ensurePageState(page);
@@ -526,24 +531,26 @@ describe('refLocator', () => {
     expect(loc._selector).toBe('aria-ref=customRef');
   });
 
-  it('uses frameLocator when roleRefsFrameSelector set in aria mode', () => {
+  it('uses the resolved frame in aria mode', () => {
     const page = mockPage();
     const state = ensurePageState(page);
     state.roleRefsMode = 'aria';
     state.roleRefs = { e1: { role: 'button' } };
     state.roleRefsFrameSelector = 'iframe#content';
+    state.roleRefsFrame = mockFrame('iframe#content');
     const loc = refLocator(page, 'e1') as unknown as { _frameSel: string; _selector: string };
     expect(loc._frameSel).toBe('iframe#content');
     expect(loc._selector).toBe('aria-ref=e1');
   });
 
-  it('uses frameLocator when roleRefsFrameSelector set in role mode', () => {
+  it('uses the resolved frame in role mode', () => {
     const page = mockPage();
     storeRoleRefsForTarget({
       page,
       cdpUrl: 'ws://localhost:9222',
       refs: { e1: { role: 'link', name: 'Home' } },
       frameSelector: 'iframe#nav',
+      frame: mockFrame('iframe#nav'),
       mode: 'role',
     });
     const loc = refLocator(page, 'e1') as unknown as { _frameSel: string; _role: string };
@@ -561,12 +568,13 @@ describe('refLocator', () => {
     expect(loc._frameSel).toBeUndefined();
   });
 
-  it('routes DOM-enriched selector refs through frameLocator when a frame is set', () => {
+  it('routes DOM-enriched selector refs through the resolved frame', () => {
     const page = mockPage();
     const state = ensurePageState(page);
     state.roleRefsMode = 'aria';
     state.roleRefs = { e5: { role: 'button', selector: '[data-bc-ref="e5"]' } };
     state.roleRefsFrameSelector = 'iframe#content';
+    state.roleRefsFrame = mockFrame('iframe#content');
     const loc = refLocator(page, 'e5') as unknown as { _frameSel: string; _selector: string };
     expect(loc._frameSel).toBe('iframe#content');
     expect(loc._selector).toBe('[data-bc-ref="e5"]');

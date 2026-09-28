@@ -3,7 +3,7 @@ import { mkdir, writeFile, symlink, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, resolve, join } from 'node:path';
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import {
   isInternalUrl,
@@ -720,6 +720,30 @@ describe('security.ts', () => {
         });
       });
 
+      it('does not grant private-address access to a gate-admitted hostnameAllowlist entry', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://private-answer.gate.example',
+              lookupFn: mockPrivateLookup(),
+              ssrfPolicy: { ...GATED_POLICY, hostnameAllowlist: ['*.gate.example'] },
+            }),
+          ).rejects.toThrow('resolves to');
+        });
+      });
+
+      it('rejects an unlisted hostname even when the gate has a hostnameAllowlist pattern', async () => {
+        await withoutProxyEnv(async () => {
+          await expect(
+            assertBrowserNavigationAllowed({
+              url: 'https://outside-gate.example',
+              lookupFn: mockPublicLookup(),
+              ssrfPolicy: { ...GATED_POLICY, hostnameAllowlist: ['*.gate.example'] },
+            }),
+          ).rejects.toThrow('requires an IP-literal URL or an allow-listed hostname');
+        });
+      });
+
       it('is inert when private network access is allowed', async () => {
         await withoutProxyEnv(async () => {
           await expect(
@@ -1091,6 +1115,32 @@ describe('security.ts', () => {
       expect(result.hostname).toBe('playwright.dev');
     });
 
+    it('keeps delimiter-containing policies isolated while reusing equivalent policy entries', async () => {
+      const hostname = `policy-delimiter-${randomUUID()}.example`;
+      const lookup = vi.fn(() => Promise.resolve([{ address: '10.1.2.3', family: 4 }]));
+      const lookupFn = lookup as unknown as LookupFn;
+      const allowedHostnames = ['a.example', hostname];
+      const permitted = await resolvePinnedHostnameWithPolicy(hostname, {
+        lookupFn,
+        policy: { allowedHostnames },
+      });
+      expect(permitted.addresses).toEqual(['10.1.2.3']);
+      await expect(
+        resolvePinnedHostnameWithPolicy(hostname, {
+          lookupFn,
+          policy: { allowedHostnames: [...allowedHostnames].reverse() },
+        }),
+      ).resolves.toBe(permitted);
+      expect(lookup).toHaveBeenCalledOnce();
+      await expect(
+        resolvePinnedHostnameWithPolicy(hostname, {
+          lookupFn,
+          policy: { allowedHostnames: [allowedHostnames.join(',')] },
+        }),
+      ).rejects.toThrow(InvalidBrowserNavigationUrlError);
+      expect(lookup).toHaveBeenCalledTimes(2);
+    });
+
     it('does not reuse a permissive-policy cache entry for a stricter-policy caller', async () => {
       // Regression for DNS-cache-not-keyed-by-policy bypass: a prior call with
       // `dangerouslyAllowPrivateNetwork: true` must not let a later strict call
@@ -1192,7 +1242,7 @@ describe('security.ts', () => {
       expect(results[0].address).toBe('1.2.3.4');
     });
 
-    it('should round-robin through addresses', () => {
+    it('should round-robin through addresses', async () => {
       const lookup = createPinnedLookup({
         hostname: 'test.com',
         addresses: ['1.1.1.1', '2.2.2.2'],
@@ -1203,6 +1253,9 @@ describe('security.ts', () => {
           addresses.push(addr);
         });
       }
+      await new Promise<void>((resolve) => {
+        process.nextTick(resolve);
+      });
       expect(addresses[0]).toBe('1.1.1.1');
       expect(addresses[1]).toBe('2.2.2.2');
       expect(addresses[2]).toBe('1.1.1.1');
@@ -2192,6 +2245,52 @@ describe('security.ts', () => {
       ).resolves.toBeUndefined();
     });
 
+    it.each(['ws://127.0.0.1:6379/devtools/browser/abc', 'wss://127.0.0.1:9222/devtools/browser/abc'])(
+      'retains explicit-host authority restrictions for %s through nested policy scoping',
+      async (discoveredUrl) => {
+        const configuredUrl = 'http://127.0.0.1:9222';
+        const policy = { dangerouslyAllowPrivateNetwork: true, allowedHostnames: [' ', '127.0.0.1'] };
+        const scoped = scopeCdpPolicyToConfiguredEndpoint(configuredUrl, policy);
+        const nested = scopeCdpPolicyToConfiguredEndpoint(configuredUrl, scoped);
+        for (const candidate of [policy, scoped, nested]) {
+          await expect(
+            assertCdpEndpointAllowed(discoveredUrl, candidate, { source: 'discovered', configuredUrl }),
+          ).rejects.toThrow('discovered CDP endpoint changed configured authority');
+        }
+        await expect(
+          assertCdpEndpointAllowed('ws://127.0.0.1:9222/devtools/browser/abc', nested, {
+            source: 'discovered',
+            configuredUrl,
+          }),
+        ).resolves.toBeUndefined();
+      },
+    );
+
+    it.each([undefined, [], [' ', '\t']])(
+      'keeps broad private authority when original allowedHostnames is %j, even after nested scoping',
+      async (allowedHostnames) => {
+        const configuredUrl = 'http://127.0.0.1:9222';
+        const scoped = scopeCdpPolicyToConfiguredEndpoint(configuredUrl, {
+          dangerouslyAllowPrivateNetwork: true,
+          allowedHostnames,
+          hostnameAllowlist: ['127.0.0.1'],
+        });
+        const nested = scopeCdpPolicyToConfiguredEndpoint(configuredUrl, scoped);
+        await expect(
+          assertCdpEndpointAllowed('ws://127.0.0.1:6379/devtools/browser/abc', nested, {
+            source: 'discovered',
+            configuredUrl,
+          }),
+        ).resolves.toBeUndefined();
+        await expect(
+          assertCdpEndpointAllowed('ws://192.168.1.100:6379/devtools/browser/abc', nested, {
+            source: 'discovered',
+            configuredUrl,
+          }),
+        ).rejects.toThrow('not in the allowlist');
+      },
+    );
+
     it('is a no-op when policy is undefined explicitly', async () => {
       await expect(assertCdpEndpointAllowed('http://localhost:9222', undefined)).resolves.toBeUndefined();
     });
@@ -2310,5 +2409,138 @@ describe('security.ts', () => {
         }),
       ).resolves.toBeUndefined();
     });
+  });
+});
+
+describe('OpenClaw 2026.9.6 SSRF hardening', () => {
+  it.each(['64:ff9b:1::808:808', '64:ff9b:1:abcd:ef01:2345:6789:abcd'])(
+    'blocks the entire local-use NAT64 prefix: %s',
+    async (address) => {
+      const hostname = `nat64-${randomUUID()}.example`;
+      expect(isInternalUrl(`https://[${address}]/`)).toBe(true);
+      await expect(
+        resolvePinnedHostnameWithPolicy(hostname, {
+          lookupFn: mockLookupOf(address, 6),
+          policy: { allowedHostnames: [hostname] },
+        }),
+      ).rejects.toThrow('special-use IPv6');
+      // The same DNS record is admitted by the explicit private-network opt-in.
+      await expect(
+        resolvePinnedHostnameWithPolicy(hostname, {
+          lookupFn: mockLookupOf(address, 6),
+          policy: PERMISSIVE_POLICY,
+        }),
+      ).resolves.toMatchObject({ addresses: [address] });
+    },
+  );
+
+  it('retains public NAT64 and ordinary private ULA controls', async () => {
+    expect(isInternalUrl('https://[64:ff9b::808:808]/')).toBe(false);
+    const hostname = `ula-control-${randomUUID()}.example`;
+    await expect(
+      resolvePinnedHostnameWithPolicy(hostname, {
+        lookupFn: mockLookupOf('fd00:1234::1', 6),
+        policy: { allowIpv6UniqueLocalRange: true },
+      }),
+    ).resolves.toMatchObject({ addresses: ['fd00:1234::1'] });
+  });
+
+  it('blocks cloud metadata even when private ULA addresses are enabled', async () => {
+    expect(isInternalUrl('https://[fd00:ec2::254]/', { allowIpv6UniqueLocalRange: true })).toBe(true);
+    await expect(
+      resolvePinnedHostnameWithPolicy(`metadata-${randomUUID()}.example`, {
+        lookupFn: mockLookupOf('fd00:ec2::254', 6),
+        policy: { allowIpv6UniqueLocalRange: true },
+      }),
+    ).rejects.toThrow(InvalidBrowserNavigationUrlError);
+  });
+
+  it('blocks trusted hostnames resolving to deprecated site-local IPv6', async () => {
+    const hostname = `site-local-${randomUUID()}.example`;
+    await expect(
+      resolvePinnedHostnameWithPolicy(hostname, {
+        lookupFn: mockLookupOf('fec0::1', 6),
+        policy: { allowedHostnames: [hostname] },
+      }),
+    ).rejects.toThrow('special-use IPv6');
+  });
+
+  it('makes the blocklist override exemptions and previously cached DNS results', async () => {
+    const hostname = `blocked-${randomUUID()}.example`;
+    await expect(
+      resolvePinnedHostnameWithPolicy(hostname, {
+        lookupFn: mockPrivateLookup(),
+        policy: { allowedHostnames: [hostname] },
+      }),
+    ).resolves.toMatchObject({ addresses: ['10.0.0.5'] });
+    for (const policy of [
+      { allowedHostnames: [hostname], blockedHostnames: [hostname.toUpperCase() + '.'] },
+      { ...PERMISSIVE_POLICY, blockedHostnames: ['*.example'] },
+    ]) {
+      await expect(
+        resolvePinnedHostnameWithPolicy(hostname, {
+          lookupFn: mockPrivateLookup(),
+          policy,
+        }),
+      ).rejects.toThrow('configured blocklist');
+    }
+    await expect(
+      resolvePinnedHostnameWithPolicy('example', {
+        lookupFn: mockPublicLookup(),
+        policy: { blockedHostnames: ['*.example'] },
+      }),
+    ).resolves.toMatchObject({ hostname: 'example' });
+  });
+
+  it('runs pinned callbacks asynchronously for single and all-record lookups', async () => {
+    const lookup = createPinnedLookup({ hostname: 'callback.example', addresses: ['8.8.8.8'] });
+    let synchronous = true;
+    const single = new Promise<void>((resolve) => {
+      (lookup as unknown as SingleCb)('callback.example', () => {
+        expect(synchronous).toBe(false);
+        resolve();
+      });
+    });
+    const all = new Promise<void>((resolve) => {
+      (lookup as unknown as AllCb)('callback.example', { all: true }, () => {
+        expect(synchronous).toBe(false);
+        resolve();
+      });
+    });
+    synchronous = false;
+    await Promise.all([single, all]);
+  });
+
+  it('aborts stalled DNS without converting the cancellation into a policy error', async () => {
+    const controller = new AbortController();
+    const reason = new Error('cancel DNS preflight');
+    let finishLookup!: (value: { address: string; family: number }[]) => void;
+    const hostname = `abort-${randomUUID()}.example`;
+    const lookupFn = (() =>
+      new Promise<{ address: string; family: number }[]>((resolve) => {
+        finishLookup = resolve;
+      })) as unknown as LookupFn;
+    const pending = resolvePinnedHostnameWithPolicy(hostname, { lookupFn, signal: controller.signal });
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+    finishLookup([{ address: '8.8.8.8', family: 4 }]);
+    // Late DNS success must not populate the cache for the cancelled request.
+    await expect(resolvePinnedHostnameWithPolicy(hostname, { lookupFn: mockLoopbackLookup() })).rejects.toThrow(
+      InvalidBrowserNavigationUrlError,
+    );
+  });
+
+  it('checks cancellation even before non-network navigation and cached DNS returns', async () => {
+    const controller = new AbortController();
+    const reason = new Error('already cancelled');
+    const hostname = `abort-cache-${randomUUID()}.example`;
+    await resolvePinnedHostnameWithPolicy(hostname, { lookupFn: mockPublicLookup() });
+    controller.abort(reason);
+    await expect(resolvePinnedHostnameWithPolicy(hostname, { signal: controller.signal })).rejects.toBe(reason);
+    await expect(assertBrowserNavigationAllowed({ url: 'about:blank', signal: controller.signal })).rejects.toBe(
+      reason,
+    );
+    await expect(assertBrowserNavigationResultAllowed({ url: '', signal: controller.signal })).rejects.toBe(reason);
+    await expect(assertBrowserNavigationRedirectChainAllowed({ signal: controller.signal })).rejects.toBe(reason);
   });
 });
