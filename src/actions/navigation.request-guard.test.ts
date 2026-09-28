@@ -122,7 +122,7 @@ describe('interaction request policy enforcement', () => {
     expect(route?.fulfill).toHaveBeenCalledOnce();
   });
 
-  it('retains a pending document denial over caller abort until native work and the guard settle', async () => {
+  it('preserves an already detected policy denial over caller abort', async () => {
     const { page, dispatch } = fixture();
     let rejectPolicy!: (error: Error) => void;
     const check = new Promise<void>((_resolve, reject) => {
@@ -157,10 +157,9 @@ describe('interaction request policy enforcement', () => {
     void operation.then(settled, settled);
     const assertion = expect(operation).rejects.toThrow('pending document denied');
     await actionStarted;
-    abort(new Error('caller cancelled'));
-    await Promise.resolve();
     rejectPolicy(new InvalidBrowserNavigationUrlError('pending document denied'));
     const route = await dispatched;
+    abort(new Error('caller cancelled'));
     expect(route?.fallback).not.toHaveBeenCalled();
     expect(route?.fulfill).toHaveBeenCalledOnce();
     expect(settled).not.toHaveBeenCalled();
@@ -170,61 +169,69 @@ describe('interaction request policy enforcement', () => {
     expect(page.unroute).toHaveBeenCalledOnce();
   });
 
-  it('control: an allowed in-flight check lets caller abort return before native work settles', async () => {
-    const { page, dispatch } = fixture();
-    let allowPolicy!: () => void;
-    const check = new Promise<void>((resolve) => {
-      allowPolicy = resolve;
-    });
-    vi.spyOn(Security, 'assertBrowserNavigationAllowed').mockReturnValueOnce(check);
-    let abort!: (error: Error) => void;
-    const abortPromise = new Promise<never>((_resolve, reject) => {
-      abort = reject;
-    });
-    let releaseNative!: () => void;
-    const native = new Promise<void>((resolve) => {
-      releaseNative = resolve;
-    });
-    let dispatched: ReturnType<typeof dispatch> | undefined;
-    let started!: () => void;
-    const actionStarted = new Promise<void>((resolve) => {
-      started = resolve;
-    });
-    const cancelled = new Error('caller cancelled');
-    const operation = assertInteractionNavigationCompletedSafely({
-      cdpUrl: 'http://localhost:39999',
-      page,
-      previousUrl: page.url(),
-      abortPromise,
-      action: async () => {
-        // A subframe keeps the about:blank baseline independent of the policy mock.
-        dispatched = dispatch('https://allowed.invalid/frame', { subframe: true });
-        started();
-        await native;
-      },
-    });
-    const settled = vi.fn();
-    void operation.then(settled, settled);
-    await actionStarted;
-    abort(cancelled);
-    allowPolicy();
-    try {
-      await vi.waitFor(
-        () => {
-          expect(settled).toHaveBeenCalledWith(cancelled);
-        },
-        { timeout: 100 },
-      );
-      expect(page.unroute).not.toHaveBeenCalled();
-      const route = await dispatched;
-      expect(route?.fallback).toHaveBeenCalledOnce();
-    } finally {
-      releaseNative();
-      await vi.waitFor(() => {
-        expect(page.unroute).toHaveBeenCalledOnce();
+  it.each([false, true])(
+    'returns caller abort while policy is stalled, retaining the guard (deny=%s)',
+    async (deny) => {
+      const { page, dispatch } = fixture();
+      let allowPolicy!: () => void;
+      let denyPolicy!: (error: Error) => void;
+      const check = new Promise<void>((resolve, reject) => {
+        allowPolicy = resolve;
+        denyPolicy = reject;
       });
-    }
-  });
+      vi.spyOn(Security, 'assertBrowserNavigationAllowed').mockReturnValueOnce(check);
+      let abort!: (error: Error) => void;
+      const abortPromise = new Promise<never>((_resolve, reject) => {
+        abort = reject;
+      });
+      let releaseNative!: () => void;
+      const native = new Promise<void>((resolve) => {
+        releaseNative = resolve;
+      });
+      let dispatched: ReturnType<typeof dispatch> | undefined;
+      let started!: () => void;
+      const actionStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const cancelled = new Error('caller cancelled');
+      const operation = assertInteractionNavigationCompletedSafely({
+        cdpUrl: 'http://localhost:39999',
+        page,
+        previousUrl: page.url(),
+        abortPromise,
+        action: async () => {
+          // A subframe keeps the about:blank baseline independent of the policy mock.
+          dispatched = dispatch('https://allowed.invalid/frame', { subframe: true });
+          started();
+          await native;
+        },
+      });
+      const settled = vi.fn();
+      void operation.then(settled, settled);
+      await actionStarted;
+      abort(cancelled);
+      try {
+        await vi.waitFor(
+          () => {
+            expect(settled).toHaveBeenCalledWith(cancelled);
+          },
+          { timeout: 100 },
+        );
+        expect(page.unroute).not.toHaveBeenCalled();
+        if (deny) denyPolicy(new InvalidBrowserNavigationUrlError('late denial'));
+        else allowPolicy();
+        const route = await dispatched;
+        expect(route?.fallback).toHaveBeenCalledTimes(deny ? 0 : 1);
+        expect(route?.fulfill).toHaveBeenCalledTimes(deny ? 1 : 0);
+      } finally {
+        allowPolicy();
+        releaseNative();
+        await vi.waitFor(() => {
+          expect(page.unroute).toHaveBeenCalledOnce();
+        });
+      }
+    },
+  );
 
   it('ignores cleanup failure only for an already closed page', async () => {
     const { page } = fixture();

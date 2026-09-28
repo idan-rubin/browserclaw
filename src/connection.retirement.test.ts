@@ -1,6 +1,7 @@
 import type { Browser, Page } from 'playwright-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import * as transport from './cdp-transport.js';
 import { startConnectionCdpServer } from './connection-cdp.test-support.js';
 import {
   closePlaywrightBrowserConnection,
@@ -12,6 +13,7 @@ import {
   isBlockedTarget,
   markTargetBlocked,
 } from './connection.js';
+import * as pageUtils from './page-utils.js';
 
 function deferred() {
   let resolve!: () => void;
@@ -30,6 +32,74 @@ describe('exact Playwright connection retirement', () => {
     vi.restoreAllMocks();
     await disconnectBrowser();
   });
+
+  it.each(['first', 'second', 'both'].flatMap((cancel) => ['dial', 'observation'].map((stage) => ({ cancel, stage }))))(
+    'isolates cancellation of shared connection waiters: $cancel during $stage',
+    async ({ cancel, stage }) => {
+      const cdp = await startConnectionCdpServer();
+      const gate = deferred();
+      const entered = deferred();
+      const originalConnect = transport.connectOverPinnedCdp;
+      let browser: Browser | undefined;
+      const connect = vi.spyOn(transport, 'connectOverPinnedCdp').mockImplementation(async (...args) => {
+        if (stage === 'dial') {
+          entered.resolve();
+          await gate.promise;
+        }
+        browser = await originalConnect(...args);
+        return browser;
+      });
+      const originalObserve = pageUtils.observeBrowser;
+      vi.spyOn(pageUtils, 'observeBrowser').mockImplementation(async (...args) => {
+        if (stage === 'observation') {
+          entered.resolve();
+          await gate.promise;
+        }
+        await originalObserve(...args);
+      });
+      const first = new AbortController();
+      const second = new AbortController();
+      const joined = vi.spyOn(second.signal, 'addEventListener');
+      const reason = new Error('cancel this waiter');
+      const results = [vi.fn(), vi.fn()];
+      const a = connectBrowser(cdp.httpUrl, undefined, undefined, undefined, first.signal);
+      void a.then(results[0], results[0]);
+      await entered.promise;
+      const b = connectBrowser(cdp.httpUrl, undefined, undefined, undefined, second.signal);
+      void b.then(results[1], results[1]);
+      try {
+        await vi.waitFor(() => {
+          expect(joined).toHaveBeenCalledWith('abort', expect.any(Function), { once: true });
+        });
+        if (cancel !== 'second') first.abort(reason);
+        if (cancel !== 'first') second.abort(reason);
+        await vi.waitFor(
+          () => {
+            if (cancel !== 'second') expect(results[0]).toHaveBeenCalledWith(reason);
+            if (cancel !== 'first') expect(results[1]).toHaveBeenCalledWith(reason);
+          },
+          { timeout: 100 },
+        );
+        gate.resolve();
+        if (cancel === 'both') {
+          await vi.waitFor(() => {
+            expect(browser?.isConnected()).toBe(false);
+          });
+          expect(hasCachedPlaywrightBrowserConnection(cdp.httpUrl)).toBe(false);
+        } else {
+          const survivor = await (cancel === 'first' ? b : a);
+          expect(survivor.browser.isConnected()).toBe(true);
+          expect((await connectBrowser(cdp.httpUrl)).browser).toBe(survivor.browser);
+        }
+        expect(connect).toHaveBeenCalledOnce();
+      } finally {
+        gate.resolve();
+        await Promise.allSettled([a, b]);
+        await disconnectBrowser();
+        await cdp.close();
+      }
+    },
+  );
 
   it('bounds a hung close and allows a successor while the old adapter is still closing', async () => {
     const cdp = await startConnectionCdpServer();

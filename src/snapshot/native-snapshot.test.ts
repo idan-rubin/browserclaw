@@ -142,6 +142,52 @@ describe('native markers and document ownership', () => {
     expect(send).toHaveBeenCalledOnce();
   });
 
+  it.each([undefined, 5000])(
+    'aborts a stalled capture without publishing late work (timeout=%s)',
+    async (timeoutMs) => {
+      const events = Object.assign(new EventEmitter(), { url: () => 'about:blank' });
+      const page = events as unknown as Page;
+      const controller = new AbortController();
+      const reason = new Error('cancel capture');
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const publish = vi.fn();
+      const started = vi.fn();
+      const settled = vi.fn();
+      const operation = withSnapshotFrameGuard({
+        page,
+        timeoutMs,
+        signal: controller.signal,
+        run: async (assertCurrent) => {
+          started();
+          await gate;
+          assertCurrent();
+          publish();
+        },
+      });
+      void operation.then(settled, settled);
+      try {
+        await vi.waitFor(() => {
+          expect(started).toHaveBeenCalledOnce();
+        });
+        controller.abort(reason);
+        await vi.waitFor(
+          () => {
+            expect(settled).toHaveBeenCalledWith(reason);
+          },
+          { timeout: 100 },
+        );
+        expect(events.listenerCount('framenavigated')).toBe(0);
+      } finally {
+        release();
+        await operation.catch(() => undefined);
+      }
+      expect(publish).not.toHaveBeenCalled();
+    },
+  );
+
   it('invalidates captures and stored refs on same-URL navigation and iframe replacement', async () => {
     const main = { isDetached: () => false } as Frame;
     const frame = { isDetached: () => false } as Frame;

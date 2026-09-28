@@ -637,23 +637,11 @@ export async function assertInteractionNavigationCompletedSafely<T>(opts: {
   ssrfPolicy?: SsrfPolicy;
   targetId?: string;
 }): Promise<T> {
-  type PolicyCheckOutcome = { state: 'allowed' } | { state: 'failed'; error: unknown };
-  const activePolicyChecks = new Set<Promise<PolicyCheckOutcome>>();
   let observedPolicyError: unknown;
   let unsafeSourceQuarantine: Promise<void> | undefined;
   const quarantineUnsafeSource = (): Promise<void> => (unsafeSourceQuarantine ??= quarantineBlockedTarget(opts));
   const guardedAction = withPageNavigationRequestGuard({
     ...opts,
-    onPolicyCheckStarted: (check) => {
-      const tracked = check.then<PolicyCheckOutcome, PolicyCheckOutcome>(
-        () => ({ state: 'allowed' }),
-        (error: unknown) => ({ state: 'failed', error }),
-      );
-      activePolicyChecks.add(tracked);
-      void tracked.then((outcome) => {
-        if (outcome.state === 'allowed') activePolicyChecks.delete(tracked);
-      });
-    },
     onPolicyDenied: (event) => {
       observedPolicyError = event.error;
       if (event.state === 'handled' && !event.sourcePreserved) {
@@ -696,12 +684,8 @@ export async function assertInteractionNavigationCompletedSafely<T>(opts: {
   try {
     return await (opts.abortPromise ? Promise.race([guardedAction, opts.abortPromise]) : guardedAction);
   } catch (err) {
-    if (observedPolicyError === undefined && activePolicyChecks.size > 0) {
-      const outcome = (await Promise.all(activePolicyChecks)).find(
-        (check) => check.state === 'failed' && isPolicyDenyNavigationError(check.error),
-      );
-      if (outcome?.state === 'failed') observedPolicyError = outcome.error;
-    }
+    // Pending checks stay owned by guardedAction; cancellation must not wait for DNS.
+    // Denials already observed still outrank the caller's abort.
     if (observedPolicyError !== undefined) {
       await guardedAction;
       throw toNavigationError(observedPolicyError);

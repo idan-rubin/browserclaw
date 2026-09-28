@@ -1,4 +1,6 @@
+import { assertPageNavigationCompletedSafely } from '../actions/navigation.js';
 import { getPageForTargetId } from '../connection.js';
+import { truncateUtf16Safe } from '../page-utils.js';
 import type { SsrfPolicy } from '../types.js';
 
 const TEXT_TIMEOUT_MS = 20_000;
@@ -32,23 +34,27 @@ export async function getPageTextViaPlaywright(opts: {
   const read = async () => {
     const page = await getPageForTargetId(opts);
     signal.throwIfAborted();
-    let locator = page.locator(opts.selector ?? 'body').first();
+    if (opts.ssrfPolicy) await assertPageNavigationCompletedSafely({ ...opts, page, response: null });
+    signal.throwIfAborted();
+    const readText = (selector: string) =>
+      page
+        .locator(selector)
+        .first()
+        .innerText({ timeout: Math.max(1, deadline - Date.now()), signal });
     if (opts.selector === undefined || opts.selector === '') {
       for (const selector of ['article', 'main']) {
         const candidate = page.locator(selector).first();
-        const count = await candidate.count();
+        if (!(await candidate.isVisible())) continue;
         signal.throwIfAborted();
-        if (count > 0) {
-          locator = candidate;
-          break;
-        }
+        const text = await readText(selector);
+        if (text.trim()) return text;
       }
     }
-    return locator.innerText({ timeout: Math.max(1, deadline - Date.now()), signal });
+    return readText(opts.selector === '' ? 'body' : (opts.selector ?? 'body'));
   };
   try {
     const text = await Promise.race([read(), aborted]);
-    return { text: text.slice(0, maxChars), truncated: text.length > maxChars };
+    return { text: truncateUtf16Safe(text, maxChars), truncated: text.length > maxChars };
   } finally {
     clearTimeout(timer);
     signal.removeEventListener('abort', onAbort);

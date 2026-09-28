@@ -109,6 +109,46 @@ describe('snapshotAria timeout', () => {
     expect(mockWithCdpSession).not.toHaveBeenCalled();
   });
 
+  it('cancels a pending iframe lookup and disposes a handle that arrives afterward', async () => {
+    const page = makeMockPage();
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const contentFrame = vi.fn().mockResolvedValue({});
+    let release!: (handle: unknown) => void;
+    const elementHandle = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    vi.spyOn(page, 'locator').mockReturnValue({ elementHandle } as unknown as ReturnType<Page['locator']>);
+    mockGetPageForTargetId.mockResolvedValue(page);
+    const controller = new AbortController();
+    const reason = new Error('cancel iframe lookup');
+    const settled = vi.fn();
+    const operation = snapshotRole({ cdpUrl: 'test', frameSelector: '#late', signal: controller.signal });
+    void operation.then(settled, settled);
+    try {
+      await vi.waitFor(() => {
+        expect(elementHandle).toHaveBeenCalledOnce();
+      });
+      controller.abort(reason);
+      await vi.waitFor(
+        () => {
+          expect(settled).toHaveBeenCalledWith(reason);
+        },
+        { timeout: 100 },
+      );
+      expect(mockStoreRoleRefsForTarget).not.toHaveBeenCalled();
+    } finally {
+      release({ contentFrame, dispose });
+      await operation.catch(() => undefined);
+    }
+    await vi.waitFor(() => {
+      expect(dispose).toHaveBeenCalledOnce();
+    });
+    expect(contentFrame).not.toHaveBeenCalled();
+  });
+
   it('clamps below the 500ms floor and passes the deadline to the bounded session owner', async () => {
     const { session } = makeSession({ hang: true });
     mockWithCdpSession.mockImplementation((_page: Page, fn: (s: CDPSession) => Promise<unknown>) => fn(session));

@@ -318,6 +318,7 @@ interface ConnectionAttempt {
 }
 
 interface PendingConnection {
+  waiters: number;
   attempt: ConnectionAttempt;
   promise: Promise<CachedConnection>;
 }
@@ -515,17 +516,27 @@ async function awaitPendingConnection(
   pending: PendingConnection,
   signal?: AbortSignal,
 ): Promise<CachedConnection> {
-  const cancel = (): void => {
-    pending.attempt.cancelled = true;
-    if (connectingByCdpUrl.get(normalized)?.attempt === pending.attempt) connectingByCdpUrl.delete(normalized);
-    if (pending.attempt.browser) evictStaleConnection(normalized, pending.attempt.browser);
-  };
-  signal?.addEventListener('abort', cancel, { once: true });
-  if (signal?.aborted === true) cancel();
+  pending.waiters++;
+  let onAbort: () => void = () => undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      reject(signal?.reason);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted === true) onAbort();
+  });
   try {
-    return await pending.promise;
+    return await Promise.race([pending.promise, aborted]);
   } finally {
-    signal?.removeEventListener('abort', cancel);
+    signal?.removeEventListener('abort', onAbort);
+    pending.waiters--;
+    // Only retire an unfinished attempt when its last waiter cancels.
+    if (signal?.aborted === true && pending.waiters === 0 && connectingByCdpUrl.get(normalized) === pending) {
+      pending.attempt.cancelled = true;
+      connectingByCdpUrl.delete(normalized);
+      if (pending.attempt.browser) evictStaleConnection(normalized, pending.attempt.browser);
+    }
   }
 }
 
@@ -573,9 +584,9 @@ export async function connectBrowser(
     return connected;
   };
 
-  // Lock-free fast path: return cached connection
+  // Only return a cached connection once its initialization has completed.
   const existing_cached = cachedByCdpUrl.get(normalized);
-  if (existing_cached) return await observeCached(existing_cached);
+  if (existing_cached && !connectingByCdpUrl.has(normalized)) return await observeCached(existing_cached);
 
   if (ssrfPolicy !== undefined) lastPolicyByCdpUrl.set(normalized, ssrfPolicy);
   const effectivePolicy = ssrfPolicy ?? lastPolicyByCdpUrl.get(normalized);
@@ -673,7 +684,7 @@ export async function connectBrowser(
   }).finally(() => {
     if (connectingByCdpUrl.get(normalized)?.attempt === connectionAttempt) connectingByCdpUrl.delete(normalized);
   });
-  const pending = { attempt: connectionAttempt, promise };
+  const pending = { attempt: connectionAttempt, promise, waiters: 0 };
   connectingByCdpUrl.set(normalized, pending);
   return await awaitPendingConnection(normalized, pending, signal);
 }

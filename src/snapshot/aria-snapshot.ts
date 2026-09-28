@@ -41,12 +41,30 @@ async function prepareSnapshotPage(opts: SnapshotPageOptions): Promise<Page> {
   return page;
 }
 
-async function resolveSnapshotFrame(page: Page, selector: string, timeout: number): Promise<Frame | undefined> {
+async function resolveSnapshotFrame(
+  page: Page,
+  selector: string,
+  timeout: number,
+  signal?: AbortSignal,
+): Promise<Frame | undefined> {
   if (!selector) return undefined;
-  const element = await page.locator(selector).elementHandle({ timeout });
-  const frame = await element.contentFrame().finally(() => element.dispose());
-  if (!frame) throw new Error('Frame was unavailable while its browser snapshot was being captured.');
-  return frame;
+  return await withSnapshotFrameGuard({
+    page,
+    signal,
+    timeoutMs: timeout,
+    run: async (assertCurrent) => {
+      const element = await page.locator(selector).elementHandle({ timeout });
+      try {
+        assertCurrent();
+        const frame = await element.contentFrame();
+        assertCurrent();
+        if (!frame) throw new Error('Frame was unavailable while its browser snapshot was being captured.');
+        return frame;
+      } finally {
+        await element.dispose();
+      }
+    },
+  });
 }
 
 /** Capture a native, document-bound AX tree, or preserve Playwright AI refs in aria mode. */
@@ -66,7 +84,7 @@ export async function snapshotRole(
   const selector = opts.selector?.trim() ?? '';
   if (opts.refsMode === 'aria' && (selector || frameSelector))
     throw new Error('refs=aria does not support selector/frame snapshots yet.');
-  const frame = await resolveSnapshotFrame(page, frameSelector, timeoutMs);
+  const frame = await resolveSnapshotFrame(page, frameSelector, timeoutMs, opts.signal);
   return await withSnapshotFrameGuard({
     page,
     frame: opts.refsMode === 'aria' ? undefined : (frame ?? page.mainFrame()),

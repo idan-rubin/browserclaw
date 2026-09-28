@@ -15,6 +15,7 @@ export async function withSnapshotFrameGuard<T>(opts: {
   const deadline = opts.timeoutMs === undefined ? undefined : Date.now() + opts.timeoutMs;
   let current = true;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: () => void = () => undefined;
   const onFrameChanged = (frame: Frame) => {
     if (!opts.frame || frame === opts.frame || frame === opts.page.mainFrame()) current = false;
   };
@@ -29,20 +30,39 @@ export async function withSnapshotFrameGuard<T>(opts: {
   opts.page.on('framedetached', onFrameChanged);
   try {
     assertCurrent();
-    const capture = opts.run(assertCurrent);
-    if (opts.timeoutMs === undefined) return await capture;
-    return await Promise.race([
-      capture,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          current = false;
-          reject(new Error('Browser snapshot capture timed out.'));
-        }, opts.timeoutMs);
+    const pending: Promise<T>[] = [];
+    if (opts.signal) {
+      pending.push(
+        new Promise<never>((_, reject) => {
+          onAbort = () => {
+            // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+            reject(opts.signal?.reason);
+          };
+          opts.signal?.addEventListener('abort', onAbort, { once: true });
+        }),
+      );
+    }
+    pending.push(
+      Promise.resolve().then(() => {
+        assertCurrent();
+        return opts.run(assertCurrent);
       }),
-    ]);
+    );
+    if (opts.timeoutMs !== undefined) {
+      pending.push(
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            current = false;
+            reject(new Error('Browser snapshot capture timed out.'));
+          }, opts.timeoutMs);
+        }),
+      );
+    }
+    return await Promise.race(pending);
   } finally {
     current = false;
     clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', onAbort);
     opts.page.off('framenavigated', onFrameChanged);
     opts.page.off('framedetached', onFrameChanged);
   }
