@@ -748,9 +748,9 @@ npx tsx examples/basic.ts
 
 ## Requirements
 
-- **Node.js** >= 18
+- **Node.js** >= 22
 - **Chromium-based browser** installed (Chrome, Brave, Edge, or Chromium)
-- **playwright-core** >= 1.50 (installed automatically as a dependency)
+- **playwright-core** >= 1.63 (installed automatically as a dependency)
 
 No need to install Playwright browsers — browserclaw uses your system's existing Chrome installation via CDP.
 
