@@ -15,6 +15,7 @@ import {
   getAllPages,
   forceDisconnectPlaywrightConnection,
   resolvePageByTargetIdOrThrow,
+  resolvePageByTargetIdForClose,
   withPageScopedCdpClient,
   isBlockedTarget,
   isBlockedPageRef,
@@ -313,7 +314,12 @@ export async function withPageNavigationRequestGuard<T>(opts: PageNavigationRequ
   return outcome.value;
 }
 
-async function closeBlockedNavigationTarget(opts: { cdpUrl: string; page: Page; targetId?: string }): Promise<void> {
+async function closeBlockedNavigationTarget(opts: {
+  cdpUrl: string;
+  page: Page;
+  targetId?: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<void> {
   await quarantineBlockedTarget(opts);
   await opts.page.close().catch((e: unknown) => {
     console.warn('[browserclaw] failed to close blocked page', e);
@@ -332,7 +338,12 @@ export async function assertPageNavigationCompletedSafely(opts: {
     await assertBrowserNavigationRedirectChainAllowed({ request: opts.response?.request(), ...navigationPolicy });
   } catch (err) {
     if (isPolicyDenyNavigationError(err))
-      await quarantineBlockedTarget({ cdpUrl: opts.cdpUrl, page: opts.page, targetId: opts.targetId });
+      await quarantineBlockedTarget({
+        cdpUrl: opts.cdpUrl,
+        page: opts.page,
+        targetId: opts.targetId,
+        ssrfPolicy: opts.ssrfPolicy,
+      });
     throw err;
   }
   await assertSelectedPageAllowed(opts);
@@ -749,7 +760,7 @@ async function gotoPageWithNavigationGuard(opts: {
   }
   const cleanupError = await removePageNavigationRequestGuard(opts.page, handler);
   if (state.blocked !== null) {
-    await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page: opts.page, targetId: opts.targetId });
+    await closeBlockedNavigationTarget(opts);
     throw state.blocked;
   }
   if (navigationFailed) throw toNavigationError(navigationError);
@@ -807,7 +818,12 @@ export async function navigateViaPlaywright(opts: {
       } catch (downloadErr) {
         if (downloadErr instanceof Error && downloadErr.message === NAVIGATION_DOWNLOAD_TIMEOUT_MESSAGE) throw err;
         if (isPolicyDenyNavigationError(downloadErr))
-          await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page, targetId: opts.targetId });
+          await closeBlockedNavigationTarget({
+            cdpUrl: opts.cdpUrl,
+            page,
+            targetId: opts.targetId,
+            ssrfPolicy: policy,
+          });
         throw downloadErr;
       }
     }
@@ -847,7 +863,7 @@ export async function navigateViaPlaywright(opts: {
       });
     } catch (err) {
       if (isPolicyDenyNavigationError(err))
-        await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page, targetId: opts.targetId });
+        await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page, targetId: opts.targetId, ssrfPolicy: policy });
       throw err;
     }
   }
@@ -857,16 +873,20 @@ export async function navigateViaPlaywright(opts: {
   };
 }
 
-async function listPagesViaPlaywrightOnce(cdpUrl: string, browser: Browser): Promise<BrowserTab[]> {
+async function listPagesViaPlaywrightOnce(
+  cdpUrl: string,
+  browser: Browser,
+  ssrfPolicy?: SsrfPolicy,
+): Promise<BrowserTab[]> {
   const pages = getAllPages(browser);
   const results = await Promise.all(
     pages.map(async (page): Promise<BrowserTab | null> => {
-      if (isBlockedPageRef(cdpUrl, page)) return null;
+      if (isBlockedPageRef(cdpUrl, page, ssrfPolicy)) return null;
       const info = await pageTargetInfo(page).catch((error: unknown) => {
         if (isRecoverablePlaywrightDisconnectError(error) && (!page.isClosed() || !browser.isConnected())) throw error;
         return null;
       });
-      if (info === null || isBlockedTarget(cdpUrl, info.targetId)) return null;
+      if (info === null || isBlockedTarget(cdpUrl, info.targetId, ssrfPolicy)) return null;
       const url = page.url();
       if (isBrowserInternalTargetUrl(url)) return null;
       return {
@@ -900,7 +920,7 @@ async function listPagesWithRecovery(
       evictStaleConnection(cdpUrl, browser);
       throw new Error('Playwright page enumeration was cancelled.');
     }
-    return await listPagesViaPlaywrightOnce(cdpUrl, browser);
+    return await listPagesViaPlaywrightOnce(cdpUrl, browser, ssrfPolicy);
   };
   try {
     return await read();
@@ -1022,6 +1042,14 @@ export async function closePageViaPlaywright(opts: {
   targetId?: string;
   ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
+  if (opts.targetId !== undefined && opts.targetId !== '') {
+    await closePageByTargetIdViaPlaywright({
+      cdpUrl: opts.cdpUrl,
+      targetId: opts.targetId,
+      ssrfPolicy: opts.ssrfPolicy,
+    });
+    return;
+  }
   const page = await getPageForTargetId({
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
@@ -1037,7 +1065,7 @@ export async function closePageByTargetIdViaPlaywright(opts: {
   ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   try {
-    await (await resolvePageByTargetIdOrThrow(opts)).close();
+    await (await resolvePageByTargetIdForClose(opts)).close();
   } catch (err) {
     if (err instanceof BrowserTabNotFoundError) return;
     throw err;

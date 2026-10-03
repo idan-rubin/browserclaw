@@ -409,10 +409,12 @@ export async function assertSelectedPageAllowed(opts: {
   page: Page;
   targetId?: string;
   ssrfPolicy?: SsrfPolicy;
+  signal?: AbortSignal;
 }): Promise<void> {
   try {
     await assertBrowserNavigationResultAllowed({
       url: opts.page.url(),
+      signal: opts.signal,
       ...withBrowserNavigationPolicy(opts.ssrfPolicy, {
         browserProxyMode: isCdpUrlProxyRouted(opts.cdpUrl) ? 'explicit-browser-proxy' : undefined,
       }),
@@ -459,26 +461,33 @@ export class BlockedBrowserTargetError extends Error {
 }
 
 const MAX_BLOCKED_TARGETS = 200;
-const blockedTargetsByCdpUrl = new Set<string>();
-const blockedPageRefsByCdpUrl = new Map<string, WeakSet<Page>>();
+const blockedTargetsByCdpUrl = new Map<string, Set<string>>();
+const blockedPageRefsByCdpUrl = new Map<string, WeakMap<Page, Set<string>>>();
+
+function blockedPolicyKey(policy?: SsrfPolicy): string {
+  return JSON.stringify(Object.entries(policy ?? {}).sort(([a], [b]) => a.localeCompare(b)));
+}
 
 function blockedTargetKey(cdpUrl: string, targetId: string): string {
   return `${normalizeCdpUrl(cdpUrl)}::${targetId}`;
 }
 
-export function isBlockedTarget(cdpUrl: string, targetId?: string): boolean {
+export function isBlockedTarget(cdpUrl: string, targetId?: string, ssrfPolicy?: SsrfPolicy): boolean {
   const normalized = targetId?.trim() ?? '';
   if (normalized === '') return false;
-  return blockedTargetsByCdpUrl.has(blockedTargetKey(cdpUrl, normalized));
+  return blockedTargetsByCdpUrl.get(blockedTargetKey(cdpUrl, normalized))?.has(blockedPolicyKey(ssrfPolicy)) ?? false;
 }
 
-export function markTargetBlocked(cdpUrl: string, targetId?: string): void {
+export function markTargetBlocked(cdpUrl: string, targetId?: string, ssrfPolicy?: SsrfPolicy): void {
   const normalized = targetId?.trim() ?? '';
   if (normalized === '') return;
-  blockedTargetsByCdpUrl.add(blockedTargetKey(cdpUrl, normalized));
+  const key = blockedTargetKey(cdpUrl, normalized);
+  const policies = blockedTargetsByCdpUrl.get(key) ?? new Set<string>();
+  policies.add(blockedPolicyKey(ssrfPolicy));
+  blockedTargetsByCdpUrl.set(key, policies);
   // Evict oldest entries if the set grows too large
   if (blockedTargetsByCdpUrl.size > MAX_BLOCKED_TARGETS) {
-    const first = blockedTargetsByCdpUrl.values().next();
+    const first = blockedTargetsByCdpUrl.keys().next();
     if (first.done !== true) blockedTargetsByCdpUrl.delete(first.value);
   }
 }
@@ -489,10 +498,10 @@ export function clearBlockedTarget(cdpUrl: string, targetId?: string): void {
   blockedTargetsByCdpUrl.delete(blockedTargetKey(cdpUrl, normalized));
 }
 
-function hasBlockedTargetsForCdpUrl(cdpUrl: string): boolean {
+function hasBlockedTargetsForCdpUrl(cdpUrl: string, ssrfPolicy?: SsrfPolicy): boolean {
   const prefix = `${normalizeCdpUrl(cdpUrl)}::`;
-  for (const key of blockedTargetsByCdpUrl) {
-    if (key.startsWith(prefix)) return true;
+  for (const [key, policies] of blockedTargetsByCdpUrl) {
+    if (key.startsWith(prefix) && policies.has(blockedPolicyKey(ssrfPolicy))) return true;
   }
   return false;
 }
@@ -503,32 +512,40 @@ function clearBlockedTargetsForCdpUrl(cdpUrl?: string): void {
     return;
   }
   const prefix = `${normalizeCdpUrl(cdpUrl)}::`;
-  for (const key of blockedTargetsByCdpUrl) {
+  for (const key of blockedTargetsByCdpUrl.keys()) {
     if (key.startsWith(prefix)) blockedTargetsByCdpUrl.delete(key);
   }
 }
 
-function blockedPageRefsForCdpUrl(cdpUrl: string): WeakSet<Page> {
+function blockedPageRefsForCdpUrl(cdpUrl: string): WeakMap<Page, Set<string>> {
   const normalized = normalizeCdpUrl(cdpUrl);
   const existing = blockedPageRefsByCdpUrl.get(normalized);
   if (existing) return existing;
-  const created = new WeakSet<Page>();
+  const created = new WeakMap<Page, Set<string>>();
   blockedPageRefsByCdpUrl.set(normalized, created);
   return created;
 }
 
-export function isBlockedPageRef(cdpUrl: string, page: Page): boolean {
-  return blockedPageRefsByCdpUrl.get(normalizeCdpUrl(cdpUrl))?.has(page) ?? false;
+export function isBlockedPageRef(cdpUrl: string, page: Page, ssrfPolicy?: SsrfPolicy): boolean {
+  return blockedPageRefsByCdpUrl.get(normalizeCdpUrl(cdpUrl))?.get(page)?.has(blockedPolicyKey(ssrfPolicy)) ?? false;
 }
 
-export function markPageRefBlocked(cdpUrl: string, page: Page): void {
-  blockedPageRefsForCdpUrl(cdpUrl).add(page);
+export function markPageRefBlocked(cdpUrl: string, page: Page, ssrfPolicy?: SsrfPolicy): void {
+  const refs = blockedPageRefsForCdpUrl(cdpUrl);
+  const policies = refs.get(page) ?? new Set<string>();
+  policies.add(blockedPolicyKey(ssrfPolicy));
+  refs.set(page, policies);
 }
 
-export async function quarantineBlockedTarget(opts: { cdpUrl: string; page: Page; targetId?: string }): Promise<void> {
-  markPageRefBlocked(opts.cdpUrl, opts.page);
+export async function quarantineBlockedTarget(opts: {
+  cdpUrl: string;
+  page: Page;
+  targetId?: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<void> {
+  markPageRefBlocked(opts.cdpUrl, opts.page, opts.ssrfPolicy);
   const targetId = (await pageTargetId(opts.page).catch(() => null)) ?? opts.targetId;
-  if (targetId !== undefined && targetId !== '') markTargetBlocked(opts.cdpUrl, targetId);
+  if (targetId !== undefined && targetId !== '') markTargetBlocked(opts.cdpUrl, targetId, opts.ssrfPolicy);
 }
 
 function clearBlockedPageRefsForCdpUrl(cdpUrl?: string): void {
@@ -977,13 +994,13 @@ export async function pageTargetId(page: Page): Promise<string | null> {
 
 export async function findPageByTargetId(browser: Browser, targetId: string, cdpUrl?: string, ssrfPolicy?: SsrfPolicy) {
   // Retain the exported signature, but never infer identity from a URL or list order.
-  void ssrfPolicy;
-  if (cdpUrl !== undefined && cdpUrl !== '' && isBlockedTarget(cdpUrl, targetId)) return null;
+  if (cdpUrl !== undefined && cdpUrl !== '' && isBlockedTarget(cdpUrl, targetId, ssrfPolicy)) return null;
   const pages = getAllPages(browser);
 
   const results = await Promise.all(
     pages.map(async (page) => {
-      if (cdpUrl !== undefined && cdpUrl !== '' && isBlockedPageRef(cdpUrl, page)) return { page, tid: null };
+      if (cdpUrl !== undefined && cdpUrl !== '' && isBlockedPageRef(cdpUrl, page, ssrfPolicy))
+        return { page, tid: null };
       try {
         const tid = await pageTargetId(page);
         return { page, tid };
@@ -1002,29 +1019,32 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
 async function partitionAccessiblePages(opts: {
   cdpUrl: string;
   pages: Page[];
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<{ accessible: Page[]; blockedCount: number }> {
   const accessible: Page[] = [];
   let blockedCount = 0;
   const candidates = await Promise.all(
     opts.pages.map(async (page) => ({
       page,
-      targetId: isBlockedPageRef(opts.cdpUrl, page) ? null : await pageTargetId(page).catch(() => null),
+      targetId: isBlockedPageRef(opts.cdpUrl, page, opts.ssrfPolicy)
+        ? null
+        : await pageTargetId(page).catch(() => null),
     })),
   );
   for (const { page, targetId } of candidates) {
-    if (isBlockedPageRef(opts.cdpUrl, page)) {
+    if (isBlockedPageRef(opts.cdpUrl, page, opts.ssrfPolicy)) {
       blockedCount += 1;
       continue;
     }
     if (targetId === null || targetId === '') {
-      if (hasBlockedTargetsForCdpUrl(opts.cdpUrl)) {
+      if (hasBlockedTargetsForCdpUrl(opts.cdpUrl, opts.ssrfPolicy)) {
         blockedCount += 1;
         continue;
       }
       accessible.push(page);
       continue;
     }
-    if (isBlockedTarget(opts.cdpUrl, targetId)) {
+    if (isBlockedTarget(opts.cdpUrl, targetId, opts.ssrfPolicy)) {
       blockedCount += 1;
       continue;
     }
@@ -1064,12 +1084,20 @@ export function isRecoverableStalePageSelectionError(
 }
 
 async function getPageForTargetIdOnce(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: SsrfPolicy }) {
-  if (opts.targetId !== undefined && opts.targetId !== '' && isBlockedTarget(opts.cdpUrl, opts.targetId))
+  if (
+    opts.targetId !== undefined &&
+    opts.targetId !== '' &&
+    isBlockedTarget(opts.cdpUrl, opts.targetId, opts.ssrfPolicy)
+  )
     throw new BlockedBrowserTargetError();
   const { browser } = await connectBrowser(opts.cdpUrl, undefined, opts.ssrfPolicy);
   const pages = getAllPages(browser);
   if (!pages.length) throw new Error('No pages available in the connected browser.');
-  const { accessible, blockedCount } = await partitionAccessiblePages({ cdpUrl: opts.cdpUrl, pages });
+  const { accessible, blockedCount } = await partitionAccessiblePages({
+    cdpUrl: opts.cdpUrl,
+    pages,
+    ssrfPolicy: opts.ssrfPolicy,
+  });
   if (!accessible.length) {
     if (blockedCount > 0) throw new BlockedBrowserTargetError();
     throw new Error('No pages available in the connected browser.');
@@ -1088,9 +1116,9 @@ async function getPageForTargetIdOnce(opts: { cdpUrl: string; targetId?: string;
       `Tab not found (targetId: ${opts.targetId}). Call browser.tabs() to list open tabs.`,
     );
   }
-  if (isBlockedPageRef(opts.cdpUrl, found)) throw new BlockedBrowserTargetError();
+  if (isBlockedPageRef(opts.cdpUrl, found, opts.ssrfPolicy)) throw new BlockedBrowserTargetError();
   const foundTargetId = await pageTargetId(found).catch(() => null);
-  if (foundTargetId !== null && foundTargetId !== '' && isBlockedTarget(opts.cdpUrl, foundTargetId))
+  if (foundTargetId !== null && foundTargetId !== '' && isBlockedTarget(opts.cdpUrl, foundTargetId, opts.ssrfPolicy))
     throw new BlockedBrowserTargetError();
   await assertSelectedPageAllowed({ ...opts, page: found });
   return found;
@@ -1123,6 +1151,40 @@ export async function resolvePageByTargetIdOrThrow(opts: {
   try {
     return await getPageForTargetId(opts);
   } catch (error) {
+    if (error instanceof Error && error.message === 'No pages available in the connected browser.')
+      throw new BrowserTabNotFoundError();
+    throw error;
+  }
+}
+
+/** Resolve an exact target for closing without reading or validating its document. */
+export async function resolvePageByTargetIdForClose(opts: {
+  cdpUrl: string;
+  targetId: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<Page> {
+  if (opts.targetId === '') throw new BrowserTabNotFoundError();
+  const cachedBrowser = cachedByCdpUrl.get(normalizeCdpUrl(opts.cdpUrl))?.browser;
+  const select = async (): Promise<Page> => {
+    const { browser } = await connectBrowser(opts.cdpUrl, undefined, opts.ssrfPolicy);
+    if (getAllPages(browser).length === 0) throw new Error('No pages available in the connected browser.');
+    const page = await findPageByTargetId(browser, opts.targetId);
+    if (!page) throw new BrowserTabNotFoundError();
+    return page;
+  };
+  try {
+    return await select();
+  } catch (error) {
+    if (cachedBrowser && isRecoverableStalePageSelectionError(error, true, true)) {
+      evictStaleConnection(opts.cdpUrl, cachedBrowser);
+      try {
+        return await select();
+      } catch (retryError) {
+        if (retryError instanceof Error && retryError.message === 'No pages available in the connected browser.')
+          throw new BrowserTabNotFoundError();
+        throw retryError;
+      }
+    }
     if (error instanceof Error && error.message === 'No pages available in the connected browser.')
       throw new BrowserTabNotFoundError();
     throw error;
@@ -1199,7 +1261,7 @@ export async function resolveActiveTargetId(
   const { browser } = await connectBrowser(cdpUrl, undefined, opts?.ssrfPolicy);
   const pages = getAllPages(browser);
   if (!pages.length) return null;
-  const { accessible } = await partitionAccessiblePages({ cdpUrl, pages });
+  const { accessible } = await partitionAccessiblePages({ cdpUrl, pages, ssrfPolicy: opts?.ssrfPolicy });
   if (!accessible.length) return null;
 
   return pickActiveTargetId({

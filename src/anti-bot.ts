@@ -86,10 +86,32 @@ export async function waitForChallengeViaPlaywright(opts: {
   pollMs?: number;
   ssrfPolicy?: SsrfPolicy;
 }): Promise<ChallengeWaitResult> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: opts.ssrfPolicy });
-  ensurePageState(page);
-
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 15000);
+  const deadline = Date.now() + timeout;
+  const controller = new AbortController();
+  const withinDeadline = async <T>(task: () => Promise<T>): Promise<T> => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new ChallengeWaitTimeoutError(timeout);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        task(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            const error = new ChallengeWaitTimeoutError(timeout);
+            controller.abort(error);
+            reject(error);
+          }, remaining);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+  const page = await withinDeadline(() =>
+    getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: opts.ssrfPolicy }),
+  );
+  ensurePageState(page);
   const poll = Math.max(250, Math.min(5000, opts.pollMs ?? 500));
 
   const isNavigationRaceError = (err: unknown): boolean =>
@@ -102,7 +124,9 @@ export async function waitForChallengeViaPlaywright(opts: {
       page,
       targetId: opts.targetId,
       ssrfPolicy: opts.ssrfPolicy,
+      signal: controller.signal,
     });
+    controller.signal.throwIfAborted();
     try {
       return parseChallengeResult(await page.evaluate(DETECT_CHALLENGE_SCRIPT));
     } catch (err) {
@@ -118,7 +142,9 @@ export async function waitForChallengeViaPlaywright(opts: {
           page,
           targetId: opts.targetId,
           ssrfPolicy: opts.ssrfPolicy,
+          signal: controller.signal,
         });
+        controller.signal.throwIfAborted();
         return parseChallengeResult(await page.evaluate(DETECT_CHALLENGE_SCRIPT));
       } catch (retryErr) {
         if (isNavigationRaceError(retryErr)) return null;
@@ -128,17 +154,28 @@ export async function waitForChallengeViaPlaywright(opts: {
   };
 
   // Check if there's actually a challenge present
-  const initial = await detect();
+  const initial = await withinDeadline(detect);
   if (initial === null) return { resolved: true, challenge: null };
 
   // Poll every challenge through the same policy-checked read path, including redirects.
-  const deadline = Date.now() + timeout;
   let current: ChallengeInfo | null = initial;
   while (Date.now() < deadline) {
-    await page.waitForTimeout(Math.min(poll, deadline - Date.now()));
-    current = await detect();
+    try {
+      await withinDeadline(() => page.waitForTimeout(Math.min(poll, deadline - Date.now())));
+      current = await withinDeadline(detect);
+    } catch (error) {
+      if (error instanceof ChallengeWaitTimeoutError) break;
+      throw error;
+    }
     if (current === null) return { resolved: true, challenge: null };
   }
 
   return { resolved: false, challenge: current };
+}
+
+class ChallengeWaitTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Challenge wait timed out after ${String(timeoutMs)}ms`);
+    this.name = 'ChallengeWaitTimeoutError';
+  }
 }

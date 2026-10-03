@@ -75,11 +75,12 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
       console.warn('[browserclaw] skipping SSRF-blocked frame');
       continue;
     }
+    let result: unknown;
     try {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new FrameEvaluationTimeoutError(timeoutMs);
       // Uses the same browser-side expression/statement and promise rules as evaluate().
-      const result: unknown = await withFrameBudget(
+      result = await withFrameBudget(
         () =>
           frame.evaluate(BROWSER_EVALUATOR as (...args: unknown[]) => unknown, {
             fnBody: fnText,
@@ -88,16 +89,6 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
         deadline,
         timeoutMs,
       );
-      await withFrameBudget(
-        () => assertBrowserNavigationResultAllowed({ url: frame.url(), ...framePolicy }),
-        deadline,
-        timeoutMs,
-      );
-      results.push({
-        frameUrl: frame.url(),
-        frameName: frame.name(),
-        result,
-      });
     } catch (err) {
       if (
         err instanceof FrameEvaluationTimeoutError ||
@@ -113,12 +104,24 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
         }
         throw err instanceof FrameEvaluationTimeoutError ? err : new FrameEvaluationTimeoutError(timeoutMs);
       }
+      console.warn('[browserclaw] frame evaluate failed:', err instanceof Error ? err.message : String(err));
+      continue;
+    }
+    try {
+      await withFrameBudget(
+        () => assertBrowserNavigationResultAllowed({ url: frame.url(), ...framePolicy }),
+        deadline,
+        timeoutMs,
+      );
+    } catch (err) {
+      if (err instanceof FrameEvaluationTimeoutError) throw err;
       if (err instanceof InvalidBrowserNavigationUrlError) {
         console.warn('[browserclaw] skipping SSRF-blocked frame');
         continue;
       }
-      console.warn('[browserclaw] frame evaluate failed:', err instanceof Error ? err.message : String(err));
+      throw err;
     }
+    results.push({ frameUrl: frame.url(), frameName: frame.name(), result });
   }
 
   return results;

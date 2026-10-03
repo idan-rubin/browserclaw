@@ -79,6 +79,50 @@ describe('exact target identity for lookup and tab mutations', () => {
     }
   });
 
+  it('keeps a permissive handle usable after a strict handle quarantines the same page', async () => {
+    const cdp = await startConnectionCdpServer();
+    try {
+      const { browser } = await connectBrowser(cdp.httpUrl);
+      const page = makePage('shared-private').page;
+      vi.spyOn(page, 'url').mockReturnValue('http://127.0.0.1/app');
+      exposePages(browser, [page]);
+
+      await expect(getPageForTargetId({ cdpUrl: cdp.httpUrl, targetId: 'shared-private' })).rejects.toThrow();
+      await expect(
+        getPageForTargetId({
+          cdpUrl: cdp.httpUrl,
+          targetId: 'shared-private',
+          ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+        }),
+      ).resolves.toBe(page);
+      await expect(getPageForTargetId({ cdpUrl: cdp.httpUrl, targetId: 'shared-private' })).rejects.toBeInstanceOf(
+        BlockedBrowserTargetError,
+      );
+    } finally {
+      await disconnectBrowser();
+      await cdp.close();
+    }
+  });
+
+  it('closes an externally navigated private tab after its strict lookup was denied', async () => {
+    const cdp = await startConnectionCdpServer();
+    const fixture = makePage('unsafe-tab');
+    try {
+      const { browser } = await connectBrowser(cdp.httpUrl);
+      vi.spyOn(fixture.page, 'url').mockReturnValue('http://169.254.169.254/');
+      exposePages(browser, [fixture.page]);
+      await expect(getPageForTargetId({ cdpUrl: cdp.httpUrl, targetId: 'unsafe-tab' })).rejects.toThrow();
+
+      await expect(
+        closePageByTargetIdViaPlaywright({ cdpUrl: cdp.httpUrl, targetId: 'unsafe-tab' }),
+      ).resolves.toBeUndefined();
+      expect(fixture.close).toHaveBeenCalledOnce();
+    } finally {
+      await disconnectBrowser();
+      await cdp.close();
+    }
+  });
+
   it('rejects and quarantines an externally navigated private page at the shared lookup boundary', async () => {
     const cdp = await startConnectionCdpServer();
     try {
@@ -213,7 +257,7 @@ describe('exact target identity for lookup and tab mutations', () => {
   });
 
   it.each(['target', 'page'] as const)(
-    'prevents close and focus of a quarantined %s, with successful controls',
+    'allows close but prevents focus of a quarantined %s, with successful controls',
     async (blocked) => {
       const cdp = await startConnectionCdpServer();
       const fixture = makePage('T1');
@@ -234,10 +278,10 @@ describe('exact target identity for lookup and tab mutations', () => {
         if (blocked === 'target') markTargetBlocked(cdp.httpUrl, 'T1');
         else markPageRefBlocked(cdp.httpUrl, fixture.page);
         await expect(focusPageByTargetIdViaPlaywright(opts)).rejects.toBeInstanceOf(BlockedBrowserTargetError);
-        await expect(closePageByTargetIdViaPlaywright(opts)).rejects.toBeInstanceOf(BlockedBrowserTargetError);
+        await expect(closePageByTargetIdViaPlaywright(opts)).resolves.toBeUndefined();
         await expect(findPageByTargetId(browser, 'T1', cdp.httpUrl)).resolves.toBeNull();
         expect(fixture.bringToFront).toHaveBeenCalledOnce();
-        expect(fixture.close).toHaveBeenCalledOnce();
+        expect(fixture.close).toHaveBeenCalledTimes(2);
         expect(cdp.connections).toBe(1);
       } finally {
         await disconnectBrowser();

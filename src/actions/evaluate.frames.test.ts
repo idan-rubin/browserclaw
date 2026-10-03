@@ -41,6 +41,35 @@ describe('evaluateInAllFramesViaPlaywright — per-frame SSRF validation', () =>
     expect(frame.evaluate).not.toHaveBeenCalled();
   });
 
+  it('does not terminate page execution when post-evaluation validation times out', async () => {
+    mockTryTerminateExecutionForPage.mockClear();
+    let url = 'about:blank';
+    const frame = {
+      url: () => url,
+      name: () => 'main',
+      evaluate: vi.fn().mockImplementation(() => {
+        url = 'https://93.184.216.34/slow';
+        return Promise.resolve(1);
+      }),
+    };
+    mockGetPageForTargetId.mockResolvedValue({ url: () => 'about:blank', frames: () => [frame] } as unknown as Page);
+    const original = security.assertBrowserNavigationResultAllowed;
+    vi.spyOn(security, 'assertBrowserNavigationResultAllowed').mockImplementation((opts) =>
+      opts.url.endsWith('/slow') ? new Promise<void>(() => undefined) : original(opts),
+    );
+
+    await expect(
+      evaluateInAllFramesViaPlaywright({
+        cdpUrl: 'http://localhost:9222',
+        targetId: 'T1',
+        fn: '() => 1',
+        timeoutMs: 500,
+      }),
+    ).rejects.toThrow('All-frame evaluate timed out after 500ms');
+    expect(frame.evaluate).toHaveBeenCalledOnce();
+    expect(mockTryTerminateExecutionForPage).not.toHaveBeenCalled();
+  });
+
   it('does not log blocked frame URL credentials or query tokens', async () => {
     const frame = {
       url: () => 'http://user:password@169.254.169.254/?token=secret',

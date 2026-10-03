@@ -25,6 +25,33 @@ vi.mock('./connection.js', async (importOriginal) => {
 const { detectChallengeViaPlaywright, waitForChallengeViaPlaywright } = await import('./anti-bot.js');
 
 describe('waitForChallengeViaPlaywright — evaluate error handling', () => {
+  it('returns at the requested deadline when a poll policy check stalls', async () => {
+    const challenge = { kind: 'cloudflare-js' as const, message: 'Cloudflare JS challenge' };
+    const evaluate = vi.fn().mockResolvedValue(challenge);
+    const page = {
+      evaluate,
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Page;
+    mockGetPageForTargetId.mockResolvedValue(page);
+    mockEnsurePageState.mockReturnValue({});
+    mockNormalizeTimeoutMs.mockReturnValue(500);
+    mockAssertSelectedPageAllowed
+      .mockReset()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementation(() => new Promise<void>(() => undefined));
+    try {
+      await expect(waitForChallengeViaPlaywright({ cdpUrl: 'http://localhost:9222', timeoutMs: 500 })).resolves.toEqual(
+        {
+          resolved: false,
+          challenge,
+        },
+      );
+      expect(evaluate).toHaveBeenCalledOnce();
+    } finally {
+      mockAssertSelectedPageAllowed.mockReset().mockResolvedValue(undefined);
+    }
+  });
+
   it('checks policy again after a challenge redirects before reading the new page', async () => {
     const blocked = new Error('blocked redirected page');
     let url = 'https://93.184.216.34/';
