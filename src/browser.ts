@@ -1920,16 +1920,16 @@ export class BrowserClaw {
     let releaseConnectionOnLaunchFailure: (() => Promise<boolean>) | undefined;
     try {
       const cdpUrl = `http://127.0.0.1:${String(chrome.cdpPort)}`;
-      const releaseLease = acquireBrowserConnectionLease(cdpUrl);
-      releaseConnectionOnLaunchFailure = () => releaseLease();
+      const lease = acquireBrowserConnectionLease(cdpUrl);
+      releaseConnectionOnLaunchFailure = lease.release;
       /* eslint-disable @typescript-eslint/no-deprecated -- backward-compat bridge for allowInternal */
       const ssrfPolicy =
         opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
       /* eslint-enable @typescript-eslint/no-deprecated */
       // Bootstrap connect to our own freshly-spawned loopback Chrome — no policy check.
       const connected = await connectBrowser(cdpUrl, undefined, undefined, { stealth });
-      const releaseConnection = () => releaseLease(connected.browser);
-      releaseConnectionOnLaunchFailure = releaseConnection;
+      lease.bind(connected.browser);
+      const releaseConnection = lease.release;
       const telemetry: RunTelemetry = {
         launchMs: chrome.launchMs,
         timestamps: { startedAt, launchedAt: new Date().toISOString() },
@@ -2015,24 +2015,17 @@ export class BrowserClaw {
     if (!(await isChromeReachable(resolvedUrl, 3000, opts?.authToken, ssrfPolicy))) {
       throw new Error(`Cannot connect to Chrome at ${resolvedUrl}. Is Chrome running with --remote-debugging-port?`);
     }
-    const releaseConnection = acquireBrowserConnectionLease(resolvedUrl);
+    const lease = acquireBrowserConnectionLease(resolvedUrl);
     try {
       const connected = await connectBrowser(resolvedUrl, opts?.authToken, ssrfPolicy, { stealth });
+      lease.bind(connected.browser);
       const telemetry: RunTelemetry = {
         connectMs: Date.now() - connectT0,
         timestamps: { startedAt, connectedAt: new Date().toISOString() },
       };
-      return new BrowserClaw(
-        resolvedUrl,
-        null,
-        telemetry,
-        () => releaseConnection(connected.browser),
-        ssrfPolicy,
-        opts?.recordVideo,
-        stealth,
-      );
+      return new BrowserClaw(resolvedUrl, null, telemetry, lease.release, ssrfPolicy, opts?.recordVideo, stealth);
     } catch (error) {
-      await releaseConnection().catch(() => undefined);
+      await lease.release().catch(() => undefined);
       throw error;
     }
   }

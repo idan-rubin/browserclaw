@@ -131,34 +131,14 @@ export async function waitForChallengeViaPlaywright(opts: {
   const initial = await detect();
   if (initial === null) return { resolved: true, challenge: null };
 
-  // For Cloudflare JS challenges, wait for the title to change (it navigates on success)
-  if (initial.kind === 'cloudflare-js') {
-    try {
-      await page.waitForFunction(
-        "document.title.toLowerCase() !== 'just a moment...' && !document.querySelector('#challenge-running')",
-        undefined,
-        { timeout },
-      );
-      // Cloudflare redirects after the challenge — let the page settle
-      await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {
-        /* page may have already settled */
-      });
-      const after = await detect();
-      return { resolved: after === null, challenge: after };
-    } catch {
-      const after = await detect();
-      return { resolved: after === null, challenge: after };
-    }
-  }
-
-  // For everything else, poll until challenge disappears or timeout
+  // Poll every challenge through the same policy-checked read path, including redirects.
   const deadline = Date.now() + timeout;
+  let current: ChallengeInfo | null = initial;
   while (Date.now() < deadline) {
-    await page.waitForTimeout(poll);
-    const current = await detect();
+    await page.waitForTimeout(Math.min(poll, deadline - Date.now()));
+    current = await detect();
     if (current === null) return { resolved: true, challenge: null };
   }
 
-  const final = await detect();
-  return { resolved: final === null, challenge: final };
+  return { resolved: false, challenge: current };
 }

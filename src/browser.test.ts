@@ -38,10 +38,13 @@ vi.mock('./connection.js', async (importOriginal) => {
   return {
     ...actual,
     closePlaywrightBrowserConnection: mockCloseAdapter,
-    acquireBrowserConnectionLease: () => async () => {
-      await mockCloseAdapter();
-      return true;
-    },
+    acquireBrowserConnectionLease: () => ({
+      bind: () => undefined,
+      release: async () => {
+        await mockCloseAdapter();
+        return true;
+      },
+    }),
     getPageForTargetId: mockGetPageForTargetId,
     resolveActiveTargetId: mockResolveActiveTargetId,
     pageTargetId: mockPageTargetId,

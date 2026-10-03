@@ -8,7 +8,7 @@ const { mockGetPageForTargetId, mockEnsurePageState, mockNormalizeTimeoutMs, moc
     mockGetPageForTargetId: vi.fn<(opts: unknown) => Promise<Page>>(),
     mockEnsurePageState: vi.fn<(page: unknown) => Record<string, unknown>>(),
     mockNormalizeTimeoutMs: vi.fn<() => number>(),
-    mockAssertSelectedPageAllowed: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+    mockAssertSelectedPageAllowed: vi.fn<(opts: { page: Page }) => Promise<void>>().mockResolvedValue(undefined),
   }));
 
 vi.mock('./connection.js', async (importOriginal) => {
@@ -25,6 +25,35 @@ vi.mock('./connection.js', async (importOriginal) => {
 const { detectChallengeViaPlaywright, waitForChallengeViaPlaywright } = await import('./anti-bot.js');
 
 describe('waitForChallengeViaPlaywright — evaluate error handling', () => {
+  it('checks policy again after a challenge redirects before reading the new page', async () => {
+    const blocked = new Error('blocked redirected page');
+    let url = 'https://93.184.216.34/';
+    const evaluate = vi.fn().mockResolvedValue({ kind: 'cloudflare-js', message: 'Cloudflare JS challenge' });
+    const waitForFunction = vi.fn();
+    const page = {
+      url: () => url,
+      evaluate,
+      waitForTimeout: vi.fn().mockImplementation(() => {
+        url = 'http://169.254.169.254/';
+        return Promise.resolve();
+      }),
+      waitForFunction,
+    } as unknown as Page;
+    mockGetPageForTargetId.mockResolvedValue(page);
+    mockEnsurePageState.mockReturnValue({});
+    mockNormalizeTimeoutMs.mockReturnValue(15000);
+    mockAssertSelectedPageAllowed.mockImplementation(({ page: selected }) =>
+      selected.url() === 'http://169.254.169.254/' ? Promise.reject(blocked) : Promise.resolve(),
+    );
+    try {
+      await expect(waitForChallengeViaPlaywright({ cdpUrl: 'http://localhost:9222' })).rejects.toBe(blocked);
+      expect(evaluate).toHaveBeenCalledOnce();
+      expect(waitForFunction).not.toHaveBeenCalled();
+    } finally {
+      mockAssertSelectedPageAllowed.mockReset().mockResolvedValue(undefined);
+    }
+  });
+
   it('forwards the caller policy before challenge detection reads the page', async () => {
     const policy = { dangerouslyAllowPrivateNetwork: false };
     const page = { evaluate: vi.fn().mockResolvedValue(null) } as unknown as Page;

@@ -3,19 +3,25 @@ import { describe, it, expect, vi } from 'vitest';
 
 import type * as ConnectionModule from '../connection.js';
 
-const { mockGetPageForTargetId } = vi.hoisted(() => ({
+const { mockGetPageForTargetId, mockTryTerminateExecutionForPage } = vi.hoisted(() => ({
   mockGetPageForTargetId: vi.fn<(opts: unknown) => Promise<Page>>(),
+  mockTryTerminateExecutionForPage: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
 }));
 
 vi.mock('../connection.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ConnectionModule>();
-  return { ...actual, getPageForTargetId: mockGetPageForTargetId };
+  return {
+    ...actual,
+    getPageForTargetId: mockGetPageForTargetId,
+    tryTerminateExecutionForPage: mockTryTerminateExecutionForPage,
+  };
 });
 
 const { evaluateInAllFramesViaPlaywright } = await import('./evaluate.js');
 
 describe('evaluateInAllFramesViaPlaywright — per-frame SSRF validation', () => {
   it('bounds a frame whose Playwright evaluation never settles', async () => {
+    mockTryTerminateExecutionForPage.mockClear();
     const frame = {
       url: () => 'about:blank',
       name: () => 'main',
@@ -24,9 +30,35 @@ describe('evaluateInAllFramesViaPlaywright — per-frame SSRF validation', () =>
     mockGetPageForTargetId.mockResolvedValue({ url: () => 'about:blank', frames: () => [frame] } as unknown as Page);
 
     await expect(
-      evaluateInAllFramesViaPlaywright({ cdpUrl: 'http://localhost:9222', fn: '() => 1', timeoutMs: 500 }),
+      evaluateInAllFramesViaPlaywright({
+        cdpUrl: 'http://localhost:9222',
+        targetId: 'T1',
+        fn: '() => 1',
+        timeoutMs: 500,
+      }),
     ).rejects.toThrow('All-frame evaluate timed out after 500ms');
     expect(frame.evaluate).toHaveBeenCalledOnce();
+    expect(mockTryTerminateExecutionForPage).toHaveBeenCalledWith(
+      expect.objectContaining({ cdpUrl: 'http://localhost:9222', targetId: 'T1' }),
+    );
+  });
+
+  it('uses the shared evaluator for statement-form code', async () => {
+    const frame = {
+      url: () => 'about:blank',
+      name: () => 'main',
+      evaluate: vi.fn(
+        (
+          evaluator: (args: { fnBody: string; timeoutMs: number }) => unknown,
+          args: { fnBody: string; timeoutMs: number },
+        ) => Promise.resolve(evaluator(args)),
+      ),
+    };
+    mockGetPageForTargetId.mockResolvedValue({ url: () => 'about:blank', frames: () => [frame] } as unknown as Page);
+
+    await expect(
+      evaluateInAllFramesViaPlaywright({ cdpUrl: 'http://localhost:9222', fn: 'const value = 40; value + 2' }),
+    ).resolves.toEqual([{ frameUrl: 'about:blank', frameName: 'main', result: 42 }]);
   });
 
   it.each([undefined, {}])('skips an SSRF-blocked frame with policy %j', async (ssrfPolicy) => {

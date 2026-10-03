@@ -94,12 +94,12 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
         (err instanceof Error && /evaluate timed out after \d+ms/.test(err.message))
       ) {
         if (opts.targetId !== undefined && opts.targetId !== '') {
-          await tryTerminateExecutionForPage({
+          void tryTerminateExecutionForPage({
             cdpUrl: opts.cdpUrl,
             targetId: opts.targetId,
             page,
             ssrfPolicy: opts.ssrfPolicy,
-          });
+          }).catch(() => undefined);
         }
         throw err instanceof FrameEvaluationTimeoutError ? err : new FrameEvaluationTimeoutError(timeoutMs);
       }

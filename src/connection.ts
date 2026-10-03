@@ -336,33 +336,59 @@ const stealthByCdpUrl = new Map<string, boolean>();
 // the action function chain doesn't thread a policy through. Closes the
 // DNS-rebinding window between connect attempts.
 const lastPolicyByCdpUrl = new Map<string, SsrfPolicy>();
-const connectionLeaseCounts = new Map<string, number>();
+interface ConnectionLeaseState {
+  pending: number;
+  byBrowser: Map<Browser, number>;
+}
+
+const connectionLeasesByCdpUrl = new Map<string, ConnectionLeaseState>();
 const leaseRetirements = new Map<string, Promise<void>>();
 
-/** A BrowserClaw handle owns one lease; only the last handle retires the adapter. */
-export function acquireBrowserConnectionLease(cdpUrl: string): (expectedBrowser?: Browser) => Promise<boolean> {
+/** A BrowserClaw handle owns one lease on the adapter it actually connected to. */
+export function acquireBrowserConnectionLease(cdpUrl: string): {
+  bind: (browser: Browser) => void;
+  release: () => Promise<boolean>;
+} {
   const normalized = normalizeCdpUrl(cdpUrl);
-  connectionLeaseCounts.set(normalized, (connectionLeaseCounts.get(normalized) ?? 0) + 1);
+  const state = connectionLeasesByCdpUrl.get(normalized) ?? { pending: 0, byBrowser: new Map<Browser, number>() };
+  connectionLeasesByCdpUrl.set(normalized, state);
+  state.pending++;
+  let browser: Browser | undefined;
   let released = false;
-  return async (expectedBrowser) => {
-    if (released) return false;
-    released = true;
-    const remaining = (connectionLeaseCounts.get(normalized) ?? 1) - 1;
-    if (remaining > 0) {
-      connectionLeaseCounts.set(normalized, remaining);
-      return false;
-    }
-    connectionLeaseCounts.delete(normalized);
-    // A stale handle must never retire an adapter installed after its own connection disconnected.
-    if (expectedBrowser && cachedByCdpUrl.get(normalized)?.browser !== expectedBrowser) return false;
-    const retiring = closePlaywrightBrowserConnection({ cdpUrl: normalized });
-    leaseRetirements.set(normalized, retiring);
-    try {
-      await retiring;
-    } finally {
-      if (leaseRetirements.get(normalized) === retiring) leaseRetirements.delete(normalized);
-    }
-    return true;
+  return {
+    bind: (connected) => {
+      if (released || browser) throw new Error('Browser connection lease is already bound or released.');
+      browser = connected;
+      state.pending--;
+      state.byBrowser.set(connected, (state.byBrowser.get(connected) ?? 0) + 1);
+    },
+    release: async () => {
+      if (released) return false;
+      released = true;
+      if (browser) {
+        const remaining = (state.byBrowser.get(browser) ?? 1) - 1;
+        if (remaining > 0) state.byBrowser.set(browser, remaining);
+        else state.byBrowser.delete(browser);
+      } else {
+        state.pending--;
+      }
+      const shouldRetire =
+        state.pending === 0 &&
+        (browser
+          ? !state.byBrowser.has(browser) && cachedByCdpUrl.get(normalized)?.browser === browser
+          : state.byBrowser.size === 0);
+      if (state.pending === 0 && state.byBrowser.size === 0 && connectionLeasesByCdpUrl.get(normalized) === state)
+        connectionLeasesByCdpUrl.delete(normalized);
+      if (!shouldRetire) return false;
+      const retiring = closePlaywrightBrowserConnection({ cdpUrl: normalized });
+      leaseRetirements.set(normalized, retiring);
+      try {
+        await retiring;
+      } finally {
+        if (leaseRetirements.get(normalized) === retiring) leaseRetirements.delete(normalized);
+      }
+      return true;
+    },
   };
 }
 
