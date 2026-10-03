@@ -9,6 +9,7 @@ import {
   acquireBrowserConnectionLease,
   connectBrowser,
   disconnectBrowser,
+  evictStaleConnection,
   forceDisconnectPlaywrightConnection,
   getPageForTargetId,
   hasCachedPlaywrightBrowserConnection,
@@ -87,6 +88,47 @@ describe('exact Playwright connection retirement', () => {
       expect(await lease.release()).toBe(false);
       expect(successor.browser.isConnected()).toBe(true);
       expect((await connectBrowser(cdp.httpUrl)).browser).toBe(successor.browser);
+    } finally {
+      await lease.release();
+      await disconnectBrowser();
+      await cdp.close();
+    }
+  });
+
+  it('transfers a live handle to an adapter created by automatic stale recovery', async () => {
+    const cdp = await startConnectionCdpServer();
+    const lease = acquireBrowserConnectionLease(cdp.httpUrl);
+    try {
+      const old = await connectBrowser(cdp.httpUrl);
+      lease.bind(old.browser);
+      evictStaleConnection(cdp.httpUrl, old.browser);
+      const successor = await connectBrowser(cdp.httpUrl);
+      expect(successor.browser).not.toBe(old.browser);
+
+      expect(await lease.release()).toBe(true);
+      expect(successor.browser.isConnected()).toBe(false);
+    } finally {
+      await lease.release();
+      await disconnectBrowser();
+      await cdp.close();
+    }
+  });
+
+  it('transfers a live handle after an unexpected adapter disconnect', async () => {
+    const cdp = await startConnectionCdpServer();
+    const lease = acquireBrowserConnectionLease(cdp.httpUrl);
+    try {
+      const old = await connectBrowser(cdp.httpUrl);
+      lease.bind(old.browser);
+      await old.browser.close();
+      await vi.waitFor(() => {
+        expect(hasCachedPlaywrightBrowserConnection(cdp.httpUrl)).toBe(false);
+      });
+      const successor = await connectBrowser(cdp.httpUrl);
+      expect(successor.browser).not.toBe(old.browser);
+
+      expect(await lease.release()).toBe(true);
+      expect(successor.browser.isConnected()).toBe(false);
     } finally {
       await lease.release();
       await disconnectBrowser();

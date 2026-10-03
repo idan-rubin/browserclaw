@@ -659,6 +659,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       ref,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1138,6 +1139,7 @@ export class CrawlPage {
       screenshots: opts?.screenshots,
       snapshots: opts?.snapshots,
       sources: opts?.sources,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1153,6 +1155,7 @@ export class CrawlPage {
       targetId: this._targetId,
       path,
       allowedOutputRoots: opts?.allowedOutputRoots,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1180,6 +1183,7 @@ export class CrawlPage {
       timeoutMs: opts?.timeoutMs,
       maxChars: opts?.maxChars,
       signal: opts?.signal,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1213,6 +1217,7 @@ export class CrawlPage {
       method: opts?.method,
       timeoutMs: opts?.timeoutMs,
       maxChars: opts?.maxChars,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1230,6 +1235,7 @@ export class CrawlPage {
       targetId: this._targetId,
       level: opts?.level,
       clear: opts?.clear,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1244,6 +1250,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       clear: opts?.clear,
+      ssrfPolicy: this.ssrfPolicy,
     });
     return result.errors;
   }
@@ -1267,6 +1274,7 @@ export class CrawlPage {
       targetId: this._targetId,
       filter: opts?.filter,
       clear: opts?.clear,
+      ssrfPolicy: this.ssrfPolicy,
     });
     return result.requests;
   }
@@ -1298,7 +1306,11 @@ export class CrawlPage {
    * @returns Array of cookie objects
    */
   async cookies(): Promise<Awaited<ReturnType<BrowserContext['cookies']>>> {
-    const result = await cookiesGetViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const result = await cookiesGetViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     return result.cookies;
   }
 
@@ -1317,7 +1329,12 @@ export class CrawlPage {
    * ```
    */
   async setCookie(cookie: CookieData): Promise<void> {
-    return cookiesSetViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId, cookie });
+    return cookiesSetViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      cookie,
+      ssrfPolicy: this.ssrfPolicy,
+    });
   }
 
   /** Import cookies in bounded batches and report how many were accepted. */
@@ -1327,12 +1344,13 @@ export class CrawlPage {
       targetId: this._targetId,
       cookies,
       signal: opts?.signal,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
   /** Clear all cookies in the browser context. */
   async clearCookies(): Promise<void> {
-    return cookiesClearViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    return cookiesClearViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId, ssrfPolicy: this.ssrfPolicy });
   }
 
   /**
@@ -1348,6 +1366,7 @@ export class CrawlPage {
       targetId: this._targetId,
       kind,
       key,
+      ssrfPolicy: this.ssrfPolicy,
     });
     return result.values;
   }
@@ -1366,6 +1385,7 @@ export class CrawlPage {
       kind,
       key,
       value,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1379,6 +1399,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       kind,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1452,6 +1473,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       offline,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1470,6 +1492,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       headers,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1485,6 +1508,7 @@ export class CrawlPage {
       username: opts.username,
       password: opts.password,
       clear: opts.clear,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1508,6 +1532,7 @@ export class CrawlPage {
       accuracy: opts.accuracy,
       origin: opts.origin,
       clear: opts.clear,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1526,6 +1551,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       colorScheme: opts.colorScheme,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1539,6 +1565,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       locale,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1552,6 +1579,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       timezoneId,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1571,6 +1599,7 @@ export class CrawlPage {
       targetId: this._targetId,
       name,
       signal: opts?.signal,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -2083,7 +2112,7 @@ export class BrowserClaw {
    * @returns Array of tab information objects
    */
   async tabs(): Promise<BrowserTab[]> {
-    return listPagesViaPlaywright({ cdpUrl: this.cdpUrl });
+    return listPagesViaPlaywright({ cdpUrl: this.cdpUrl, ssrfPolicy: this.ssrfPolicy });
   }
 
   /**
@@ -2107,8 +2136,13 @@ export class BrowserClaw {
       urlContains: opts.urlContains,
       titleContains: opts.titleContains,
       timeoutMs: opts.timeoutMs,
+      ssrfPolicy: this.ssrfPolicy,
     });
-    await focusPageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId: tab.targetId });
+    await focusPageByTargetIdViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: tab.targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     return new CrawlPage(this.cdpUrl, tab.targetId, this.ssrfPolicy);
   }
 
@@ -2118,7 +2152,7 @@ export class BrowserClaw {
    * @param targetId - CDP target ID of the tab (from `tabs()` or `page.id`)
    */
   async focus(targetId: string): Promise<void> {
-    await focusPageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId });
+    await focusPageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId, ssrfPolicy: this.ssrfPolicy });
     if (process.platform === 'darwin' && this.chrome?.pid !== undefined) {
       await activateMacOsWindowByPid(this.chrome.pid);
     }
@@ -2130,7 +2164,7 @@ export class BrowserClaw {
    * @param targetId - CDP target ID of the tab to close
    */
   async close(targetId: string): Promise<void> {
-    return closePageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId });
+    return closePageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId, ssrfPolicy: this.ssrfPolicy });
   }
 
   /**

@@ -1,7 +1,8 @@
 import type { Page } from 'playwright-core';
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 
 import type * as ConnectionModule from '../connection.js';
+import * as security from '../security.js';
 
 const { mockGetPageForTargetId, mockTryTerminateExecutionForPage } = vi.hoisted(() => ({
   mockGetPageForTargetId: vi.fn<(opts: unknown) => Promise<Page>>(),
@@ -19,7 +20,44 @@ vi.mock('../connection.js', async (importOriginal) => {
 
 const { evaluateInAllFramesViaPlaywright } = await import('./evaluate.js');
 
+afterEach(() => vi.restoreAllMocks());
+
 describe('evaluateInAllFramesViaPlaywright — per-frame SSRF validation', () => {
+  it('applies the total timeout to frame policy validation', async () => {
+    const frame = {
+      url: () => 'https://93.184.216.34/slow',
+      name: () => 'slow',
+      evaluate: vi.fn(),
+    };
+    mockGetPageForTargetId.mockResolvedValue({ url: () => 'about:blank', frames: () => [frame] } as unknown as Page);
+    const original = security.assertBrowserNavigationResultAllowed;
+    vi.spyOn(security, 'assertBrowserNavigationResultAllowed').mockImplementation((opts) =>
+      opts.url.endsWith('/slow') ? new Promise<void>(() => undefined) : original(opts),
+    );
+
+    await expect(
+      evaluateInAllFramesViaPlaywright({ cdpUrl: 'http://localhost:9222', fn: '() => 1', timeoutMs: 500 }),
+    ).rejects.toThrow('All-frame evaluate timed out after 500ms');
+    expect(frame.evaluate).not.toHaveBeenCalled();
+  });
+
+  it('does not log blocked frame URL credentials or query tokens', async () => {
+    const frame = {
+      url: () => 'http://user:password@169.254.169.254/?token=secret',
+      name: () => 'blocked',
+      evaluate: vi.fn(),
+    };
+    mockGetPageForTargetId.mockResolvedValue({ url: () => 'about:blank', frames: () => [frame] } as unknown as Page);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(evaluateInAllFramesViaPlaywright({ cdpUrl: 'http://localhost:9222', fn: '() => 1' })).resolves.toEqual(
+      [],
+    );
+    expect(warn).toHaveBeenCalledWith('[browserclaw] skipping SSRF-blocked frame');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('password');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('secret');
+  });
+
   it('bounds a frame whose Playwright evaluation never settles', async () => {
     mockTryTerminateExecutionForPage.mockClear();
     const frame = {

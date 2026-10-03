@@ -1,15 +1,16 @@
 import type { BrowserContext } from 'playwright-core';
 
 import { getPageForTargetId, ensurePageState } from '../connection.js';
-import type { CookieData, StorageKind } from '../types.js';
+import type { CookieData, StorageKind, SsrfPolicy } from '../types.js';
 
 // ── Cookies ──
 
 export async function cookiesGetViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<{ cookies: Awaited<ReturnType<BrowserContext['cookies']>> }> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
   return { cookies: await page.context().cookies() };
 }
@@ -18,8 +19,9 @@ export async function cookiesSetViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
   cookie: CookieData;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
   const cookie = opts.cookie;
   if (cookie.name === '') throw new Error('cookie name and value are required');
@@ -33,8 +35,12 @@ export async function cookiesSetViaPlaywright(opts: {
   await page.context().addCookies([cookie]);
 }
 
-export async function cookiesClearViaPlaywright(opts: { cdpUrl: string; targetId?: string }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+export async function cookiesClearViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId?: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<void> {
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
   await page.context().clearCookies();
 }
@@ -54,6 +60,7 @@ export async function cookiesSetManyViaPlaywright(opts: {
   targetId?: string;
   cookies: CookieData[];
   signal?: AbortSignal;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<{ added: number }> {
   opts.signal?.throwIfAborted();
   const page = await getPageForTargetId(opts);
@@ -91,8 +98,9 @@ export async function storageGetViaPlaywright(opts: {
   targetId?: string;
   kind: StorageKind;
   key?: string;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<{ values: Record<string, string> }> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
   const entries = await page.evaluate(
     ({ kind, key }: { kind: string; key?: string }): [string, string][] => {
@@ -121,10 +129,11 @@ export async function storageSetViaPlaywright(opts: {
   kind: StorageKind;
   key: string;
   value: string;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   const key = opts.key;
   if (key === '') throw new Error('key is required');
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
   await page.evaluate(
     ({ kind, key: k, value }: { kind: string; key: string; value: string }) => {
@@ -138,8 +147,9 @@ export async function storageClearViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
   kind: StorageKind;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
   await page.evaluate(
     ({ kind }: { kind: string }) => {

@@ -7,7 +7,11 @@ import {
   forceDisconnectPlaywrightConnection,
   tryTerminateExecutionForPage,
 } from '../connection.js';
-import { assertBrowserNavigationResultAllowed, withBrowserNavigationPolicy } from '../security.js';
+import {
+  assertBrowserNavigationResultAllowed,
+  InvalidBrowserNavigationUrlError,
+  withBrowserNavigationPolicy,
+} from '../security.js';
 import type { SsrfPolicy } from '../types.js';
 
 import { assertInteractionNavigationCompletedSafely, assertPageNavigationCompletedSafely } from './navigation.js';
@@ -38,51 +42,57 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
     targetId: opts.targetId,
     ssrfPolicy: opts.ssrfPolicy,
   });
-  await assertPageNavigationCompletedSafely({
-    cdpUrl: opts.cdpUrl,
-    page,
-    response: null,
-    ssrfPolicy: opts.ssrfPolicy,
-    targetId: opts.targetId,
-  });
-  const frames = page.frames();
-  const results: FrameEvalResult[] = [];
   const timeoutMs = normalizeTimeoutMs(opts.timeoutMs, 20000);
   const deadline = Date.now() + timeoutMs;
+  await withFrameBudget(
+    () =>
+      assertPageNavigationCompletedSafely({
+        cdpUrl: opts.cdpUrl,
+        page,
+        response: null,
+        ssrfPolicy: opts.ssrfPolicy,
+        targetId: opts.targetId,
+      }),
+    deadline,
+    timeoutMs,
+  );
+  const frames = page.frames();
+  const results: FrameEvalResult[] = [];
   const framePolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, {
     browserProxyMode: isCdpUrlProxyRouted(opts.cdpUrl) ? 'explicit-browser-proxy' : undefined,
   });
 
   for (const frame of frames) {
     try {
-      await assertBrowserNavigationResultAllowed({ url: frame.url(), ...framePolicy });
-    } catch {
-      console.warn(`[browserclaw] skipping SSRF-blocked frame: ${frame.url()}`);
+      await withFrameBudget(
+        () => assertBrowserNavigationResultAllowed({ url: frame.url(), ...framePolicy }),
+        deadline,
+        timeoutMs,
+      );
+    } catch (error) {
+      if (error instanceof FrameEvaluationTimeoutError) throw error;
+      if (!(error instanceof InvalidBrowserNavigationUrlError)) throw error;
+      console.warn('[browserclaw] skipping SSRF-blocked frame');
       continue;
     }
     try {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new FrameEvaluationTimeoutError(timeoutMs);
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timedOut = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          reject(new FrameEvaluationTimeoutError(timeoutMs));
-        }, remaining);
-      });
-      let result: unknown;
-      try {
-        // Uses the same browser-side expression/statement and promise rules as evaluate().
-        result = await Promise.race([
+      // Uses the same browser-side expression/statement and promise rules as evaluate().
+      const result: unknown = await withFrameBudget(
+        () =>
           frame.evaluate(BROWSER_EVALUATOR as (...args: unknown[]) => unknown, {
             fnBody: fnText,
             timeoutMs: remaining,
           }),
-          timedOut,
-        ]);
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-      await assertBrowserNavigationResultAllowed({ url: frame.url(), ...framePolicy });
+        deadline,
+        timeoutMs,
+      );
+      await withFrameBudget(
+        () => assertBrowserNavigationResultAllowed({ url: frame.url(), ...framePolicy }),
+        deadline,
+        timeoutMs,
+      );
       results.push({
         frameUrl: frame.url(),
         frameName: frame.name(),
@@ -103,6 +113,10 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
         }
         throw err instanceof FrameEvaluationTimeoutError ? err : new FrameEvaluationTimeoutError(timeoutMs);
       }
+      if (err instanceof InvalidBrowserNavigationUrlError) {
+        console.warn('[browserclaw] skipping SSRF-blocked frame');
+        continue;
+      }
       console.warn('[browserclaw] frame evaluate failed:', err instanceof Error ? err.message : String(err));
     }
   }
@@ -114,6 +128,22 @@ class FrameEvaluationTimeoutError extends Error {
   constructor(timeoutMs: number) {
     super(`All-frame evaluate timed out after ${String(timeoutMs)}ms`);
     this.name = 'FrameEvaluationTimeoutError';
+  }
+}
+
+async function withFrameBudget<T>(task: () => Promise<T>, deadline: number, timeoutMs: number): Promise<T> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new FrameEvaluationTimeoutError(timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new FrameEvaluationTimeoutError(timeoutMs));
+    }, remaining);
+  });
+  try {
+    return await Promise.race([task(), timedOut]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

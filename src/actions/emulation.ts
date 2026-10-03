@@ -7,7 +7,7 @@ import {
   runPageEmulationTransition,
   setViewportSizeOnPage,
 } from '../page-emulation.js';
-import type { ColorScheme } from '../types.js';
+import type { ColorScheme, SsrfPolicy } from '../types.js';
 
 // Matches iOS/Android defaults. Chromium's Emulation.setTouchEmulationEnabled
 // defaults to 1 if unspecified; real phones report 5.
@@ -17,8 +17,9 @@ export async function emulateMediaViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
   colorScheme: ColorScheme;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
   await page.emulateMedia({ colorScheme: opts.colorScheme });
 }
@@ -28,6 +29,7 @@ export async function setDeviceViaPlaywright(opts: {
   targetId?: string;
   name: string;
   signal?: AbortSignal;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   opts.signal?.throwIfAborted();
   const name = opts.name.trim();
@@ -49,7 +51,7 @@ export async function setDeviceViaPlaywright(opts: {
     throw new Error(`Unknown device "${name}".`);
   }
 
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
 
   await runPageEmulationTransition(
@@ -127,8 +129,9 @@ export async function setExtraHTTPHeadersViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
   headers: Record<string, string>;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
   // Use CDP Network.setExtraHTTPHeaders for page-scoped headers instead of
   // context-level setExtraHTTPHeaders which affects all tabs
@@ -150,8 +153,9 @@ export async function setGeolocationViaPlaywright(opts: {
   accuracy?: number;
   origin?: string;
   clear?: boolean;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
   const context = page.context();
 
@@ -195,8 +199,9 @@ export async function setHttpCredentialsViaPlaywright(opts: {
   username?: string;
   password?: string;
   clear?: boolean;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
 
   if (opts.clear === true) {
@@ -215,8 +220,9 @@ export async function setLocaleViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
   locale: string;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
 
   const locale = opts.locale.trim();
@@ -235,8 +241,9 @@ export async function setOfflineViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
   offline: boolean;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
   await page.context().setOffline(opts.offline);
 }
@@ -245,8 +252,9 @@ export async function setTimezoneViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
   timezoneId: string;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
 
   const timezoneId = opts.timezoneId.trim();

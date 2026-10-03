@@ -1,5 +1,5 @@
 import { getPageForTargetId, ensurePageState } from '../connection.js';
-import type { ConsoleMessage, PageError, NetworkRequest } from '../types.js';
+import type { ConsoleMessage, PageError, NetworkRequest, SsrfPolicy } from '../types.js';
 
 function consolePriority(level: string): number {
   switch (level) {
@@ -23,8 +23,9 @@ export async function getConsoleMessagesViaPlaywright(opts: {
   targetId?: string;
   level?: string;
   clear?: boolean;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<ConsoleMessage[]> {
-  const state = ensurePageState(await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId }));
+  const state = ensurePageState(await getPageForTargetId(opts));
   const messages =
     opts.level !== undefined && opts.level !== ''
       ? state.console.filter((msg) => consolePriority(msg.type) >= consolePriority(opts.level ?? ''))
@@ -37,8 +38,9 @@ export async function getPageErrorsViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
   clear?: boolean;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<{ errors: PageError[] }> {
-  const state = ensurePageState(await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId }));
+  const state = ensurePageState(await getPageForTargetId(opts));
   const errors = [...state.errors];
   if (opts.clear === true) state.errors = [];
   return { errors };
@@ -49,8 +51,9 @@ export async function getNetworkRequestsViaPlaywright(opts: {
   targetId?: string;
   filter?: string;
   clear?: boolean;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<{ requests: NetworkRequest[] }> {
-  const state = ensurePageState(await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId }));
+  const state = ensurePageState(await getPageForTargetId(opts));
   const raw = [...state.requests];
   const filter = typeof opts.filter === 'string' ? opts.filter.trim() : '';
   const requests = filter ? raw.filter((r) => r.url.includes(filter) || r.resourceType.includes(filter)) : raw;

@@ -2,6 +2,7 @@ import { dirname } from 'node:path';
 
 import { getPageForTargetId, ensurePageState, ensureContextState } from '../connection.js';
 import { assertSafeOutputPath, writeViaSiblingTempPath } from '../security.js';
+import type { SsrfPolicy } from '../types.js';
 
 export async function traceStartViaPlaywright(opts: {
   cdpUrl: string;
@@ -9,8 +10,9 @@ export async function traceStartViaPlaywright(opts: {
   screenshots?: boolean;
   snapshots?: boolean;
   sources?: boolean;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
   const context = page.context();
   const ctxState = ensureContextState(context);
@@ -32,9 +34,10 @@ export async function traceStopViaPlaywright(opts: {
   targetId?: string;
   path: string;
   allowedOutputRoots?: string[];
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
   await assertSafeOutputPath(opts.path, opts.allowedOutputRoots);
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
   const context = page.context();
   const ctxState = ensureContextState(context);

@@ -1,5 +1,5 @@
 import { getPageForTargetId, ensurePageState, normalizeTimeoutMs, truncateUtf16Safe } from '../connection.js';
-import type { RequestResult, ResponseBodyResult } from '../types.js';
+import type { RequestResult, ResponseBodyResult, SsrfPolicy } from '../types.js';
 
 function resolveMaxChars(maxChars: number | undefined): number {
   return typeof maxChars === 'number' && Number.isFinite(maxChars)
@@ -28,9 +28,10 @@ export async function responseBodyViaPlaywright(opts: {
   timeoutMs?: number;
   maxChars?: number;
   signal?: AbortSignal;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<ResponseBodyResult> {
   opts.signal?.throwIfAborted();
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   opts.signal?.throwIfAborted();
   ensurePageState(page);
 
@@ -121,8 +122,9 @@ export async function waitForRequestViaPlaywright(opts: {
   method?: string;
   timeoutMs?: number;
   maxChars?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<RequestResult> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 30000, 120000);

@@ -57,6 +57,28 @@ afterEach(async () => {
 });
 
 describe('exact target identity for lookup and tab mutations', () => {
+  it('keeps an explicitly allowed private page accessible without quarantining it', async () => {
+    const cdp = await startConnectionCdpServer();
+    try {
+      const { browser } = await connectBrowser(cdp.httpUrl);
+      const page = makePage('internal-target').page;
+      vi.spyOn(page, 'url').mockReturnValue('http://127.0.0.1/app');
+      exposePages(browser, [page]);
+
+      await expect(
+        getPageForTargetId({
+          cdpUrl: cdp.httpUrl,
+          targetId: 'internal-target',
+          ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+        }),
+      ).resolves.toBe(page);
+      expect(isBlockedPageRef(cdp.httpUrl, page)).toBe(false);
+    } finally {
+      await disconnectBrowser();
+      await cdp.close();
+    }
+  });
+
   it('rejects and quarantines an externally navigated private page at the shared lookup boundary', async () => {
     const cdp = await startConnectionCdpServer();
     try {

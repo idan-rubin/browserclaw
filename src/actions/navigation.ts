@@ -1031,7 +1031,11 @@ export async function closePageViaPlaywright(opts: {
   await page.close();
 }
 
-export async function closePageByTargetIdViaPlaywright(opts: { cdpUrl: string; targetId: string }): Promise<void> {
+export async function closePageByTargetIdViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<void> {
   try {
     await (await resolvePageByTargetIdOrThrow(opts)).close();
   } catch (err) {
@@ -1040,7 +1044,11 @@ export async function closePageByTargetIdViaPlaywright(opts: { cdpUrl: string; t
   }
 }
 
-export async function focusPageByTargetIdViaPlaywright(opts: { cdpUrl: string; targetId: string }): Promise<void> {
+export async function focusPageByTargetIdViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<void> {
   const page = await resolvePageByTargetIdOrThrow(opts);
   try {
     await page.bringToFront();
@@ -1066,6 +1074,7 @@ export async function waitForTabViaPlaywright(opts: {
   urlContains?: string;
   titleContains?: string;
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<BrowserTab> {
   if (opts.urlContains === undefined && opts.titleContains === undefined)
     throw new Error('urlContains or titleContains is required');
@@ -1074,7 +1083,7 @@ export async function waitForTabViaPlaywright(opts: {
   const POLL_INTERVAL_MS = 250;
 
   while (Date.now() - start < timeout) {
-    const tabs = await listPagesViaPlaywright({ cdpUrl: opts.cdpUrl });
+    const tabs = await listPagesViaPlaywright({ cdpUrl: opts.cdpUrl, ssrfPolicy: opts.ssrfPolicy });
     const match = tabs.find((t) => {
       if (opts.urlContains !== undefined && !t.url.includes(opts.urlContains)) return false;
       if (opts.titleContains !== undefined && !t.title.includes(opts.titleContains)) return false;

@@ -337,12 +337,26 @@ const stealthByCdpUrl = new Map<string, boolean>();
 // DNS-rebinding window between connect attempts.
 const lastPolicyByCdpUrl = new Map<string, SsrfPolicy>();
 interface ConnectionLeaseState {
-  pending: number;
-  byBrowser: Map<Browser, number>;
+  records: Set<{ browser?: Browser }>;
+  transferable: Set<Browser>;
 }
 
 const connectionLeasesByCdpUrl = new Map<string, ConnectionLeaseState>();
 const leaseRetirements = new Map<string, Promise<void>>();
+
+function markBrowserForLeaseTransfer(normalized: string, browser: Browser): void {
+  const state = connectionLeasesByCdpUrl.get(normalized);
+  if (state && [...state.records].some((record) => record.browser === browser)) state.transferable.add(browser);
+}
+
+function transferBrowserLeases(normalized: string, successor: Browser): void {
+  const state = connectionLeasesByCdpUrl.get(normalized);
+  if (!state) return;
+  for (const record of state.records) {
+    if (record.browser && state.transferable.has(record.browser)) record.browser = successor;
+  }
+  state.transferable.clear();
+}
 
 /** A BrowserClaw handle owns one lease on the adapter it actually connected to. */
 export function acquireBrowserConnectionLease(cdpUrl: string): {
@@ -350,34 +364,31 @@ export function acquireBrowserConnectionLease(cdpUrl: string): {
   release: () => Promise<boolean>;
 } {
   const normalized = normalizeCdpUrl(cdpUrl);
-  const state = connectionLeasesByCdpUrl.get(normalized) ?? { pending: 0, byBrowser: new Map<Browser, number>() };
+  const state = connectionLeasesByCdpUrl.get(normalized) ?? {
+    records: new Set<{ browser?: Browser }>(),
+    transferable: new Set<Browser>(),
+  };
   connectionLeasesByCdpUrl.set(normalized, state);
-  state.pending++;
-  let browser: Browser | undefined;
+  const record: { browser?: Browser } = {};
+  state.records.add(record);
   let released = false;
   return {
     bind: (connected) => {
-      if (released || browser) throw new Error('Browser connection lease is already bound or released.');
-      browser = connected;
-      state.pending--;
-      state.byBrowser.set(connected, (state.byBrowser.get(connected) ?? 0) + 1);
+      if (released || record.browser) throw new Error('Browser connection lease is already bound or released.');
+      record.browser = connected;
     },
     release: async () => {
       if (released) return false;
       released = true;
-      if (browser) {
-        const remaining = (state.byBrowser.get(browser) ?? 1) - 1;
-        if (remaining > 0) state.byBrowser.set(browser, remaining);
-        else state.byBrowser.delete(browser);
-      } else {
-        state.pending--;
-      }
+      state.records.delete(record);
+      const browser = record.browser;
       const shouldRetire =
-        state.pending === 0 &&
+        [...state.records].every((active) => active.browser !== undefined) &&
         (browser
-          ? !state.byBrowser.has(browser) && cachedByCdpUrl.get(normalized)?.browser === browser
-          : state.byBrowser.size === 0);
-      if (state.pending === 0 && state.byBrowser.size === 0 && connectionLeasesByCdpUrl.get(normalized) === state)
+          ? ![...state.records].some((active) => active.browser === browser) &&
+            cachedByCdpUrl.get(normalized)?.browser === browser
+          : state.records.size === 0);
+      if (state.records.size === 0 && connectionLeasesByCdpUrl.get(normalized) === state)
         connectionLeasesByCdpUrl.delete(normalized);
       if (!shouldRetire) return false;
       const retiring = closePlaywrightBrowserConnection({ cdpUrl: normalized });
@@ -592,7 +603,9 @@ function takeCachedConnection(normalized: string, expectedBrowser?: Browser): Ca
 }
 
 export function evictStaleConnection(cdpUrl: string, expectedBrowser: Browser): void {
-  const connection = takeCachedConnection(normalizeCdpUrl(cdpUrl), expectedBrowser);
+  const normalized = normalizeCdpUrl(cdpUrl);
+  const connection = takeCachedConnection(normalized, expectedBrowser);
+  if (connection) markBrowserForLeaseTransfer(normalized, expectedBrowser);
   if (connection) void closeTrackedConnection(connection).catch(() => undefined);
 }
 
@@ -730,6 +743,7 @@ export async function connectBrowser(
         }
         const onDisconnected = () => {
           if (cachedByCdpUrl.get(normalized)?.browser === browser) {
+            markBrowserForLeaseTransfer(normalized, browser);
             cachedByCdpUrl.delete(normalized);
             clearRoleRefsForCdpUrl(normalized);
           }
@@ -737,6 +751,7 @@ export async function connectBrowser(
         const connected: CachedConnection = { browser, cdpUrl: normalized, onDisconnected };
         connectionAttempt.browser = browser;
         cachedByCdpUrl.set(normalized, connected);
+        transferBrowserLeases(normalized, browser);
         browser.on('disconnected', onDisconnected);
         try {
           await observeBrowser(browser, effectiveObserveOptions);
@@ -781,6 +796,7 @@ export async function disconnectBrowser(): Promise<void> {
   const urls = new Set([...cachedByCdpUrl.keys(), ...connectingByCdpUrl.keys(), ...retainedClosingByCdpUrl.keys()]);
   stealthByCdpUrl.clear();
   lastPolicyByCdpUrl.clear();
+  for (const state of connectionLeasesByCdpUrl.values()) state.transferable.clear();
   clearBlockedTargetsForCdpUrl();
   clearBlockedPageRefsForCdpUrl();
   const results = await Promise.allSettled([...urls].map(retireConnectionExact));
@@ -797,6 +813,7 @@ export async function closePlaywrightBrowserConnection(opts?: {
 }): Promise<void> {
   if (opts?.cdpUrl !== undefined && opts.cdpUrl !== '') {
     const normalized = normalizeCdpUrl(opts.cdpUrl);
+    connectionLeasesByCdpUrl.get(normalized)?.transferable.clear();
     if (opts.preserveSsrfState !== true) {
       clearBlockedTargetsForCdpUrl(normalized);
       clearBlockedPageRefsForCdpUrl(normalized);
