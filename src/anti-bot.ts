@@ -1,5 +1,5 @@
-import { getPageForTargetId, ensurePageState, normalizeTimeoutMs } from './connection.js';
-import type { ChallengeInfo, ChallengeWaitResult } from './types.js';
+import { getPageForTargetId, ensurePageState, normalizeTimeoutMs, assertSelectedPageAllowed } from './connection.js';
+import type { ChallengeInfo, ChallengeWaitResult, SsrfPolicy } from './types.js';
 
 // ── Detection script (runs in browser context) ──
 
@@ -63,8 +63,9 @@ function parseChallengeResult(raw: unknown): ChallengeInfo | null {
 export async function detectChallengeViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<ChallengeInfo | null> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: opts.ssrfPolicy });
   ensurePageState(page);
   return parseChallengeResult(await page.evaluate(DETECT_CHALLENGE_SCRIPT));
 }
@@ -83,11 +84,34 @@ export async function waitForChallengeViaPlaywright(opts: {
   targetId?: string;
   timeoutMs?: number;
   pollMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<ChallengeWaitResult> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
-  ensurePageState(page);
-
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 15000);
+  const deadline = Date.now() + timeout;
+  const controller = new AbortController();
+  const withinDeadline = async <T>(task: () => Promise<T>): Promise<T> => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new ChallengeWaitTimeoutError(timeout);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        task(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            const error = new ChallengeWaitTimeoutError(timeout);
+            controller.abort(error);
+            reject(error);
+          }, remaining);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+  const page = await withinDeadline(() =>
+    getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: opts.ssrfPolicy }),
+  );
+  ensurePageState(page);
   const poll = Math.max(250, Math.min(5000, opts.pollMs ?? 500));
 
   const isNavigationRaceError = (err: unknown): boolean =>
@@ -95,6 +119,14 @@ export async function waitForChallengeViaPlaywright(opts: {
     /execution context was destroyed|because of a navigation|frame was detached/i.test(err.message);
 
   const detect = async (): Promise<ChallengeInfo | null> => {
+    await assertSelectedPageAllowed({
+      cdpUrl: opts.cdpUrl,
+      page,
+      targetId: opts.targetId,
+      ssrfPolicy: opts.ssrfPolicy,
+      signal: controller.signal,
+    });
+    controller.signal.throwIfAborted();
     try {
       return parseChallengeResult(await page.evaluate(DETECT_CHALLENGE_SCRIPT));
     } catch (err) {
@@ -105,6 +137,14 @@ export async function waitForChallengeViaPlaywright(opts: {
         /* best-effort settle */
       });
       try {
+        await assertSelectedPageAllowed({
+          cdpUrl: opts.cdpUrl,
+          page,
+          targetId: opts.targetId,
+          ssrfPolicy: opts.ssrfPolicy,
+          signal: controller.signal,
+        });
+        controller.signal.throwIfAborted();
         return parseChallengeResult(await page.evaluate(DETECT_CHALLENGE_SCRIPT));
       } catch (retryErr) {
         if (isNavigationRaceError(retryErr)) return null;
@@ -114,37 +154,28 @@ export async function waitForChallengeViaPlaywright(opts: {
   };
 
   // Check if there's actually a challenge present
-  const initial = await detect();
+  const initial = await withinDeadline(detect);
   if (initial === null) return { resolved: true, challenge: null };
 
-  // For Cloudflare JS challenges, wait for the title to change (it navigates on success)
-  if (initial.kind === 'cloudflare-js') {
-    try {
-      await page.waitForFunction(
-        "document.title.toLowerCase() !== 'just a moment...' && !document.querySelector('#challenge-running')",
-        undefined,
-        { timeout },
-      );
-      // Cloudflare redirects after the challenge — let the page settle
-      await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {
-        /* page may have already settled */
-      });
-      const after = await detect();
-      return { resolved: after === null, challenge: after };
-    } catch {
-      const after = await detect();
-      return { resolved: after === null, challenge: after };
-    }
-  }
-
-  // For everything else, poll until challenge disappears or timeout
-  const deadline = Date.now() + timeout;
+  // Poll every challenge through the same policy-checked read path, including redirects.
+  let current: ChallengeInfo | null = initial;
   while (Date.now() < deadline) {
-    await page.waitForTimeout(poll);
-    const current = await detect();
+    try {
+      await withinDeadline(() => page.waitForTimeout(Math.min(poll, deadline - Date.now())));
+      current = await withinDeadline(detect);
+    } catch (error) {
+      if (error instanceof ChallengeWaitTimeoutError) break;
+      throw error;
+    }
     if (current === null) return { resolved: true, challenge: null };
   }
 
-  const final = await detect();
-  return { resolved: final === null, challenge: final };
+  return { resolved: false, challenge: current };
+}
+
+class ChallengeWaitTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Challenge wait timed out after ${String(timeoutMs)}ms`);
+    this.name = 'ChallengeWaitTimeoutError';
+  }
 }

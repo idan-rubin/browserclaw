@@ -1,3 +1,4 @@
+import { isCdpUrlProxyRouted } from '../chrome-launcher.js';
 import {
   getPageForTargetId,
   ensurePageState,
@@ -6,7 +7,11 @@ import {
   forceDisconnectPlaywrightConnection,
   tryTerminateExecutionForPage,
 } from '../connection.js';
-import { assertBrowserNavigationResultAllowed } from '../security.js';
+import {
+  assertBrowserNavigationResultAllowed,
+  InvalidBrowserNavigationUrlError,
+  withBrowserNavigationPolicy,
+} from '../security.js';
 import type { SsrfPolicy } from '../types.js';
 
 import { assertInteractionNavigationCompletedSafely, assertPageNavigationCompletedSafely } from './navigation.js';
@@ -26,6 +31,7 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
   fn: string;
+  timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
 }): Promise<FrameEvalResult[]> {
   const fnText = opts.fn.trim();
@@ -36,49 +42,112 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
     targetId: opts.targetId,
     ssrfPolicy: opts.ssrfPolicy,
   });
-  if (opts.ssrfPolicy) {
-    await assertPageNavigationCompletedSafely({
-      cdpUrl: opts.cdpUrl,
-      page,
-      response: null,
-      ssrfPolicy: opts.ssrfPolicy,
-      targetId: opts.targetId,
-    });
-  }
+  const timeoutMs = normalizeTimeoutMs(opts.timeoutMs, 20000);
+  const deadline = Date.now() + timeoutMs;
+  await withFrameBudget(
+    () =>
+      assertPageNavigationCompletedSafely({
+        cdpUrl: opts.cdpUrl,
+        page,
+        response: null,
+        ssrfPolicy: opts.ssrfPolicy,
+        targetId: opts.targetId,
+      }),
+    deadline,
+    timeoutMs,
+  );
   const frames = page.frames();
   const results: FrameEvalResult[] = [];
+  const framePolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, {
+    browserProxyMode: isCdpUrlProxyRouted(opts.cdpUrl) ? 'explicit-browser-proxy' : undefined,
+  });
 
   for (const frame of frames) {
-    if (opts.ssrfPolicy) {
-      try {
-        await assertBrowserNavigationResultAllowed({ url: frame.url(), ssrfPolicy: opts.ssrfPolicy });
-      } catch {
-        console.warn(`[browserclaw] skipping SSRF-blocked frame: ${frame.url()}`);
-        continue;
+    try {
+      await withFrameBudget(
+        () => assertBrowserNavigationResultAllowed({ url: frame.url(), ...framePolicy }),
+        deadline,
+        timeoutMs,
+      );
+    } catch (error) {
+      if (error instanceof FrameEvaluationTimeoutError) throw error;
+      if (!(error instanceof InvalidBrowserNavigationUrlError)) throw error;
+      console.warn('[browserclaw] skipping SSRF-blocked frame');
+      continue;
+    }
+    let result: unknown;
+    try {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new FrameEvaluationTimeoutError(timeoutMs);
+      // Uses the same browser-side expression/statement and promise rules as evaluate().
+      result = await withFrameBudget(
+        () =>
+          frame.evaluate(BROWSER_EVALUATOR as (...args: unknown[]) => unknown, {
+            fnBody: fnText,
+            timeoutMs: remaining,
+          }),
+        deadline,
+        timeoutMs,
+      );
+    } catch (err) {
+      if (
+        err instanceof FrameEvaluationTimeoutError ||
+        (err instanceof Error && /evaluate timed out after \d+ms/.test(err.message))
+      ) {
+        if (opts.targetId !== undefined && opts.targetId !== '') {
+          void tryTerminateExecutionForPage({
+            cdpUrl: opts.cdpUrl,
+            targetId: opts.targetId,
+            page,
+            ssrfPolicy: opts.ssrfPolicy,
+          }).catch(() => undefined);
+        }
+        throw err instanceof FrameEvaluationTimeoutError ? err : new FrameEvaluationTimeoutError(timeoutMs);
       }
+      console.warn('[browserclaw] frame evaluate failed:', err instanceof Error ? err.message : String(err));
+      continue;
     }
     try {
-      // Runs in the frame's browser context (sandboxed), not in Node.js
-      const result: unknown = await frame.evaluate((fnBody: string) => {
-        'use strict';
-        try {
-          const candidate: unknown = (0, eval)('(' + fnBody + ')');
-          return typeof candidate === 'function' ? (candidate as () => unknown)() : candidate;
-        } catch (err: unknown) {
-          throw new Error('Invalid evaluate function: ' + (err instanceof Error ? err.message : String(err)));
-        }
-      }, fnText);
-      results.push({
-        frameUrl: frame.url(),
-        frameName: frame.name(),
-        result,
-      });
+      await withFrameBudget(
+        () => assertBrowserNavigationResultAllowed({ url: frame.url(), ...framePolicy }),
+        deadline,
+        timeoutMs,
+      );
     } catch (err) {
-      console.warn('[browserclaw] frame evaluate failed:', err instanceof Error ? err.message : String(err));
+      if (err instanceof FrameEvaluationTimeoutError) throw err;
+      if (err instanceof InvalidBrowserNavigationUrlError) {
+        console.warn('[browserclaw] skipping SSRF-blocked frame');
+        continue;
+      }
+      throw err;
     }
+    results.push({ frameUrl: frame.url(), frameName: frame.name(), result });
   }
 
   return results;
+}
+
+class FrameEvaluationTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`All-frame evaluate timed out after ${String(timeoutMs)}ms`);
+    this.name = 'FrameEvaluationTimeoutError';
+  }
+}
+
+async function withFrameBudget<T>(task: () => Promise<T>, deadline: number, timeoutMs: number): Promise<T> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new FrameEvaluationTimeoutError(timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new FrameEvaluationTimeoutError(timeoutMs));
+    }, remaining);
+  });
+  try {
+    return await Promise.race([task(), timedOut]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // Browser-side evaluators: intentionally use eval() to execute user-provided

@@ -38,6 +38,13 @@ vi.mock('./connection.js', async (importOriginal) => {
   return {
     ...actual,
     closePlaywrightBrowserConnection: mockCloseAdapter,
+    acquireBrowserConnectionLease: () => ({
+      bind: () => undefined,
+      release: async () => {
+        await mockCloseAdapter();
+        return true;
+      },
+    }),
     getPageForTargetId: mockGetPageForTargetId,
     resolveActiveTargetId: mockResolveActiveTargetId,
     pageTargetId: mockPageTargetId,
@@ -68,6 +75,31 @@ vi.mock('./chrome-launcher.js', async (importOriginal) => ({
 }));
 
 const { CrawlPage, BrowserClaw } = await import('./browser.js');
+
+it('preserves a permissive handle policy through storage, activity, and emulation lookups', async () => {
+  const policy = { dangerouslyAllowPrivateNetwork: true };
+  const context = {
+    cookies: vi.fn().mockResolvedValue([]),
+    setOffline: vi.fn().mockResolvedValue(undefined),
+  };
+  const page = {
+    on: vi.fn(),
+    context: () => context,
+    evaluate: vi.fn().mockResolvedValue([]),
+  } as unknown as Page;
+  mockGetPageForTargetId.mockReset().mockResolvedValue(page);
+  const handle = new CrawlPage('http://localhost:9222', 'T1', policy);
+
+  await handle.cookies();
+  await handle.storageGet('local');
+  await handle.consoleLogs();
+  await handle.setOffline(false);
+
+  expect(mockGetPageForTargetId).toHaveBeenCalledTimes(4);
+  for (const [lookup] of mockGetPageForTargetId.mock.calls) {
+    expect(lookup).toMatchObject({ cdpUrl: 'http://localhost:9222', targetId: 'T1', ssrfPolicy: policy });
+  }
+});
 
 it('stops owned Chrome even when closing its adapter fails', async () => {
   const chrome = { cdpPort: 9222, launchMs: 1 };

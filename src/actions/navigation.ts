@@ -15,12 +15,13 @@ import {
   getAllPages,
   forceDisconnectPlaywrightConnection,
   resolvePageByTargetIdOrThrow,
+  resolvePageByTargetIdForClose,
   withPageScopedCdpClient,
   isBlockedTarget,
   isBlockedPageRef,
   isBrowserInternalTargetUrl,
-  markTargetBlocked,
-  markPageRefBlocked,
+  quarantineBlockedTarget,
+  assertSelectedPageAllowed,
   clearBlockedPageRef,
   clearBlockedTarget,
 } from '../connection.js';
@@ -313,15 +314,12 @@ export async function withPageNavigationRequestGuard<T>(opts: PageNavigationRequ
   return outcome.value;
 }
 
-async function quarantineBlockedTarget(opts: { cdpUrl: string; page: Page; targetId?: string }): Promise<void> {
-  markPageRefBlocked(opts.cdpUrl, opts.page);
-  const resolvedTargetId = await pageTargetId(opts.page).catch(() => null);
-  const fallbackTargetId = opts.targetId?.trim() ?? '';
-  const targetIdToBlock = resolvedTargetId ?? fallbackTargetId;
-  if (targetIdToBlock) markTargetBlocked(opts.cdpUrl, targetIdToBlock);
-}
-
-async function closeBlockedNavigationTarget(opts: { cdpUrl: string; page: Page; targetId?: string }): Promise<void> {
+async function closeBlockedNavigationTarget(opts: {
+  cdpUrl: string;
+  page: Page;
+  targetId?: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<void> {
   await quarantineBlockedTarget(opts);
   await opts.page.close().catch((e: unknown) => {
     console.warn('[browserclaw] failed to close blocked page', e);
@@ -338,12 +336,17 @@ export async function assertPageNavigationCompletedSafely(opts: {
   const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, proxyModeOpts(opts.cdpUrl));
   try {
     await assertBrowserNavigationRedirectChainAllowed({ request: opts.response?.request(), ...navigationPolicy });
-    await assertBrowserNavigationResultAllowed({ url: opts.page.url(), ...navigationPolicy });
   } catch (err) {
     if (isPolicyDenyNavigationError(err))
-      await quarantineBlockedTarget({ cdpUrl: opts.cdpUrl, page: opts.page, targetId: opts.targetId });
+      await quarantineBlockedTarget({
+        cdpUrl: opts.cdpUrl,
+        page: opts.page,
+        targetId: opts.targetId,
+        ssrfPolicy: opts.ssrfPolicy,
+      });
     throw err;
   }
+  await assertSelectedPageAllowed(opts);
 }
 
 // ── Interaction-time navigation guard ──────────────────────────────
@@ -757,7 +760,7 @@ async function gotoPageWithNavigationGuard(opts: {
   }
   const cleanupError = await removePageNavigationRequestGuard(opts.page, handler);
   if (state.blocked !== null) {
-    await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page: opts.page, targetId: opts.targetId });
+    await closeBlockedNavigationTarget(opts);
     throw state.blocked;
   }
   if (navigationFailed) throw toNavigationError(navigationError);
@@ -815,7 +818,12 @@ export async function navigateViaPlaywright(opts: {
       } catch (downloadErr) {
         if (downloadErr instanceof Error && downloadErr.message === NAVIGATION_DOWNLOAD_TIMEOUT_MESSAGE) throw err;
         if (isPolicyDenyNavigationError(downloadErr))
-          await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page, targetId: opts.targetId });
+          await closeBlockedNavigationTarget({
+            cdpUrl: opts.cdpUrl,
+            page,
+            targetId: opts.targetId,
+            ssrfPolicy: policy,
+          });
         throw downloadErr;
       }
     }
@@ -855,7 +863,7 @@ export async function navigateViaPlaywright(opts: {
       });
     } catch (err) {
       if (isPolicyDenyNavigationError(err))
-        await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page, targetId: opts.targetId });
+        await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page, targetId: opts.targetId, ssrfPolicy: policy });
       throw err;
     }
   }
@@ -865,16 +873,20 @@ export async function navigateViaPlaywright(opts: {
   };
 }
 
-async function listPagesViaPlaywrightOnce(cdpUrl: string, browser: Browser): Promise<BrowserTab[]> {
+async function listPagesViaPlaywrightOnce(
+  cdpUrl: string,
+  browser: Browser,
+  ssrfPolicy?: SsrfPolicy,
+): Promise<BrowserTab[]> {
   const pages = getAllPages(browser);
   const results = await Promise.all(
     pages.map(async (page): Promise<BrowserTab | null> => {
-      if (isBlockedPageRef(cdpUrl, page)) return null;
+      if (isBlockedPageRef(cdpUrl, page, ssrfPolicy)) return null;
       const info = await pageTargetInfo(page).catch((error: unknown) => {
         if (isRecoverablePlaywrightDisconnectError(error) && (!page.isClosed() || !browser.isConnected())) throw error;
         return null;
       });
-      if (info === null || isBlockedTarget(cdpUrl, info.targetId)) return null;
+      if (info === null || isBlockedTarget(cdpUrl, info.targetId, ssrfPolicy)) return null;
       const url = page.url();
       if (isBrowserInternalTargetUrl(url)) return null;
       return {
@@ -908,7 +920,7 @@ async function listPagesWithRecovery(
       evictStaleConnection(cdpUrl, browser);
       throw new Error('Playwright page enumeration was cancelled.');
     }
-    return await listPagesViaPlaywrightOnce(cdpUrl, browser);
+    return await listPagesViaPlaywrightOnce(cdpUrl, browser, ssrfPolicy);
   };
   try {
     return await read();
@@ -1030,6 +1042,14 @@ export async function closePageViaPlaywright(opts: {
   targetId?: string;
   ssrfPolicy?: SsrfPolicy;
 }): Promise<void> {
+  if (opts.targetId !== undefined && opts.targetId !== '') {
+    await closePageByTargetIdViaPlaywright({
+      cdpUrl: opts.cdpUrl,
+      targetId: opts.targetId,
+      ssrfPolicy: opts.ssrfPolicy,
+    });
+    return;
+  }
   const page = await getPageForTargetId({
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
@@ -1039,16 +1059,24 @@ export async function closePageViaPlaywright(opts: {
   await page.close();
 }
 
-export async function closePageByTargetIdViaPlaywright(opts: { cdpUrl: string; targetId: string }): Promise<void> {
+export async function closePageByTargetIdViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<void> {
   try {
-    await (await resolvePageByTargetIdOrThrow(opts)).close();
+    await (await resolvePageByTargetIdForClose(opts)).close();
   } catch (err) {
     if (err instanceof BrowserTabNotFoundError) return;
     throw err;
   }
 }
 
-export async function focusPageByTargetIdViaPlaywright(opts: { cdpUrl: string; targetId: string }): Promise<void> {
+export async function focusPageByTargetIdViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<void> {
   const page = await resolvePageByTargetIdOrThrow(opts);
   try {
     await page.bringToFront();
@@ -1074,6 +1102,7 @@ export async function waitForTabViaPlaywright(opts: {
   urlContains?: string;
   titleContains?: string;
   timeoutMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<BrowserTab> {
   if (opts.urlContains === undefined && opts.titleContains === undefined)
     throw new Error('urlContains or titleContains is required');
@@ -1082,7 +1111,7 @@ export async function waitForTabViaPlaywright(opts: {
   const POLL_INTERVAL_MS = 250;
 
   while (Date.now() - start < timeout) {
-    const tabs = await listPagesViaPlaywright({ cdpUrl: opts.cdpUrl });
+    const tabs = await listPagesViaPlaywright({ cdpUrl: opts.cdpUrl, ssrfPolicy: opts.ssrfPolicy });
     const match = tabs.find((t) => {
       if (opts.urlContains !== undefined && !t.url.includes(opts.urlContains)) return false;
       if (opts.titleContains !== undefined && !t.title.includes(opts.titleContains)) return false;

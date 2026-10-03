@@ -627,7 +627,12 @@ export async function scrollIntoViewViaPlaywright(opts: {
   }
 }
 
-export async function highlightViaPlaywright(opts: { cdpUrl: string; targetId?: string; ref: string }): Promise<void> {
+export async function highlightViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId?: string;
+  ref: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<void> {
   const page = await getRestoredPageForTarget(opts);
   const ref = requireRef(opts.ref);
 

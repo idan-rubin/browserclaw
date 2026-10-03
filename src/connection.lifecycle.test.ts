@@ -57,7 +57,7 @@ describe('connectBrowser cancellation of a queued attempt', () => {
     await disconnectBrowser();
   });
 
-  it("cancels an attempt still queued behind another URL's dial", async () => {
+  it("connects a second URL while the first URL's dial is still pending", async () => {
     const a = await startTcpSink();
     const b = await startTcpSink();
     const aUrl = `ws://127.0.0.1:${String(a.port)}/devtools/browser/a`;
@@ -69,11 +69,11 @@ describe('connectBrowser cancellation of a queued attempt', () => {
       expect(a.connections).toBe(1);
 
       await expect(listPagesViaPlaywright({ cdpUrl: bUrl, timeoutMs: 30 })).rejects.toThrow('timed out');
+      expect(b.connections).toBe(1);
 
       a.release();
       await expect(aConnect).rejects.toThrow();
       await sleep(100);
-      expect(b.connections).toBe(0);
       expect(hasCachedPlaywrightBrowserConnection(bUrl)).toBe(false);
     } finally {
       await a.close();

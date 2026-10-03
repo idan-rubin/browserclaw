@@ -65,7 +65,7 @@ import {
 } from './chrome-launcher.js';
 import {
   connectBrowser,
-  closePlaywrightBrowserConnection,
+  acquireBrowserConnectionLease,
   getPageForTargetId,
   ensurePageState,
   pageTargetId,
@@ -659,6 +659,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       ref,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1022,6 +1023,7 @@ export class CrawlPage {
    * This is essential for filling payment iframes (Stripe, etc.).
    *
    * @param fn - JavaScript function body as a string
+   * @param opts.timeoutMs - Total evaluation budget across all frames (default: 20 seconds)
    * @returns Array of results from each frame where evaluation succeeded
    *
    * @example
@@ -1032,11 +1034,12 @@ export class CrawlPage {
    * }`);
    * ```
    */
-  async evaluateInAllFrames(fn: string): Promise<FrameEvalResult[]> {
+  async evaluateInAllFrames(fn: string, opts?: { timeoutMs?: number }): Promise<FrameEvalResult[]> {
     return evaluateInAllFramesViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       fn,
+      timeoutMs: opts?.timeoutMs,
       ssrfPolicy: this.ssrfPolicy,
     });
   }
@@ -1136,6 +1139,7 @@ export class CrawlPage {
       screenshots: opts?.screenshots,
       snapshots: opts?.snapshots,
       sources: opts?.sources,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1151,6 +1155,7 @@ export class CrawlPage {
       targetId: this._targetId,
       path,
       allowedOutputRoots: opts?.allowedOutputRoots,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1178,6 +1183,7 @@ export class CrawlPage {
       timeoutMs: opts?.timeoutMs,
       maxChars: opts?.maxChars,
       signal: opts?.signal,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1211,6 +1217,7 @@ export class CrawlPage {
       method: opts?.method,
       timeoutMs: opts?.timeoutMs,
       maxChars: opts?.maxChars,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1228,6 +1235,7 @@ export class CrawlPage {
       targetId: this._targetId,
       level: opts?.level,
       clear: opts?.clear,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1242,6 +1250,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       clear: opts?.clear,
+      ssrfPolicy: this.ssrfPolicy,
     });
     return result.errors;
   }
@@ -1265,6 +1274,7 @@ export class CrawlPage {
       targetId: this._targetId,
       filter: opts?.filter,
       clear: opts?.clear,
+      ssrfPolicy: this.ssrfPolicy,
     });
     return result.requests;
   }
@@ -1296,7 +1306,11 @@ export class CrawlPage {
    * @returns Array of cookie objects
    */
   async cookies(): Promise<Awaited<ReturnType<BrowserContext['cookies']>>> {
-    const result = await cookiesGetViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    const result = await cookiesGetViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     return result.cookies;
   }
 
@@ -1315,7 +1329,12 @@ export class CrawlPage {
    * ```
    */
   async setCookie(cookie: CookieData): Promise<void> {
-    return cookiesSetViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId, cookie });
+    return cookiesSetViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: this._targetId,
+      cookie,
+      ssrfPolicy: this.ssrfPolicy,
+    });
   }
 
   /** Import cookies in bounded batches and report how many were accepted. */
@@ -1325,12 +1344,13 @@ export class CrawlPage {
       targetId: this._targetId,
       cookies,
       signal: opts?.signal,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
   /** Clear all cookies in the browser context. */
   async clearCookies(): Promise<void> {
-    return cookiesClearViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    return cookiesClearViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId, ssrfPolicy: this.ssrfPolicy });
   }
 
   /**
@@ -1346,6 +1366,7 @@ export class CrawlPage {
       targetId: this._targetId,
       kind,
       key,
+      ssrfPolicy: this.ssrfPolicy,
     });
     return result.values;
   }
@@ -1364,6 +1385,7 @@ export class CrawlPage {
       kind,
       key,
       value,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1377,6 +1399,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       kind,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1450,6 +1473,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       offline,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1468,6 +1492,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       headers,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1483,6 +1508,7 @@ export class CrawlPage {
       username: opts.username,
       password: opts.password,
       clear: opts.clear,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1506,6 +1532,7 @@ export class CrawlPage {
       accuracy: opts.accuracy,
       origin: opts.origin,
       clear: opts.clear,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1524,6 +1551,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       colorScheme: opts.colorScheme,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1537,6 +1565,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       locale,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1550,6 +1579,7 @@ export class CrawlPage {
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
       timezoneId,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1569,6 +1599,7 @@ export class CrawlPage {
       targetId: this._targetId,
       name,
       signal: opts?.signal,
+      ssrfPolicy: this.ssrfPolicy,
     });
   }
 
@@ -1590,7 +1621,7 @@ export class CrawlPage {
    * ```
    */
   async detectChallenge(): Promise<ChallengeInfo | null> {
-    return detectChallengeViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId });
+    return detectChallengeViaPlaywright({ cdpUrl: this.cdpUrl, targetId: this._targetId, ssrfPolicy: this.ssrfPolicy });
   }
 
   /**
@@ -1617,6 +1648,7 @@ export class CrawlPage {
     return waitForChallengeViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
+      ssrfPolicy: this.ssrfPolicy,
       timeoutMs: opts?.timeoutMs,
       pollMs: opts?.pollMs,
     });
@@ -1866,11 +1898,13 @@ export class BrowserClaw {
   private readonly stealth: boolean;
   private chrome: RunningChrome | null;
   private readonly _telemetry: RunTelemetry;
+  private readonly releaseConnection: () => Promise<boolean>;
 
   private constructor(
     cdpUrl: string,
     chrome: RunningChrome | null,
     telemetry: RunTelemetry,
+    releaseConnection: () => Promise<boolean>,
     ssrfPolicy?: SsrfPolicy,
     recordVideo?: { dir: string; size?: { width: number; height: number } },
     stealth = false,
@@ -1881,6 +1915,7 @@ export class BrowserClaw {
     this.ssrfPolicy = ssrfPolicy;
     this.recordVideo = recordVideo;
     this.stealth = stealth;
+    this.releaseConnection = releaseConnection;
   }
 
   /**
@@ -1911,19 +1946,32 @@ export class BrowserClaw {
     const startedAt = new Date().toISOString();
     const stealth = opts.stealth === true;
     const chrome = await launchChrome(opts);
+    let releaseConnectionOnLaunchFailure: (() => Promise<boolean>) | undefined;
     try {
       const cdpUrl = `http://127.0.0.1:${String(chrome.cdpPort)}`;
+      const lease = acquireBrowserConnectionLease(cdpUrl);
+      releaseConnectionOnLaunchFailure = lease.release;
       /* eslint-disable @typescript-eslint/no-deprecated -- backward-compat bridge for allowInternal */
       const ssrfPolicy =
         opts.allowInternal === true ? { ...opts.ssrfPolicy, dangerouslyAllowPrivateNetwork: true } : opts.ssrfPolicy;
       /* eslint-enable @typescript-eslint/no-deprecated */
       // Bootstrap connect to our own freshly-spawned loopback Chrome — no policy check.
-      await connectBrowser(cdpUrl, undefined, undefined, { stealth });
+      const connected = await connectBrowser(cdpUrl, undefined, undefined, { stealth });
+      lease.bind(connected.browser);
+      const releaseConnection = lease.release;
       const telemetry: RunTelemetry = {
         launchMs: chrome.launchMs,
         timestamps: { startedAt, launchedAt: new Date().toISOString() },
       };
-      const browser = new BrowserClaw(cdpUrl, chrome, telemetry, ssrfPolicy, opts.recordVideo, stealth);
+      const browser = new BrowserClaw(
+        cdpUrl,
+        chrome,
+        telemetry,
+        releaseConnection,
+        ssrfPolicy,
+        opts.recordVideo,
+        stealth,
+      );
       if (opts.url !== undefined && opts.url !== '') {
         const navT0 = Date.now();
         if (opts.recordVideo !== undefined) {
@@ -1950,6 +1998,7 @@ export class BrowserClaw {
       }
       return browser;
     } catch (err) {
+      await releaseConnectionOnLaunchFailure?.().catch(() => undefined);
       await stopChrome(chrome).catch(() => {
         /* noop — best-effort cleanup */
       });
@@ -1995,12 +2044,19 @@ export class BrowserClaw {
     if (!(await isChromeReachable(resolvedUrl, 3000, opts?.authToken, ssrfPolicy))) {
       throw new Error(`Cannot connect to Chrome at ${resolvedUrl}. Is Chrome running with --remote-debugging-port?`);
     }
-    await connectBrowser(resolvedUrl, opts?.authToken, ssrfPolicy, { stealth });
-    const telemetry: RunTelemetry = {
-      connectMs: Date.now() - connectT0,
-      timestamps: { startedAt, connectedAt: new Date().toISOString() },
-    };
-    return new BrowserClaw(resolvedUrl, null, telemetry, ssrfPolicy, opts?.recordVideo, stealth);
+    const lease = acquireBrowserConnectionLease(resolvedUrl);
+    try {
+      const connected = await connectBrowser(resolvedUrl, opts?.authToken, ssrfPolicy, { stealth });
+      lease.bind(connected.browser);
+      const telemetry: RunTelemetry = {
+        connectMs: Date.now() - connectT0,
+        timestamps: { startedAt, connectedAt: new Date().toISOString() },
+      };
+      return new BrowserClaw(resolvedUrl, null, telemetry, lease.release, ssrfPolicy, opts?.recordVideo, stealth);
+    } catch (error) {
+      await lease.release().catch(() => undefined);
+      throw error;
+    }
   }
 
   /**
@@ -2056,7 +2112,7 @@ export class BrowserClaw {
    * @returns Array of tab information objects
    */
   async tabs(): Promise<BrowserTab[]> {
-    return listPagesViaPlaywright({ cdpUrl: this.cdpUrl });
+    return listPagesViaPlaywright({ cdpUrl: this.cdpUrl, ssrfPolicy: this.ssrfPolicy });
   }
 
   /**
@@ -2080,8 +2136,13 @@ export class BrowserClaw {
       urlContains: opts.urlContains,
       titleContains: opts.titleContains,
       timeoutMs: opts.timeoutMs,
+      ssrfPolicy: this.ssrfPolicy,
     });
-    await focusPageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId: tab.targetId });
+    await focusPageByTargetIdViaPlaywright({
+      cdpUrl: this.cdpUrl,
+      targetId: tab.targetId,
+      ssrfPolicy: this.ssrfPolicy,
+    });
     return new CrawlPage(this.cdpUrl, tab.targetId, this.ssrfPolicy);
   }
 
@@ -2091,7 +2152,7 @@ export class BrowserClaw {
    * @param targetId - CDP target ID of the tab (from `tabs()` or `page.id`)
    */
   async focus(targetId: string): Promise<void> {
-    await focusPageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId });
+    await focusPageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId, ssrfPolicy: this.ssrfPolicy });
     if (process.platform === 'darwin' && this.chrome?.pid !== undefined) {
       await activateMacOsWindowByPid(this.chrome.pid);
     }
@@ -2103,7 +2164,7 @@ export class BrowserClaw {
    * @param targetId - CDP target ID of the tab to close
    */
   async close(targetId: string): Promise<void> {
-    return closePageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId });
+    return closePageByTargetIdViaPlaywright({ cdpUrl: this.cdpUrl, targetId, ssrfPolicy: this.ssrfPolicy });
   }
 
   /**
@@ -2127,8 +2188,8 @@ export class BrowserClaw {
    * Stop the browser and clean up all resources.
    *
    * If the browser was launched by `BrowserClaw.launch()`, the Chrome process
-   * will be terminated. If connected via `BrowserClaw.connect()`, only the
-   * Playwright connection is closed.
+   * will be terminated. If connected via `BrowserClaw.connect()`, its lease is
+   * released; the shared Playwright adapter closes when the last handle stops.
    *
    * @param exitReason - Optional structured reason for stopping. One of: `'success'`, `'auth_failed'`, `'timeout'`, `'error'`, `'manual'`, `'nav_failed'`, `'crash'`, `'disconnected'`
    */
@@ -2136,11 +2197,12 @@ export class BrowserClaw {
     this._telemetry.timestamps.stoppedAt = new Date().toISOString();
     if (exitReason !== undefined) this._telemetry.exitReason = exitReason;
     try {
-      clearRecordingContext(this.cdpUrl);
       try {
-        await closePlaywrightBrowserConnection({ cdpUrl: this.cdpUrl });
+        const lastHandle = await this.releaseConnection();
+        if (lastHandle) clearRecordingContext(this.cdpUrl);
       } finally {
         if (this.chrome) {
+          clearRecordingContext(this.cdpUrl);
           await stopChrome(this.chrome);
           this.chrome = null;
         }
