@@ -15,7 +15,21 @@ vi.mock('../connection.js', async (importOriginal) => {
 const { evaluateInAllFramesViaPlaywright } = await import('./evaluate.js');
 
 describe('evaluateInAllFramesViaPlaywright — per-frame SSRF validation', () => {
-  it('skips an SSRF-blocked frame and evaluates only allowed frames', async () => {
+  it('bounds a frame whose Playwright evaluation never settles', async () => {
+    const frame = {
+      url: () => 'about:blank',
+      name: () => 'main',
+      evaluate: vi.fn(() => new Promise<never>(() => undefined)),
+    };
+    mockGetPageForTargetId.mockResolvedValue({ url: () => 'about:blank', frames: () => [frame] } as unknown as Page);
+
+    await expect(
+      evaluateInAllFramesViaPlaywright({ cdpUrl: 'http://localhost:9222', fn: '() => 1', timeoutMs: 500 }),
+    ).rejects.toThrow('All-frame evaluate timed out after 500ms');
+    expect(frame.evaluate).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, {}])('skips an SSRF-blocked frame with policy %j', async (ssrfPolicy) => {
     const publicFrame = {
       url: () => 'http://93.184.216.34/',
       name: () => 'main',
@@ -35,7 +49,7 @@ describe('evaluateInAllFramesViaPlaywright — per-frame SSRF validation', () =>
     const results = await evaluateInAllFramesViaPlaywright({
       cdpUrl: 'http://localhost:9222',
       fn: '() => 1',
-      ssrfPolicy: {},
+      ssrfPolicy,
     });
 
     expect(publicFrame.evaluate).toHaveBeenCalledTimes(1);

@@ -14,17 +14,20 @@ import {
   disconnectBrowser,
   findPageByTargetId,
   getPageForTargetId,
+  isBlockedPageRef,
+  isBlockedTarget,
   markPageRefBlocked,
   markTargetBlocked,
   pageTargetId,
 } from './connection.js';
 import { ensurePageState } from './page-utils.js';
+import { InvalidBrowserNavigationUrlError } from './security.js';
 
 function makePage(targetId: string | null) {
   const close = vi.fn().mockResolvedValue(undefined);
   const bringToFront = vi.fn().mockResolvedValue(undefined);
   const page = {
-    url: () => 'https://shared.test/',
+    url: () => 'https://93.184.216.34/',
     close,
     bringToFront,
     on: vi.fn(),
@@ -54,6 +57,25 @@ afterEach(async () => {
 });
 
 describe('exact target identity for lookup and tab mutations', () => {
+  it('rejects and quarantines an externally navigated private page at the shared lookup boundary', async () => {
+    const cdp = await startConnectionCdpServer();
+    try {
+      const { browser } = await connectBrowser(cdp.httpUrl);
+      const page = makePage('private-target').page;
+      vi.spyOn(page, 'url').mockReturnValue('http://169.254.169.254/latest/meta-data/');
+      exposePages(browser, [page]);
+
+      await expect(getPageForTargetId({ cdpUrl: cdp.httpUrl, targetId: 'private-target' })).rejects.toThrow(
+        InvalidBrowserNavigationUrlError,
+      );
+      expect(isBlockedPageRef(cdp.httpUrl, page)).toBe(true);
+      expect(isBlockedTarget(cdp.httpUrl, 'private-target')).toBe(true);
+    } finally {
+      await disconnectBrowser();
+      await cdp.close();
+    }
+  });
+
   it.each([{}, { targetInfo: {} }, { targetInfo: { targetId: '  ' } }])(
     'preserves the null result for missing target identity: %j',
     async (metadata) => {

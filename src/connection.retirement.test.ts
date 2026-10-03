@@ -1,10 +1,12 @@
 import type { Browser, Page } from 'playwright-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { BrowserClaw } from './browser.js';
 import * as transport from './cdp-transport.js';
 import { startConnectionCdpServer } from './connection-cdp.test-support.js';
 import {
   closePlaywrightBrowserConnection,
+  acquireBrowserConnectionLease,
   connectBrowser,
   disconnectBrowser,
   forceDisconnectPlaywrightConnection,
@@ -31,6 +33,62 @@ describe('exact Playwright connection retirement', () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await disconnectBrowser();
+  });
+
+  it('does not disconnect a second BrowserClaw handle when the first stops', async () => {
+    const cdp = await startConnectionCdpServer();
+    try {
+      const first = await BrowserClaw.connect(cdp.httpUrl);
+      const second = await BrowserClaw.connect(cdp.httpUrl);
+      const connected = await connectBrowser(cdp.httpUrl);
+      await first.stop();
+      expect(connected.browser.isConnected()).toBe(true);
+      expect((await connectBrowser(cdp.httpUrl)).browser).toBe(connected.browser);
+      await second.stop();
+      expect(connected.browser.isConnected()).toBe(false);
+    } finally {
+      await disconnectBrowser();
+      await cdp.close();
+    }
+  });
+
+  it('keeps a shared adapter alive until its last handle releases it', async () => {
+    const cdp = await startConnectionCdpServer();
+    const releaseFirst = acquireBrowserConnectionLease(cdp.httpUrl);
+    const releaseSecond = acquireBrowserConnectionLease(cdp.httpUrl);
+    try {
+      const connected = await connectBrowser(cdp.httpUrl);
+      expect(await releaseFirst()).toBe(false);
+      expect(connected.browser.isConnected()).toBe(true);
+      expect((await connectBrowser(cdp.httpUrl)).browser).toBe(connected.browser);
+      expect(await releaseSecond()).toBe(true);
+      expect(connected.browser.isConnected()).toBe(false);
+      expect(await releaseSecond()).toBe(false);
+    } finally {
+      await releaseFirst();
+      await releaseSecond();
+      await disconnectBrowser();
+      await cdp.close();
+    }
+  });
+
+  it('does not retire a successor when a stale handle releases its old adapter', async () => {
+    const cdp = await startConnectionCdpServer();
+    const release = acquireBrowserConnectionLease(cdp.httpUrl);
+    try {
+      const old = await connectBrowser(cdp.httpUrl);
+      await closePlaywrightBrowserConnection({ cdpUrl: cdp.httpUrl });
+      const successor = await connectBrowser(cdp.httpUrl);
+      expect(successor.browser).not.toBe(old.browser);
+
+      expect(await release(old.browser)).toBe(false);
+      expect(successor.browser.isConnected()).toBe(true);
+      expect((await connectBrowser(cdp.httpUrl)).browser).toBe(successor.browser);
+    } finally {
+      await release();
+      await disconnectBrowser();
+      await cdp.close();
+    }
   });
 
   it.each(['first', 'second', 'both'].flatMap((cancel) => ['dial', 'observation'].map((stage) => ({ cancel, stage }))))(

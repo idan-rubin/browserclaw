@@ -1,5 +1,5 @@
-import { getPageForTargetId, ensurePageState, normalizeTimeoutMs } from './connection.js';
-import type { ChallengeInfo, ChallengeWaitResult } from './types.js';
+import { getPageForTargetId, ensurePageState, normalizeTimeoutMs, assertSelectedPageAllowed } from './connection.js';
+import type { ChallengeInfo, ChallengeWaitResult, SsrfPolicy } from './types.js';
 
 // ── Detection script (runs in browser context) ──
 
@@ -63,8 +63,9 @@ function parseChallengeResult(raw: unknown): ChallengeInfo | null {
 export async function detectChallengeViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<ChallengeInfo | null> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: opts.ssrfPolicy });
   ensurePageState(page);
   return parseChallengeResult(await page.evaluate(DETECT_CHALLENGE_SCRIPT));
 }
@@ -83,8 +84,9 @@ export async function waitForChallengeViaPlaywright(opts: {
   targetId?: string;
   timeoutMs?: number;
   pollMs?: number;
+  ssrfPolicy?: SsrfPolicy;
 }): Promise<ChallengeWaitResult> {
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId });
+  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: opts.ssrfPolicy });
   ensurePageState(page);
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 15000);
@@ -95,6 +97,12 @@ export async function waitForChallengeViaPlaywright(opts: {
     /execution context was destroyed|because of a navigation|frame was detached/i.test(err.message);
 
   const detect = async (): Promise<ChallengeInfo | null> => {
+    await assertSelectedPageAllowed({
+      cdpUrl: opts.cdpUrl,
+      page,
+      targetId: opts.targetId,
+      ssrfPolicy: opts.ssrfPolicy,
+    });
     try {
       return parseChallengeResult(await page.evaluate(DETECT_CHALLENGE_SCRIPT));
     } catch (err) {
@@ -105,6 +113,12 @@ export async function waitForChallengeViaPlaywright(opts: {
         /* best-effort settle */
       });
       try {
+        await assertSelectedPageAllowed({
+          cdpUrl: opts.cdpUrl,
+          page,
+          targetId: opts.targetId,
+          ssrfPolicy: opts.ssrfPolicy,
+        });
         return parseChallengeResult(await page.evaluate(DETECT_CHALLENGE_SCRIPT));
       } catch (retryErr) {
         if (isNavigationRaceError(retryErr)) return null;

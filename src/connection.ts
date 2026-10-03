@@ -12,6 +12,7 @@ import {
   normalizeCdpWsUrl,
   isLoopbackHost,
   hasProxyEnvConfigured,
+  isCdpUrlProxyRouted,
 } from './chrome-launcher.js';
 import { BrowserTabNotFoundError } from './errors.js';
 import { pageTargetInfo } from './page-target.js';
@@ -26,6 +27,8 @@ import {
   isPrivateNetworkAllowedByPolicy,
   scopeCdpPolicyToConfiguredEndpoint,
   stripUrlCredentials,
+  assertBrowserNavigationResultAllowed,
+  withBrowserNavigationPolicy,
 } from './security.js';
 import type { DialogHandler, SsrfPolicy } from './types.js';
 
@@ -333,29 +336,79 @@ const stealthByCdpUrl = new Map<string, boolean>();
 // the action function chain doesn't thread a policy through. Closes the
 // DNS-rebinding window between connect attempts.
 const lastPolicyByCdpUrl = new Map<string, SsrfPolicy>();
+const connectionLeaseCounts = new Map<string, number>();
+const leaseRetirements = new Map<string, Promise<void>>();
+
+/** A BrowserClaw handle owns one lease; only the last handle retires the adapter. */
+export function acquireBrowserConnectionLease(cdpUrl: string): (expectedBrowser?: Browser) => Promise<boolean> {
+  const normalized = normalizeCdpUrl(cdpUrl);
+  connectionLeaseCounts.set(normalized, (connectionLeaseCounts.get(normalized) ?? 0) + 1);
+  let released = false;
+  return async (expectedBrowser) => {
+    if (released) return false;
+    released = true;
+    const remaining = (connectionLeaseCounts.get(normalized) ?? 1) - 1;
+    if (remaining > 0) {
+      connectionLeaseCounts.set(normalized, remaining);
+      return false;
+    }
+    connectionLeaseCounts.delete(normalized);
+    // A stale handle must never retire an adapter installed after its own connection disconnected.
+    if (expectedBrowser && cachedByCdpUrl.get(normalized)?.browser !== expectedBrowser) return false;
+    const retiring = closePlaywrightBrowserConnection({ cdpUrl: normalized });
+    leaseRetirements.set(normalized, retiring);
+    try {
+      await retiring;
+    } finally {
+      if (leaseRetirements.get(normalized) === retiring) leaseRetirements.delete(normalized);
+    }
+    return true;
+  };
+}
+
+/** Validate a selected document before any caller can read or interact with it. */
+export async function assertSelectedPageAllowed(opts: {
+  cdpUrl: string;
+  page: Page;
+  targetId?: string;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<void> {
+  try {
+    await assertBrowserNavigationResultAllowed({
+      url: opts.page.url(),
+      ...withBrowserNavigationPolicy(opts.ssrfPolicy, {
+        browserProxyMode: isCdpUrlProxyRouted(opts.cdpUrl) ? 'explicit-browser-proxy' : undefined,
+      }),
+    });
+  } catch (error) {
+    if (error instanceof InvalidBrowserNavigationUrlError) {
+      await quarantineBlockedTarget(opts);
+    }
+    throw error;
+  }
+}
 
 export function getStealthEnabledForCdpUrl(cdpUrl: string): boolean {
   return stealthByCdpUrl.get(normalizeCdpUrl(cdpUrl)) ?? false;
 }
 
-// ── Connection Mutex ──
-// Serializes connect/disconnect operations to prevent races where a disconnect
-// clears a connection that a concurrent connect just established.
+// Only operations for the same endpoint need serialization.
+const connectionLocks = new Map<string, Promise<void>>();
 
-let connectionMutex: Promise<void> = Promise.resolve();
-
-async function withConnectionLock<T>(fn: () => Promise<T>): Promise<T> {
-  const prev = connectionMutex;
+async function withConnectionLock<T>(normalized: string, fn: () => Promise<T>): Promise<T> {
+  const prev = connectionLocks.get(normalized) ?? Promise.resolve();
   // eslint-disable-next-line @typescript-eslint/no-empty-function
   let release: () => void = () => {};
-  connectionMutex = new Promise<void>((r) => {
+  const current = new Promise<void>((r) => {
     release = r;
   });
+  connectionLocks.set(normalized, current);
   await prev;
   try {
     return await fn();
   } finally {
     release();
+    if (connectionLocks.get(normalized) === current) connectionLocks.delete(normalized);
   }
 }
 
@@ -433,6 +486,12 @@ export function isBlockedPageRef(cdpUrl: string, page: Page): boolean {
 
 export function markPageRefBlocked(cdpUrl: string, page: Page): void {
   blockedPageRefsForCdpUrl(cdpUrl).add(page);
+}
+
+export async function quarantineBlockedTarget(opts: { cdpUrl: string; page: Page; targetId?: string }): Promise<void> {
+  markPageRefBlocked(opts.cdpUrl, opts.page);
+  const targetId = (await pageTargetId(opts.page).catch(() => null)) ?? opts.targetId;
+  if (targetId !== undefined && targetId !== '') markTargetBlocked(opts.cdpUrl, targetId);
 }
 
 function clearBlockedPageRefsForCdpUrl(cdpUrl?: string): void {
@@ -576,6 +635,8 @@ export async function connectBrowser(
 ): Promise<CachedConnection> {
   signal?.throwIfAborted();
   const normalized = normalizeCdpUrl(cdpUrl);
+  await leaseRetirements.get(normalized)?.catch(() => undefined);
+  signal?.throwIfAborted();
   if (observeOptions?.stealth === true && stealthByCdpUrl.get(normalized) !== true)
     stealthByCdpUrl.set(normalized, true);
   const effectiveObserveOptions: ObserveOptions = { stealth: getStealthEnabledForCdpUrl(normalized) };
@@ -585,11 +646,10 @@ export async function connectBrowser(
   };
 
   // Only return a cached connection once its initialization has completed.
-  const existing_cached = cachedByCdpUrl.get(normalized);
-  if (existing_cached && !connectingByCdpUrl.has(normalized)) return await observeCached(existing_cached);
-
   if (ssrfPolicy !== undefined) lastPolicyByCdpUrl.set(normalized, ssrfPolicy);
   const effectivePolicy = ssrfPolicy ?? lastPolicyByCdpUrl.get(normalized);
+  const existing_cached = cachedByCdpUrl.get(normalized);
+  if (existing_cached && !connectingByCdpUrl.has(normalized)) return await observeCached(existing_cached);
   const configuredPin = await resolveCdpEndpointPin(normalized, effectivePolicy, undefined, signal);
   signal?.throwIfAborted();
 
@@ -678,7 +738,7 @@ export async function connectBrowser(
     throw lastErr instanceof Error ? lastErr : new Error('CDP connect failed');
   };
 
-  const promise = withConnectionLock(async () => {
+  const promise = withConnectionLock(normalized, async () => {
     if (isCancelled()) throw new Error('Playwright connection attempt was cancelled before it started.');
     const rechecked = cachedByCdpUrl.get(normalized);
     if (rechecked) return await observeCached(rechecked);
@@ -972,7 +1032,10 @@ async function getPageForTargetIdOnce(opts: { cdpUrl: string; targetId?: string;
     throw new Error('No pages available in the connected browser.');
   }
   const first = accessible[0];
-  if (opts.targetId === undefined || opts.targetId === '') return first;
+  if (opts.targetId === undefined || opts.targetId === '') {
+    await assertSelectedPageAllowed({ ...opts, page: first });
+    return first;
+  }
   const identities = await Promise.all(
     accessible.map(async (page) => ({ page, targetId: await pageTargetId(page).catch(() => null) })),
   );
@@ -986,6 +1049,7 @@ async function getPageForTargetIdOnce(opts: { cdpUrl: string; targetId?: string;
   const foundTargetId = await pageTargetId(found).catch(() => null);
   if (foundTargetId !== null && foundTargetId !== '' && isBlockedTarget(opts.cdpUrl, foundTargetId))
     throw new BlockedBrowserTargetError();
+  await assertSelectedPageAllowed({ ...opts, page: found });
   return found;
 }
 

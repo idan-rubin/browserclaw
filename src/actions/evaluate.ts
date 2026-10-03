@@ -1,3 +1,4 @@
+import { isCdpUrlProxyRouted } from '../chrome-launcher.js';
 import {
   getPageForTargetId,
   ensurePageState,
@@ -6,7 +7,7 @@ import {
   forceDisconnectPlaywrightConnection,
   tryTerminateExecutionForPage,
 } from '../connection.js';
-import { assertBrowserNavigationResultAllowed } from '../security.js';
+import { assertBrowserNavigationResultAllowed, withBrowserNavigationPolicy } from '../security.js';
 import type { SsrfPolicy } from '../types.js';
 
 import { assertInteractionNavigationCompletedSafely, assertPageNavigationCompletedSafely } from './navigation.js';
@@ -26,6 +27,7 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
   fn: string;
+  timeoutMs?: number;
   ssrfPolicy?: SsrfPolicy;
 }): Promise<FrameEvalResult[]> {
   const fnText = opts.fn.trim();
@@ -36,49 +38,83 @@ export async function evaluateInAllFramesViaPlaywright(opts: {
     targetId: opts.targetId,
     ssrfPolicy: opts.ssrfPolicy,
   });
-  if (opts.ssrfPolicy) {
-    await assertPageNavigationCompletedSafely({
-      cdpUrl: opts.cdpUrl,
-      page,
-      response: null,
-      ssrfPolicy: opts.ssrfPolicy,
-      targetId: opts.targetId,
-    });
-  }
+  await assertPageNavigationCompletedSafely({
+    cdpUrl: opts.cdpUrl,
+    page,
+    response: null,
+    ssrfPolicy: opts.ssrfPolicy,
+    targetId: opts.targetId,
+  });
   const frames = page.frames();
   const results: FrameEvalResult[] = [];
+  const timeoutMs = normalizeTimeoutMs(opts.timeoutMs, 20000);
+  const deadline = Date.now() + timeoutMs;
+  const framePolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, {
+    browserProxyMode: isCdpUrlProxyRouted(opts.cdpUrl) ? 'explicit-browser-proxy' : undefined,
+  });
 
   for (const frame of frames) {
-    if (opts.ssrfPolicy) {
-      try {
-        await assertBrowserNavigationResultAllowed({ url: frame.url(), ssrfPolicy: opts.ssrfPolicy });
-      } catch {
-        console.warn(`[browserclaw] skipping SSRF-blocked frame: ${frame.url()}`);
-        continue;
-      }
+    try {
+      await assertBrowserNavigationResultAllowed({ url: frame.url(), ...framePolicy });
+    } catch {
+      console.warn(`[browserclaw] skipping SSRF-blocked frame: ${frame.url()}`);
+      continue;
     }
     try {
-      // Runs in the frame's browser context (sandboxed), not in Node.js
-      const result: unknown = await frame.evaluate((fnBody: string) => {
-        'use strict';
-        try {
-          const candidate: unknown = (0, eval)('(' + fnBody + ')');
-          return typeof candidate === 'function' ? (candidate as () => unknown)() : candidate;
-        } catch (err: unknown) {
-          throw new Error('Invalid evaluate function: ' + (err instanceof Error ? err.message : String(err)));
-        }
-      }, fnText);
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new FrameEvaluationTimeoutError(timeoutMs);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new FrameEvaluationTimeoutError(timeoutMs));
+        }, remaining);
+      });
+      let result: unknown;
+      try {
+        // Uses the same browser-side expression/statement and promise rules as evaluate().
+        result = await Promise.race([
+          frame.evaluate(BROWSER_EVALUATOR as (...args: unknown[]) => unknown, {
+            fnBody: fnText,
+            timeoutMs: remaining,
+          }),
+          timedOut,
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      await assertBrowserNavigationResultAllowed({ url: frame.url(), ...framePolicy });
       results.push({
         frameUrl: frame.url(),
         frameName: frame.name(),
         result,
       });
     } catch (err) {
+      if (
+        err instanceof FrameEvaluationTimeoutError ||
+        (err instanceof Error && /evaluate timed out after \d+ms/.test(err.message))
+      ) {
+        if (opts.targetId !== undefined && opts.targetId !== '') {
+          await tryTerminateExecutionForPage({
+            cdpUrl: opts.cdpUrl,
+            targetId: opts.targetId,
+            page,
+            ssrfPolicy: opts.ssrfPolicy,
+          });
+        }
+        throw err instanceof FrameEvaluationTimeoutError ? err : new FrameEvaluationTimeoutError(timeoutMs);
+      }
       console.warn('[browserclaw] frame evaluate failed:', err instanceof Error ? err.message : String(err));
     }
   }
 
   return results;
+}
+
+class FrameEvaluationTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`All-frame evaluate timed out after ${String(timeoutMs)}ms`);
+    this.name = 'FrameEvaluationTimeoutError';
+  }
 }
 
 // Browser-side evaluators: intentionally use eval() to execute user-provided

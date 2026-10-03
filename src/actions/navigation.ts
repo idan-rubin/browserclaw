@@ -19,8 +19,8 @@ import {
   isBlockedTarget,
   isBlockedPageRef,
   isBrowserInternalTargetUrl,
-  markTargetBlocked,
-  markPageRefBlocked,
+  quarantineBlockedTarget,
+  assertSelectedPageAllowed,
   clearBlockedPageRef,
   clearBlockedTarget,
 } from '../connection.js';
@@ -313,14 +313,6 @@ export async function withPageNavigationRequestGuard<T>(opts: PageNavigationRequ
   return outcome.value;
 }
 
-async function quarantineBlockedTarget(opts: { cdpUrl: string; page: Page; targetId?: string }): Promise<void> {
-  markPageRefBlocked(opts.cdpUrl, opts.page);
-  const resolvedTargetId = await pageTargetId(opts.page).catch(() => null);
-  const fallbackTargetId = opts.targetId?.trim() ?? '';
-  const targetIdToBlock = resolvedTargetId ?? fallbackTargetId;
-  if (targetIdToBlock) markTargetBlocked(opts.cdpUrl, targetIdToBlock);
-}
-
 async function closeBlockedNavigationTarget(opts: { cdpUrl: string; page: Page; targetId?: string }): Promise<void> {
   await quarantineBlockedTarget(opts);
   await opts.page.close().catch((e: unknown) => {
@@ -338,12 +330,12 @@ export async function assertPageNavigationCompletedSafely(opts: {
   const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, proxyModeOpts(opts.cdpUrl));
   try {
     await assertBrowserNavigationRedirectChainAllowed({ request: opts.response?.request(), ...navigationPolicy });
-    await assertBrowserNavigationResultAllowed({ url: opts.page.url(), ...navigationPolicy });
   } catch (err) {
     if (isPolicyDenyNavigationError(err))
       await quarantineBlockedTarget({ cdpUrl: opts.cdpUrl, page: opts.page, targetId: opts.targetId });
     throw err;
   }
+  await assertSelectedPageAllowed(opts);
 }
 
 // ── Interaction-time navigation guard ──────────────────────────────
