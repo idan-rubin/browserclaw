@@ -1,15 +1,17 @@
 ---
 name: browserclaw
-description: Browse websites interactively using the browserclaw library — launch, navigate, snapshot, interact, extract
+description: Browse websites with browserclaw. For one tab, use launch({ url }) then currentPage(); open(url) creates an additional tab.
 ---
 
 # Browserclaw Interactive Browsing
 
 You are operating a real browser. You see pages through `snapshot()` and act on them with `click()`, `type()`, `select()`, etc. Every action may change the page — re-snapshot before deciding what to do next. Refs (`"e3"`, `"e8"`, ...) are only valid for the snapshot that produced them.
 
-## Quick start — a full session
+## Start with one tab
 
 Requires Node.js >= 22 and a system Chromium-based browser. Install with `npm install browserclaw`; no separate Playwright browser download is needed.
+
+**For the first page, pass the URL to `BrowserClaw.launch({ url })`, then use `browser.currentPage()`.** `browser.open(url)` creates an additional tab. Calling `launch()` without a URL and then `open(url)` leaves the startup blank tab beside the new tab. If already launched without a URL, use `const page = await browser.currentPage(); await page.goto(url)` to navigate that existing tab. Use `open(url)` when you want another tab.
 
 ```typescript
 import { BrowserClaw } from 'browserclaw';
@@ -291,6 +293,8 @@ browserclaw ships only the library primitives: snapshots, clicks, types, `pressA
 | Agent stuck repeating the same action           | [`loop-detection.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/loop-detection.ts)                |
 
 ## Key rules
+
+For a single-tab task: `launch({ url })` → `currentPage()` → interact on that page. If the browser is already launched, reuse its current page and call `goto(url)`.
 
 1. **Never guess the API.** When unsure whether a method exists or what it takes, check `node_modules/browserclaw/dist/index.d.ts` or `node_modules/browserclaw/README.md`. Don't invent alternatives.
 2. **Refs are ephemeral.** After navigation or a DOM-changing action, re-snapshot.

@@ -22,7 +22,7 @@ browserclaw is just the eyes and hands. Call `snapshot()` and get an AI-readable
 import { BrowserClaw } from 'browserclaw';
 
 const browser = await BrowserClaw.launch({ url: 'https://demo.playwright.dev/todomvc' });
-const page = await browser.currentPage();
+const page = await browser.currentPage(); // reuse the tab opened by launch; open() adds a tab
 
 // Snapshot — the core feature
 const { snapshot, refs } = await page.snapshot();
@@ -235,8 +235,11 @@ const browser2 = await BrowserClaw.launch({
 
 ### Pages & Tabs
 
+For a single-tab session, start with `BrowserClaw.launch({ url })`, then get that page with `browser.currentPage()`. `open(url)` creates another tab; it does not navigate the startup tab. If you already called `launch()` without a URL, use `currentPage()` followed by `page.goto(url)` to reuse the blank tab.
+
 ```typescript
-const page = await browser.open('https://demo.playwright.dev/todomvc');
+const page = await browser.currentPage(); // reuse the first tab
+await page.goto('https://demo.playwright.dev/todomvc'); // navigate it if needed
 const current = await browser.currentPage(); // get first usable (non-blank) tab
 const tabs = await browser.tabs(); // list all tabs
 const handle = browser.page(tabs[0].targetId); // wrap existing tab
@@ -249,6 +252,12 @@ page.id; // CDP target ID (use with focus/close/page)
 await page.url(); // current page URL
 await page.title(); // current page title
 browser.url; // CDP endpoint URL
+```
+
+To intentionally add another tab:
+
+```typescript
+const second = await browser.open('https://demo.playwright.dev/svgtodo');
 ```
 
 #### Recovering tab handles
