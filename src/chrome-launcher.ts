@@ -302,6 +302,7 @@ function execText(command: string, args: string[], timeoutMs = 1200, maxBuffer =
       timeout: timeoutMs,
       encoding: 'utf8',
       maxBuffer,
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
     return output.trim() || null;
   } catch {
