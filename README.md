@@ -36,38 +36,43 @@ await browser.stop();
 
 ### Bring your own agent loop — or use ours
 
-browserclaw never calls an LLM or decides anything; you do. The whole integration is snapshot in, ref out, act — here it is wired to a real model:
+browserclaw never calls an LLM or decides anything; you do. The whole integration is snapshot in, ref out, act — here it is wired to a real model. Install `@anthropic-ai/sdk` and set `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL` to a model available to your account:
 
 ```typescript
 import { BrowserClaw } from 'browserclaw';
 import Anthropic from '@anthropic-ai/sdk';
 
 const llm = new Anthropic();
+const model = process.env.ANTHROPIC_MODEL;
+if (!model) throw new Error('Set ANTHROPIC_MODEL to a model available to your account');
 const browser = await BrowserClaw.launch({ url: 'https://news.ycombinator.com' });
-const page = await browser.currentPage();
+try {
+  const page = await browser.currentPage();
 
-for (let step = 0; step < 20; step++) {
-  const { snapshot } = await page.snapshot();
-  const res = await llm.messages.create({
-    model: 'claude-opus-4-8',
-    max_tokens: 1024,
-    system: 'You drive a browser. Reply with JSON: { "action": "click" | "type" | "done", "ref"?, "text"? }.',
-    messages: [{ role: 'user', content: `Task: open the top story.\n\n${snapshot}` }],
-  });
-  const block = res.content[0];
-  const action = JSON.parse(block.type === 'text' ? block.text : '{}');
-  if (action.action === 'done') break;
-  if (action.action === 'type') await page.type(action.ref, action.text);
-  if (action.action === 'click') await page.click(action.ref);
+  for (let step = 0; step < 20; step++) {
+    const { snapshot } = await page.snapshot();
+    const res = await llm.messages.create({
+      model,
+      max_tokens: 1024,
+      system: 'You drive a browser. Reply with JSON: { "action": "click" | "type" | "done", "ref"?, "text"? }.',
+      messages: [{ role: 'user', content: `Task: open the top story.\n\n${snapshot}` }],
+    });
+    const block = res.content[0];
+    const action = JSON.parse(block.type === 'text' ? block.text : '{}');
+    if (action.action === 'done') break;
+    if (action.action === 'type') await page.type(action.ref, action.text);
+    if (action.action === 'click') await page.click(action.ref);
+  }
+} finally {
+  await browser.stop();
 }
-await browser.stop();
 ```
 
 Swap Anthropic for any model — the snapshot is plain text in, a ref is plain text out. **Layered, not bundled:** the LLM, this library, and the agent are three independent pieces. Don't want to write the loop? Use [browserclaw-agent](https://github.com/idan-rubin/browserclaw-agent) — the open-source driver that adds obstacle recovery and learns a reusable skill per site. Bring your own brain, or use ours.
 
 ## Why browserclaw?
 
-Most browser automation was built for humans writing test scripts; the rest are full agents that own the loop. An agent you've already built needs neither:
+browserclaw provides browser primitives you can call from an agent loop you already own:
 
 - **Deterministic** — refs resolve through Playwright locators and bound DOM identities, one ref → one element. No coordinate guessing, no LLM re-interpreting targets between calls.
 - **Cheap & fast** — a text snapshot is a fraction of the tokens of a screenshot, and there's no vision API round-trip in the targeting loop.
@@ -76,31 +81,16 @@ Most browser automation was built for humans writing test scripts; the rest are 
 
 ## How browserclaw compares
 
-There's no single "best" tool here — it depends on whether you're _building_ an agent or _embedding_ a browser tool into one you already own. Here's an honest map (competitor details last verified June 2026).
+Choose by the integration surface your application needs. Competitor details checked against their official documentation on October 10, 2026:
 
-|                                                    | [browserclaw](https://github.com/idan-rubin/browserclaw) | [browser-use](https://github.com/browser-use/browser-use) | [Stagehand](https://github.com/browserbase/stagehand) | [Playwright MCP](https://github.com/microsoft/playwright-mcp) |
-| :------------------------------------------------- | :------------------------------------------------------: | :-------------------------------------------------------: | :---------------------------------------------------: | :-----------------------------------------------------------: |
-| Ref → exact element, no guessing                   |                    :white_check_mark:                    |                    :heavy_minus_sign:                     |                          :x:                          |                      :white_check_mark:                       |
-| No vision model in the loop                        |                    :white_check_mark:                    |                    :heavy_minus_sign:                     |                  :white_check_mark:                   |                      :white_check_mark:                       |
-| Survives redesigns (semantic, not pixel)           |                    :white_check_mark:                    |                    :heavy_minus_sign:                     |                  :white_check_mark:                   |                      :white_check_mark:                       |
-| Interact with cross-origin iframes                 |                    :white_check_mark:                    |                    :white_check_mark:                     |                          :x:                          |                              :x:                              |
-| Playwright engine (auto-wait, locators)            |                    :white_check_mark:                    |                            :x:                            |                  :white_check_mark:                   |                      :white_check_mark:                       |
-| Embeddable in your own JS/TS agent loop            |                    :white_check_mark:                    |                            :x:                            |                  :heavy_minus_sign:                   |                              :x:                              |
-| Batteries-included agent (give it a task, it runs) |                           :x:                            |                    :white_check_mark:                     |                  :heavy_minus_sign:                   |                              :x:                              |
-| Hosted / managed browser infrastructure            |                           :x:                            |                    :white_check_mark:                     |                  :white_check_mark:                   |                              :x:                              |
+| Tool | Integration surface | Action selection |
+| ---- | ------------------- | ---------------- |
+| [browserclaw](https://github.com/idan-rubin/browserclaw) | JS/TS library; caller owns the loop | Snapshot refs → Playwright locators; no model calls inside the library |
+| [browser-use](https://github.com/browser-use/browser-use) | Python agent library; [Python/TypeScript Cloud SDK](https://github.com/browser-use/sdk) for hosted tasks and browser infrastructure | Agent-driven tasks, or caller-controlled managed browsers |
+| [Stagehand](https://github.com/browserbase/stagehand) | SDK with browser methods and AI primitives; local or Browserbase browsers | Direct locators plus natural-language `act`, `observe`, and `extract`; repeated AI calls can be cached |
+| [Playwright MCP](https://github.com/microsoft/playwright-mcp) | MCP tools; supports programmatic server creation | Snapshot refs or selectors through Playwright tools |
 
-:white_check_mark: = Yes&ensp; :heavy_minus_sign: = Partial&ensp; :x: = No
-
-> **If you already own your agent loop, browserclaw is the only one of these you can embed without inheriting someone else's agent.** browser-use and Stagehand shine when you want a batteries-included agent; Playwright MCP is the move when your agent speaks MCP. browserclaw is for when the brain is already yours and you just need reliable, deterministic eyes and hands.
-
-browserclaw is deliberately _not_ a complete agent, ships no hosted infrastructure, and is JS/TS only. If your stack is Python or you want a managed cloud browser, browser-use is the more natural fit — that's the trade: you give up batteries-included convenience to keep full control of the loop.
-
-### How each tool works under the hood
-
-- **browserclaw** — Accessibility snapshot with numbered refs → Playwright locator (`aria-ref` in default mode, bound DOM identities in native role mode). One ref, one element. No vision model, no LLM in the targeting loop. You bring the brain.
-- **browser-use** — An AI agent framework: takes a task, calls an LLM, decides actions, and executes them over raw CDP (it dropped Playwright for its own index-based engine in 2025). The agent loop is the marketed path, so it's hard to compose into a platform that already owns that loop. The open-source library is Python; an official TypeScript SDK drives its hosted cloud API.
-- **Stagehand** — Accessibility tree + natural language primitives (`page.act("click login")`). Convenient, but the LLM re-interprets which element to target on every single call — non-deterministic by design.
-- **Playwright MCP** — Same snapshot philosophy as browserclaw, but locked to the MCP protocol. Great for chat-based agents, but not embeddable as a library — you can't compose it into your own agent loop or call it from application code.
+browserclaw exposes snapshots and actions directly in application code. It ships no agent loop or hosted browser service. The other tools also support composing browser operations into your application; their APIs, hosting options, and model involvement differ.
 
 ## Try It Live — Or On Your Machine
 
@@ -141,7 +131,7 @@ Requires a Chromium-based browser installed on the system (Chrome, Brave, Edge, 
 2. **AI reads** the snapshot text and picks a ref to act on
 3. **Actions target refs** → browserclaw resolves each ref to a Playwright locator and executes the action
 
-> **Note:** Refs are scoped to the snapshot that created them. After navigation or DOM changes, old refs become invalid — actions will fail with an error (timeout in aria mode, `"Unknown ref"` in role mode). Always re-snapshot before acting on a changed page.
+> **Note:** Refs belong to the snapshot that created them. Navigation or DOM changes can invalidate them; stale refs may fail with a lookup error or timeout. Always re-snapshot before acting on a changed page.
 
 ## API
 
@@ -177,6 +167,8 @@ const browser = await BrowserClaw.connect();
 ```
 
 `connect()` checks that Chrome is reachable, then the internal CDP connection retries 3 times with increasing timeouts (5 s, 7 s, 9 s) — safe for Docker/CI where Chrome starts slowly.
+
+Always call `stop()` when finished. A handle created by `launch()` owns the Chrome process and terminates it on stop. A handle created by `connect()` releases its connection lease without terminating externally launched Chrome; the shared Playwright adapter closes when the last handle stops. Stopping one connected handle leaves other handles to the same endpoint usable. Stopping the launching handle still terminates its Chrome process, even if connected handles remain.
 
 **Anti-detection:** `launch()` always passes Chrome the flag that disables the `AutomationControlled` Blink feature.
 `connect()` attaches to an already-running Chrome, so it cannot add launch flags retroactively. To inject JavaScript
@@ -357,7 +349,7 @@ const { nodes } = await page.ariaSnapshot({ limit: 500 });
 
 **Snapshot modes:**
 
-- `'aria'` (default) — Uses Playwright's AI-mode snapshot. Refs are resolved via `aria-ref` locators. Best for most use cases. Requires `playwright-core` >= 1.50.
+- `'aria'` (default) — Uses Playwright's AI-mode snapshot. Refs are resolved via `aria-ref` locators. Best for most use cases. The supported dependency is `playwright-core` >= 1.63 (installed with browserclaw).
 - `'role'` — Captures the native accessibility tree and binds refs to DOM identities. Supports `selector` and `frameSelector` for scoped snapshots; navigation or frame replacement invalidates the capture.
 
 > **Security:** All snapshot results include `untrusted: true` to signal that the content originates from an external web page. AI agents consuming snapshots should treat this content as potentially adversarial (e.g. prompt injection via page text).
@@ -401,7 +393,7 @@ await page.fill([
 ]);
 ```
 
-`fill()` field types: `'text'` (default) calls Playwright `fill()` with the string value. `'checkbox'` and `'radio'` call `setChecked()` with `force: true` (works on hidden inputs behind custom styling). Truthy values are `true`, `1`, `'1'`, `'true'`. Type can be omitted and defaults to `'text'`. Fields with an empty or whitespace-only ref are silently skipped — they are not counted in the fill result.
+`fill()` field types: `'text'` (default) calls Playwright `fill()` with the string value. `'checkbox'` and `'radio'` call `setChecked()` with `force: true` (works on hidden inputs behind custom styling). Truthy values are `true`, `1`, `'1'`, `'true'`. Type can be omitted and defaults to `'text'`. Fields with an empty or whitespace-only ref are silently skipped. `fill()` resolves without a result value.
 
 `fill()` is the ergonomic form-filling case of the lower-level `batch()`, which runs a heterogeneous sequence of actions (click, mouseClick, type, insertText, press, hover, drag, select, fill, wait, …) in a single call:
 
@@ -592,7 +584,7 @@ const { text, truncated } = await page.text({ maxChars: 12_000 });
 const article = await page.text({ selector: 'article' });
 ```
 
-Without a selector, `text()` prefers `article`, then `main`, then `body`. Output is capped at 40,000 characters and supports an abort `signal`. Page text is untrusted external content, just like snapshots.
+Without a selector, `text()` tries the first `article`, then the first `main`, using either only if visible and nonempty; otherwise it reads `body`. Output is capped at 40,000 characters and supports an abort `signal`. Page text is untrusted external content, just like snapshots.
 
 ### Activity Monitoring
 
@@ -678,15 +670,15 @@ const count = await page.evaluate('() => document.querySelectorAll("img").length
 const slow = await page.evaluate('() => document.readyState', { timeoutMs: 5000 }); // bounded (default 20s); pass an AbortSignal to cancel
 ```
 
-#### `evaluateInAllFrames(fn)`
+#### `evaluateInAllFrames(fn, opts?)`
 
-Run JavaScript in ALL frames on the page, including cross-origin iframes. Playwright bypasses the same-origin policy via CDP, making this essential for interacting with embedded payment forms (Stripe, etc.).
+Run JavaScript across the page's frames, including cross-origin iframes, subject to the configured SSRF policy. Results include successful evaluations; blocked frames and ordinary per-frame evaluation failures are skipped. `timeoutMs` sets one total evaluation budget across all frames (default 20 seconds). Exhausting it rejects the call rather than returning partial results.
 
 ```typescript
 const results = await page.evaluateInAllFrames(`() => {
   const el = document.querySelector('input[name="cardnumber"]');
   return el ? 'found' : null;
-}`);
+}`, { timeoutMs: 5000 });
 // Returns: [{ frameUrl: '...', frameName: '...', result: 'found' }, ...]
 ```
 
@@ -761,8 +753,20 @@ Contributions welcome! Please:
 1. Fork the repository
 2. Create a feature branch (`git checkout -b my-feature`)
 3. Make your changes
-4. Run `npm run typecheck && npm run build` to verify
+4. For code changes, run `npm run format:check && npm run lint && npm run typecheck && npm run build && npm test`
 5. Submit a pull request
+
+### OpenClaw sync: code, docs, and skills
+
+Documentation review is part of every OpenClaw sync. Include any needed updates in the same sync PR:
+
+- Check `README.md`, `PATTERNS.md`, and `examples/` against the resulting Browserclaw API and behavior: signatures, defaults, timeouts, cancellation, security policy, resource ownership, and requirements.
+- Update `.agents/skills/browserclaw/SKILL.md` and `.claude/skills/browserclaw/SKILL.md` together. Keep them byte-for-byte identical; the Claude copy also ships in the npm package.
+- Verify affected snippets against the implementation and exported types. Check skill frontmatter, local links, and `git diff --check`. Code changes still require the full verification commands above.
+- Record the documentation reviewed and any updates in the PR summary and sync run log. If no updates are needed, record that conclusion and its scope.
+- Reuse applicable worktrees, cached releases, and review evidence. Recheck documentation affected by follow-up fixes before pushing them.
+
+A documentation-only follow-up does not require a package version bump.
 
 ## Acknowledgments
 

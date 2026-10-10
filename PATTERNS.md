@@ -65,9 +65,14 @@ Because `resolveToken` runs in your application code — not inside the LLM call
 
 ### Full example
 
+Install `@anthropic-ai/sdk` and set `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `USER_EMAIL`, and `USER_PASSWORD`. Choose a model available to your account.
+
 ```typescript
 import { BrowserClaw } from 'browserclaw';
 import Anthropic from '@anthropic-ai/sdk';
+
+const model = process.env.ANTHROPIC_MODEL;
+if (!model) throw new Error('Set ANTHROPIC_MODEL to a model available to your account');
 
 function loadCredentials(): Record<string, string> {
   const required = ['USER_EMAIL', 'USER_PASSWORD'] as const;
@@ -136,7 +141,7 @@ async function agentStep(history: Anthropic.MessageParam[]): Promise<void> {
   const { snapshot } = await page.snapshot();
 
   const response = await client.messages.create({
-    model: 'claude-opus-4-7',
+    model,
     max_tokens: 1024,
     system: SYSTEM,
     tools: TOOLS,
