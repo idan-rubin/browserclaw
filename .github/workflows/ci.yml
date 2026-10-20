@@ -44,6 +44,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npx tsx scripts/check-exports.ts
+      - run: npx tsx scripts/check-package-local-chromium.ts
 
   test:
     runs-on: ubuntu-latest

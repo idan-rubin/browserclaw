@@ -680,7 +680,7 @@ async function isHeadlessChromium(browser: Browser): Promise<boolean> {
         const { commandLine } = await session.send('SystemInfo.getInfo');
         return (
           commandLine.split(/\s+/).some((arg) => /^['"]?--headless(?:=.*)?['"]?$/i.test(arg)) ||
-          /(?:^|[\\/])(?:chrome-headless-shell|headless_shell)(?=\s|$|["'])/i.test(commandLine)
+          /(?:^["']?|[\\/])(?:chrome-headless-shell|headless_shell)(?:\.exe)?(?=\s|$|["'])/i.test(commandLine)
         );
       })(),
       5000,

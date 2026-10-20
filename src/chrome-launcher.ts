@@ -1,11 +1,11 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import type Ws from 'ws';
@@ -527,7 +527,8 @@ function findPlaywrightChromiumCandidates(): ChromeExecutable[] {
   const cachePaths = [path.join(cacheHome, 'ms-playwright')];
   if (configured === '0') {
     try {
-      const packageRoot = path.dirname(fileURLToPath(import.meta.resolve('playwright-core/package.json')));
+      const requireFromModule = createRequire(typeof __filename === 'string' ? __filename : import.meta.url);
+      const packageRoot = path.dirname(requireFromModule.resolve('playwright-core/package.json'));
       cachePaths.unshift(path.join(packageRoot, '.local-browsers'));
     } catch {
       /* The ordinary cache remains available if package resolution fails. */
