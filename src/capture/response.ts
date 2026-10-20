@@ -1,24 +1,12 @@
 import { getPageForTargetId, ensurePageState, normalizeTimeoutMs, truncateUtf16Safe } from '../connection.js';
 import type { RequestResult, ResponseBodyResult, SsrfPolicy } from '../types.js';
 
+import { matchUrlPattern } from './url-pattern.js';
+
 function resolveMaxChars(maxChars: number | undefined): number {
   return typeof maxChars === 'number' && Number.isFinite(maxChars)
     ? Math.max(1, Math.min(5_000_000, Math.floor(maxChars)))
     : 200000;
-}
-
-function matchUrlPattern(pattern: string, url: string): boolean {
-  if (!pattern || !url) return false;
-  if (pattern === url) return true;
-  if (pattern.includes('*')) {
-    const escaped = pattern.replace(/[.+^${}()|[\]\\?]/g, '\\$&').replace(/\*/g, '.*');
-    try {
-      return new RegExp(`^${escaped}$`).test(url);
-    } catch {
-      return false;
-    }
-  }
-  return url.includes(pattern);
 }
 
 export async function responseBodyViaPlaywright(opts: {

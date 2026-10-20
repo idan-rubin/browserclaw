@@ -42,6 +42,77 @@ function rootedWindowsDriveColonIndex(value: string): number {
   return colon >= 0 && isWindowsSeparator(value, colon + 1) ? colon : -1;
 }
 
+function windowsSegmentsClimbAbove(segments: string[]): boolean {
+  let depth = 0;
+  for (const segment of segments) {
+    if (segment === '' || segment === '.') continue;
+    let parentLike = true;
+    for (const character of segment) {
+      if (character !== '.' && character !== ' ') {
+        parentLike = false;
+        break;
+      }
+    }
+    depth += parentLike ? -1 : 1;
+    if (depth < 0) return true;
+  }
+  return false;
+}
+
+function asciiLowercase(value: string): string {
+  return value.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 0x20));
+}
+
+function trimWindowsTrailingSeparators(value: string, minimumLength: number): string {
+  let end = value.length;
+  while (end > minimumLength && value[end - 1] === '\\') end--;
+  return value.slice(0, end);
+}
+
+function windowsShareOrDeviceRoot(value: string): string | undefined | null {
+  if (!isWindowsSeparator(value, 0) || !isWindowsSeparator(value, 1)) return;
+  const spelled = value.replaceAll('/', '\\');
+  if (!hasWindowsNamespacePrefix(spelled))
+    return asciiLowercase(trimWindowsTrailingSeparators(win32.parse(spelled).root, 0));
+  const segments = spelled.slice(4).split('\\');
+  const head = asciiLowercase(segments[0] ?? '');
+  const authority = head === 'unc' ? segments.slice(0, 3) : segments.slice(0, 1);
+  if (
+    head === 'globalroot' ||
+    head === 'global' ||
+    authority.length < (head === 'unc' ? 3 : 1) ||
+    authority.some((segment) => segment === '' || /[. ]$/.test(segment)) ||
+    windowsSegmentsClimbAbove(segments.slice(authority.length))
+  )
+    return null;
+  if (rootedWindowsDriveColonIndex(value) === 5) return;
+  return asciiLowercase(
+    head === 'unc' ? `\\\\${authority[1]}\\${authority[2]}` : `${spelled.slice(0, 4)}${authority[0]}`,
+  );
+}
+
+function isExactlyUnderWindowsPath(trusted: string, value: string): boolean {
+  const root = trimWindowsTrailingSeparators(trusted.replaceAll('/', '\\'), 1);
+  const candidate = value.replaceAll('/', '\\');
+  if (candidate !== root && !candidate.startsWith(root.endsWith('\\') ? root : `${root}\\`)) return false;
+  return !windowsSegmentsClimbAbove(candidate.slice(root.length).split('\\'));
+}
+
+/** Reject foreign Windows shares before even metadata access can contact their hosts. */
+export function isForeignWindowsShareOrDevicePath(
+  value: string,
+  trustedPaths: string[],
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform !== 'win32') return false;
+  const key = windowsShareOrDeviceRoot(value);
+  if (key === undefined) return false;
+  return !trustedPaths.some(
+    (trusted) =>
+      (key !== null && windowsShareOrDeviceRoot(trusted) === key) || isExactlyUnderWindowsPath(trusted, value),
+  );
+}
+
 /** Reject alternate data streams and drive-relative aliases only on Windows. */
 export function hasWindowsPathAlias(value: string, platform: NodeJS.Platform = process.platform): boolean {
   if (platform !== 'win32') return false;

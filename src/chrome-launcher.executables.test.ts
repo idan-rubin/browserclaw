@@ -2,6 +2,7 @@ import type * as ChildProcess from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -51,9 +52,23 @@ beforeEach(() => {
   vi.spyOn(fs, 'readFileSync').mockImplementation(() => {
     throw new Error('ENOENT');
   });
-  for (const name of ['LOCALAPPDATA', 'ProgramFiles', 'ProgramFiles(x86)', 'PLAYWRIGHT_BROWSERS_PATH']) {
+  for (const name of [
+    'LOCALAPPDATA',
+    'ProgramFiles',
+    'ProgramFiles(x86)',
+    'XDG_CACHE_HOME',
+    'INIT_CWD',
+    'npm_config_init_cwd',
+    'npm_package_config_init_cwd',
+  ]) {
     vi.stubEnv(name, '');
   }
+  for (const name of [
+    'PLAYWRIGHT_BROWSERS_PATH',
+    'npm_config_playwright_browsers_path',
+    'npm_package_config_playwright_browsers_path',
+  ])
+    vi.stubEnv(name, undefined);
 });
 
 afterEach(() => {
@@ -155,16 +170,19 @@ describe('regular executable discovery', () => {
 });
 
 describe('Linux Playwright cache fallback', () => {
-  it.each(['chrome-linux64', 'chrome-linux'])('discovers %s only after fixed candidates', (layout) => {
-    platform('linux');
-    vi.stubEnv('PLAYWRIGHT_BROWSERS_PATH', ' /custom/cache ');
-    vi.mocked(fs.readdirSync).mockReturnValue(['firefox-4', 'chromium-2', 'chromium-1'] as never);
-    const browser = `/custom/cache/chromium-1/${layout}/chrome`;
-    files.add(browser);
-    expect(resolveBrowserExecutable()).toEqual({ kind: 'chromium', path: browser });
-    files.add('/snap/bin/chromium');
-    expect(resolveBrowserExecutable()?.path).toBe('/snap/bin/chromium');
-  });
+  it.each(['chrome-linux64', 'chrome-linux', 'chrome-linux-arm64'])(
+    'discovers %s only after fixed candidates',
+    (layout) => {
+      platform('linux');
+      vi.stubEnv('PLAYWRIGHT_BROWSERS_PATH', ' /custom/cache ');
+      vi.mocked(fs.readdirSync).mockReturnValue(['firefox-4', 'chromium-2', 'chromium-1'] as never);
+      const browser = `/custom/cache/chromium-1/${layout}/chrome`;
+      files.add(browser);
+      expect(resolveBrowserExecutable()).toEqual({ kind: 'chromium', path: browser });
+      files.add('/snap/bin/chromium');
+      expect(resolveBrowserExecutable()?.path).toBe('/snap/bin/chromium');
+    },
+  );
 
   it('uses the home cache when the override is 0, and ignores other browser caches', () => {
     platform('linux');
@@ -174,6 +192,38 @@ describe('Linux Playwright cache fallback', () => {
     files.add(browser);
     expect(resolveBrowserExecutable()?.path).toBe(browser);
     expect(fs.readdirSync).not.toHaveBeenCalledWith('0');
+  });
+
+  it.each([
+    'PLAYWRIGHT_BROWSERS_PATH',
+    'npm_config_playwright_browsers_path',
+    'npm_package_config_playwright_browsers_path',
+  ])('resolves a relative %s against INIT_CWD', (name) => {
+    platform('linux');
+    vi.stubEnv(name, 'relative-browsers');
+    vi.stubEnv('INIT_CWD', '/project');
+    vi.mocked(fs.readdirSync).mockReturnValue(['chromium-3'] as never);
+    const browser = '/project/relative-browsers/chromium-3/chrome-linux-arm64/chrome';
+    files.add(browser);
+    expect(resolveBrowserExecutable()?.path).toBe(browser);
+  });
+
+  it('prefers package-local browsers for 0 and honors XDG_CACHE_HOME as fallback', () => {
+    platform('linux');
+    vi.stubEnv('PLAYWRIGHT_BROWSERS_PATH', '0');
+    vi.stubEnv('XDG_CACHE_HOME', '/custom-xdg');
+    vi.mocked(fs.readdirSync).mockReturnValue(['chromium-3'] as never);
+    const localRoot = path.join(
+      path.dirname(fileURLToPath(import.meta.resolve('playwright-core/package.json'))),
+      '.local-browsers',
+    );
+    const localBrowser = path.join(localRoot, 'chromium-3/chrome-linux-arm64/chrome');
+    const xdgBrowser = '/custom-xdg/ms-playwright/chromium-3/chrome-linux64/chrome';
+    files.add(localBrowser);
+    files.add(xdgBrowser);
+    expect(resolveBrowserExecutable()?.path).toBe(localBrowser);
+    files.delete(localBrowser);
+    expect(resolveBrowserExecutable()?.path).toBe(xdgBrowser);
   });
 });
 

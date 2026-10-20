@@ -20,9 +20,26 @@ import {
   pickActiveTargetId,
   isRecoverablePlaywrightDisconnectError,
   isRecoverableStalePageSelectionError,
+  isBrowserInternalTargetUrl,
   tryTerminateExecutionViaCdp,
 } from './connection.js';
 import { BrowserCdpEndpointBlockedError } from './security.js';
+
+describe('browser internal target filtering', () => {
+  it.each([
+    'chrome-extension://extension/options.html',
+    'chrome-extension://newtab/',
+    'chrome-extension://new-tab-page/',
+  ])('filters extension page %s', (url) => {
+    expect(isBrowserInternalTargetUrl(url)).toBe(true);
+  });
+
+  it('control: preserves ordinary web pages and supported vendor new tabs', () => {
+    expect(isBrowserInternalTargetUrl('https://example.com/')).toBe(false);
+    expect(isBrowserInternalTargetUrl('chrome://newtab/')).toBe(false);
+    expect(isBrowserInternalTargetUrl('edge://newtab/')).toBe(false);
+  });
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error classes

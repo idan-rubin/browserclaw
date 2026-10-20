@@ -10,7 +10,7 @@ vi.mock('../connection.js', () => ({
   truncateUtf16Safe: (value: string, max: number) => value.slice(0, max),
 }));
 
-import { responseBodyViaPlaywright } from './response.js';
+import { responseBodyViaPlaywright, waitForRequestViaPlaywright } from './response.js';
 
 describe('response body completion budget', () => {
   beforeEach(() => vi.useFakeTimers());
@@ -24,7 +24,10 @@ describe('response body completion budget', () => {
       headers: () => ({}),
     };
     const page = Object.assign(new EventEmitter(), {
-      waitForResponse: vi.fn(() => Promise.resolve(response)),
+      waitForResponse: vi.fn((predicate: (value: typeof response) => boolean) => {
+        if (!predicate(response)) return Promise.reject(new Error('Response did not match'));
+        return Promise.resolve(response);
+      }),
     });
     getPage.mockResolvedValue(page);
     return { page, response };
@@ -61,6 +64,28 @@ describe('response body completion budget', () => {
     expect(page.listenerCount('close')).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it.each([responseBodyViaPlaywright, waitForRequestViaPlaywright])(
+    'uses the bounded matcher for capture subscriptions',
+    async (capture) => {
+      const { page, response } = fixture(() => Promise.resolve(Buffer.from('ready')));
+      const responseUrl = 'https://example.com/api/nested/items';
+      Object.assign(response, {
+        url: () => responseUrl,
+        request: () => ({ method: () => 'GET', postData: () => null }),
+        ok: () => true,
+      });
+      page.waitForResponse.mockImplementation((predicate: (value: typeof response) => boolean) => {
+        expect(predicate(response)).toBe(true);
+        expect(predicate({ ...response, url: () => responseUrl + '/suffix' })).toBe(false);
+        return Promise.resolve(response);
+      });
+      await expect(capture({ cdpUrl: 'http://localhost:9222', url: '  */api/*/items  ' })).resolves.toMatchObject({
+        url: responseUrl,
+        status: 200,
+      });
+    },
+  );
 
   it('rejects page closure while consuming the body', async () => {
     const { page } = fixture(

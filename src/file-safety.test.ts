@@ -4,7 +4,12 @@ import { basename, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { fitFileNameToPortableComponent, hasWindowsPathAlias, sanitizeUntrustedFileName } from './file-safety.js';
+import {
+  fitFileNameToPortableComponent,
+  hasWindowsPathAlias,
+  isForeignWindowsShareOrDevicePath,
+  sanitizeUntrustedFileName,
+} from './file-safety.js';
 import {
   resolvePathWithinRoot,
   resolveWritablePathWithinRoot,
@@ -84,6 +89,26 @@ describe('portable composite filenames', () => {
 });
 
 describe('Windows filesystem aliases', () => {
+  it.each([
+    '\\\\other\\share\\file.txt',
+    '\\\\Khost\\share\\root\\file.txt',
+    '\\\\?\\UNC\\other\\share\\file.txt',
+    '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1\\file.txt',
+    '\\\\.\\C:\\..\\UNC\\other\\share\\file.txt',
+  ])('rejects foreign Windows share or device %s', (path) => {
+    expect(isForeignWindowsShareOrDevicePath(path, ['\\\\khost\\share\\root'], 'win32')).toBe(true);
+  });
+  it('admits trusted UNC roots with ASCII case and ordinary drive paths (control)', () => {
+    const trusted = ['\\\\khost\\share\\root'];
+    for (const path of [
+      '\\\\KHOST\\SHARE\\root\\file.txt',
+      '\\\\?\\UNC\\khost\\share\\root\\file.txt',
+      'C:\\root\\file.txt',
+    ]) {
+      expect(isForeignWindowsShareOrDevicePath(path, trusted, 'win32')).toBe(false);
+    }
+    expect(isForeignWindowsShareOrDevicePath('\\\\other\\share\\file.txt', trusted, 'linux')).toBe(false);
+  });
   it.each(['file.txt:secret', 'C:relative.txt', 'C:\\safe\\file:stream', '\\\\?\\C:', '\\\\?\\C:\\safe\\file:stream'])(
     'rejects %s on Windows',
     (path) => {

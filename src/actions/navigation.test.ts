@@ -263,12 +263,14 @@ describe('listPagesViaPlaywright browser-internal filter', () => {
     return buildFakePage({ url: () => url });
   }
 
-  it('filters out chrome:// and devtools:// pages from listings', async () => {
+  it('filters out browser-internal and extension pages from listings', async () => {
     const realPage = pageWithUrl('https://example.test/');
     const chromePage = pageWithUrl('chrome://settings/');
     const devtoolsPage = pageWithUrl('devtools://devtools/bundled/inspector.html');
     const edgePage = pageWithUrl('edge://flags/');
-    const context = { pages: () => [realPage, chromePage, devtoolsPage, edgePage] };
+    const extensionPage = pageWithUrl('chrome-extension://example/options.html');
+    const extensionNewtab = pageWithUrl('chrome-extension://newtab/');
+    const context = { pages: () => [realPage, chromePage, devtoolsPage, edgePage, extensionPage, extensionNewtab] };
     const browser = { contexts: () => [context] };
     mockConnectBrowser.mockResolvedValue({
       browser: browser as unknown as Browser,
@@ -280,6 +282,8 @@ describe('listPagesViaPlaywright browser-internal filter', () => {
       [chromePage, 't-chrome'],
       [devtoolsPage, 't-devtools'],
       [edgePage, 't-edge'],
+      [extensionPage, 't-extension'],
+      [extensionNewtab, 't-extension-newtab'],
     ]);
     mockPageTargetId.mockImplementation((p: FakePage) => Promise.resolve(calls.get(p) ?? ''));
 

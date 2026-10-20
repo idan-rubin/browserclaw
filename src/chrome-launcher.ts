@@ -5,6 +5,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import type Ws from 'ws';
@@ -517,11 +518,24 @@ function findChromeLinux(): ChromeExecutable | null {
 }
 
 function findPlaywrightChromiumCandidates(): ChromeExecutable[] {
-  const configured = nonEmptyEnvironmentValue('PLAYWRIGHT_BROWSERS_PATH');
-  const cacheDirs = new Set([
-    ...(configured !== undefined && configured !== '0' ? [configured] : []),
-    path.join(os.homedir(), '.cache', 'ms-playwright'),
-  ]);
+  const configured = getPlaywrightEnv('PLAYWRIGHT_BROWSERS_PATH');
+  const configuredCacheHome = process.env.XDG_CACHE_HOME;
+  const cacheHome =
+    configuredCacheHome !== undefined && configuredCacheHome !== ''
+      ? configuredCacheHome
+      : path.join(os.homedir(), '.cache');
+  const cachePaths = [path.join(cacheHome, 'ms-playwright')];
+  if (configured === '0') {
+    try {
+      const packageRoot = path.dirname(fileURLToPath(import.meta.resolve('playwright-core/package.json')));
+      cachePaths.unshift(path.join(packageRoot, '.local-browsers'));
+    } catch {
+      /* The ordinary cache remains available if package resolution fails. */
+    }
+  } else if (configured !== undefined && configured !== '') cachePaths.unshift(configured);
+  const configuredBase = getPlaywrightEnv('INIT_CWD');
+  const base = configuredBase !== undefined && configuredBase !== '' ? configuredBase : process.cwd();
+  const cacheDirs = new Set(cachePaths.map((candidate) => path.resolve(base, candidate)));
   const candidates: ChromeExecutable[] = [];
   for (const cacheDir of cacheDirs) {
     let entries: string[];
@@ -532,12 +546,18 @@ function findPlaywrightChromiumCandidates(): ChromeExecutable[] {
     }
     for (const entry of entries) {
       if (!entry.startsWith('chromium-')) continue;
-      for (const layout of ['chrome-linux64', 'chrome-linux']) {
+      for (const layout of ['chrome-linux64', 'chrome-linux', 'chrome-linux-arm64']) {
         candidates.push({ kind: 'chromium', path: path.join(cacheDir, entry, layout, 'chrome') });
       }
     }
   }
   return candidates;
+}
+
+function getPlaywrightEnv(name: string): string | undefined {
+  const suffix = name.toLowerCase();
+  const value = process.env[name] ?? process.env[`npm_config_${suffix}`] ?? process.env[`npm_package_config_${suffix}`];
+  return value?.trim();
 }
 
 // ── Windows Detection ──

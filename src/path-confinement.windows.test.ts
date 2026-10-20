@@ -20,6 +20,7 @@ vi.mock('node:fs/promises', async (importOriginal) => ({
 import { pathForWindowsFilesystem } from './file-safety.js';
 import {
   resolveExistingPathsWithinRoot,
+  resolvePathWithinRoot,
   resolveStrictExistingPathsWithinRoot,
   resolveWritablePathWithinRoot,
   writeViaSiblingTempPath,
@@ -52,6 +53,59 @@ afterEach(() => {
 });
 
 describe('Windows namespace root filesystem dispatch (platform-mocked)', () => {
+  it('rejects Unicode-folded foreign UNC hosts in lexical and filesystem validators', async () => {
+    const rootDir = '\\\\khost\\share\\root';
+    const requestedPath = '\\\\Khost\\share\\root\\file.txt';
+    // Node folds these distinct hosts together: lexical relative containment alone is insufficient.
+    expect(win32.relative(rootDir, requestedPath)).toBe('file.txt');
+    expect(resolvePathWithinRoot({ rootDir, requestedPath, scopeLabel: 'test' }).ok).toBe(false);
+    expect((await resolveWritablePathWithinRoot({ rootDir, requestedPath, scopeLabel: 'test' })).ok).toBe(false);
+    for (const resolvePaths of [resolveExistingPathsWithinRoot, resolveStrictExistingPathsWithinRoot]) {
+      expect((await resolvePaths({ rootDir, requestedPaths: [requestedPath], scopeLabel: 'test' })).ok).toBe(false);
+    }
+    expect(lstat).not.toHaveBeenCalled();
+    expect(vi.mocked(realpath).mock.calls.every(([value]) => value === rootDir)).toBe(true);
+  });
+
+  it.each([
+    '\\\\other\\share\\file.txt',
+    '\\\\Khost\\share\\root\\file.txt',
+    '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1\\file.txt',
+  ])('rejects foreign output %s before probing its parent', async (targetPath) => {
+    const rootDir = '\\\\khost\\share\\root';
+    const writeTemp = vi.fn();
+    await expect(writeViaSiblingTempPath({ rootDir, targetPath, writeTemp })).rejects.toThrow(
+      'outside the allowed root',
+    );
+    expect(realpath).toHaveBeenCalledExactlyOnceWith(rootDir);
+    expect(lstat).not.toHaveBeenCalled();
+    expect(writeTemp).not.toHaveBeenCalled();
+    expect(rename).not.toHaveBeenCalled();
+  });
+
+  it('keeps writes and lexical paths on the trusted UNC share available (control)', async () => {
+    const rootDir = '\\\\khost\\share\\root';
+    const targetPath = `${rootDir}\\file.txt`;
+    expect(resolvePathWithinRoot({ rootDir, requestedPath: targetPath, scopeLabel: 'test' })).toEqual({
+      ok: true,
+      path: targetPath,
+    });
+    const writeTemp = vi.fn().mockResolvedValue(undefined);
+    await writeViaSiblingTempPath({ rootDir, targetPath, writeTemp });
+    expect(writeTemp).toHaveBeenCalledOnce();
+    expect(rename).toHaveBeenCalledWith(expect.stringContaining('.browserclaw-output-'), targetPath);
+  });
+
+  it('keeps canonical spelling of a trusted root alias available to the writer (control)', async () => {
+    const rootDir = 'C:\\alias';
+    const canonical = '\\\\khost\\share\\root';
+    vi.mocked(realpath).mockImplementation(((value: string) =>
+      Promise.resolve(value === rootDir ? canonical : value)) as typeof realpath);
+    const writeTemp = vi.fn().mockResolvedValue(undefined);
+    await writeViaSiblingTempPath({ rootDir, targetPath: `${canonical}\\file.txt`, writeTemp });
+    expect(writeTemp).toHaveBeenCalledOnce();
+  });
+
   it('rejects a distinct case-sensitive sibling root before staging or publication', async () => {
     const rootDir = 'C:\\Root';
     const targetPath = 'C:\\root\\file.txt';

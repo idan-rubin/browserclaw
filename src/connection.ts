@@ -16,7 +16,14 @@ import {
 } from './chrome-launcher.js';
 import { BrowserTabNotFoundError } from './errors.js';
 import { pageTargetInfo } from './page-target.js';
-import { ensurePageState, observeBrowser, setDialogHandlerOnPage, type ObserveOptions } from './page-utils.js';
+import {
+  ensurePageState,
+  observeBrowser,
+  guardHeadlessContext,
+  markHeadlessBrowser,
+  setDialogHandlerOnPage,
+  type ObserveOptions,
+} from './page-utils.js';
 import { clearRoleRefsForCdpUrl, normalizeCdpUrl } from './ref-resolver.js';
 import {
   BrowserCdpEndpointBlockedError,
@@ -655,6 +662,41 @@ async function awaitPendingConnection(
   }
 }
 
+async function isHeadlessChromium(browser: Browser): Promise<boolean> {
+  let session: CDPSession | undefined;
+  let settled = false;
+  const isSettled = (): boolean => settled;
+  const release = (): void => {
+    void session?.detach().catch(() => undefined);
+  };
+  try {
+    return await withOperationTimeout(
+      (async () => {
+        session = await browser.newBrowserCDPSession();
+        if (isSettled()) {
+          release();
+          return false;
+        }
+        const { commandLine } = await session.send('SystemInfo.getInfo');
+        return (
+          commandLine.split(/\s+/).some((arg) => /^['"]?--headless(?:=.*)?['"]?$/i.test(arg)) ||
+          /(?:^|[\\/])(?:chrome-headless-shell|headless_shell)(?=\s|$|["'])/i.test(commandLine)
+        );
+      })(),
+      5000,
+      'Browser launch mode detection',
+    );
+  } catch {
+    console.warn(
+      '[browserclaw] Could not read the browser launch mode. If headless, passkey requests may block clicks and keys; use a headed profile for such sites.',
+    );
+    return false;
+  } finally {
+    settled = true;
+    release();
+  }
+}
+
 /** Snapshot ownership before awaiting anything; never collect a later successor. */
 function retireConnectionExact(normalized: string): Promise<void> {
   const pending = connectingByCdpUrl.get(normalized);
@@ -758,7 +800,10 @@ export async function connectBrowser(
           void closeTrackedConnection(connectionAttempt.retired).catch(() => undefined);
           throw new Error('Playwright connection attempt was superseded.');
         }
+        let disconnected = false;
+        const isDisconnected = (): boolean => disconnected;
         const onDisconnected = () => {
+          disconnected = true;
           if (cachedByCdpUrl.get(normalized)?.browser === browser) {
             markBrowserForLeaseTransfer(normalized, browser);
             cachedByCdpUrl.delete(normalized);
@@ -771,7 +816,9 @@ export async function connectBrowser(
         transferBrowserLeases(normalized, browser);
         browser.on('disconnected', onDisconnected);
         try {
+          if (await isHeadlessChromium(browser)) markHeadlessBrowser(browser);
           await observeBrowser(browser, effectiveObserveOptions);
+          if (isDisconnected()) throw new Error('Browser disconnected while connecting.');
           if (isCancelled()) throw new Error('Playwright connection attempt was superseded.');
         } catch (error) {
           connectionAttempt.retired = connected;
@@ -1104,6 +1151,7 @@ async function getPageForTargetIdOnce(opts: { cdpUrl: string; targetId?: string;
   }
   const first = accessible[0];
   if (opts.targetId === undefined || opts.targetId === '') {
+    await guardHeadlessContext(first.context());
     await assertSelectedPageAllowed({ ...opts, page: first });
     return first;
   }
@@ -1116,6 +1164,7 @@ async function getPageForTargetIdOnce(opts: { cdpUrl: string; targetId?: string;
       `Tab not found (targetId: ${opts.targetId}). Call browser.tabs() to list open tabs.`,
     );
   }
+  await guardHeadlessContext(found.context());
   if (isBlockedPageRef(opts.cdpUrl, found, opts.ssrfPolicy)) throw new BlockedBrowserTargetError();
   const foundTargetId = await pageTargetId(found).catch(() => null);
   if (foundTargetId !== null && foundTargetId !== '' && isBlockedTarget(opts.cdpUrl, foundTargetId, opts.ssrfPolicy))
@@ -1207,6 +1256,7 @@ export async function getRestoredPageForTarget(opts: {
 const BROWSER_INTERNAL_TARGET_URL_PREFIXES = [
   'chrome://',
   'chrome-untrusted://',
+  'chrome-extension://',
   'devtools://',
   'edge://',
   'brave://',
@@ -1215,6 +1265,7 @@ const BROWSER_INTERNAL_TARGET_URL_PREFIXES = [
 ];
 
 function isVendorNewTabUrl(normalized: string): boolean {
+  if (normalized.startsWith('chrome-extension://')) return false;
   for (const prefix of BROWSER_INTERNAL_TARGET_URL_PREFIXES) {
     if (!normalized.startsWith(prefix)) continue;
     const rest = normalized.slice(prefix.length);

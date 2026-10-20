@@ -1181,14 +1181,16 @@ describe('security.ts', () => {
       expect(result.family).toBe(4);
     });
 
-    it('should prefer IPv4 when no family is requested and IPv4 addresses exist', async () => {
+    it('should retain both pinned families for all-record lookups without a family', async () => {
       const lookup = createPinnedLookup({
         hostname: 'test.com',
         addresses: ['1.2.3.4', '2001:db8::1'],
       });
       const results = await callPinnedAll(lookup, 'test.com');
-      expect(results).toHaveLength(1);
-      expect(results[0]).toEqual({ address: '1.2.3.4', family: 4 });
+      expect(results).toEqual([
+        { address: '1.2.3.4', family: 4 },
+        { address: '2001:db8::1', family: 6 },
+      ]);
     });
 
     it('should return IPv6 addresses when no IPv4 records exist', async () => {
@@ -1212,14 +1214,17 @@ describe('security.ts', () => {
       expect(results.map((r) => r.address).sort()).toEqual(['1.2.3.4', '2001:db8::1', '5.6.7.8']);
     });
 
-    it('should prefer IPv4 only when no family option is provided at all', async () => {
+    it('should still prefer IPv4 for single-address lookups without a family', async () => {
       const lookup = createPinnedLookup({
         hostname: 'test.com',
-        addresses: ['1.2.3.4', '5.6.7.8', '2001:db8::1'],
+        addresses: ['2001:db8::1', '1.2.3.4', '5.6.7.8'],
       });
-      const results = await callPinnedAll(lookup, 'test.com');
-      expect(results).toHaveLength(2);
-      expect(results.map((r) => r.address).sort()).toEqual(['1.2.3.4', '5.6.7.8']);
+      const results = await Promise.all(Array.from({ length: 3 }, () => callPinnedSingle(lookup, 'test.com')));
+      expect(results.map((r) => [r.address, r.family])).toEqual([
+        ['1.2.3.4', 4],
+        ['5.6.7.8', 4],
+        ['1.2.3.4', 4],
+      ]);
     });
 
     it('should filter by requested family', async () => {

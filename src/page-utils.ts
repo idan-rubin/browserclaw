@@ -24,6 +24,76 @@ const observedPages = new WeakSet<Page>();
 const contextStealthSettings = new WeakMap<BrowserContext, boolean>();
 const stealthInitScriptContexts = new WeakSet<BrowserContext>();
 const stealthAppliedPages = new WeakSet<Page>();
+const headlessBrowsers = new WeakSet<Browser>();
+const passkeyContextGuards = new WeakMap<BrowserContext, Promise<void>>();
+const HEADLESS_PASSKEY_GUARD_TIMEOUT_MS = 5000;
+
+/** @internal Record the launch mode without extending the public connection result. */
+export function markHeadlessBrowser(browser: Browser): void {
+  headlessBrowsers.add(browser);
+}
+
+// Playwright serializes this function; it must remain self-contained.
+function cancelModalPasskeyRequests(
+  scope: { CredentialsContainer?: typeof CredentialsContainer; DOMException?: typeof DOMException } = globalThis,
+): void {
+  const prototype = scope.CredentialsContainer?.prototype;
+  const NotAllowed = scope.DOMException;
+  if (!prototype || !NotAllowed) return;
+  const nativeGet = Reflect.get(prototype, 'get');
+  const nativeCreate = Reflect.get(prototype, 'create');
+  const opensDialog = (options?: { publicKey?: unknown; mediation?: string }): boolean =>
+    Boolean(options?.publicKey) && options?.mediation !== 'conditional';
+  const dismissed = (): Promise<never> =>
+    Promise.reject(new NotAllowed('The operation either timed out or was not allowed.', 'NotAllowedError'));
+  Object.assign(prototype, {
+    get(this: CredentialsContainer, ...args: Parameters<CredentialsContainer['get']>) {
+      return opensDialog(args[0]) ? dismissed() : Reflect.apply(nativeGet, this, args);
+    },
+    create(this: CredentialsContainer, ...args: Parameters<CredentialsContainer['create']>) {
+      return opensDialog(args[0]) ? dismissed() : Reflect.apply(nativeCreate, this, args);
+    },
+  });
+}
+
+/** @internal Also covers contexts created after the initial CDP connection. */
+export async function guardHeadlessContext(context: BrowserContext): Promise<void> {
+  const browser = typeof context.browser === 'function' ? context.browser() : null;
+  if (!browser || !headlessBrowsers.has(browser)) return;
+  const existing = passkeyContextGuards.get(context);
+  if (existing) {
+    await existing;
+    return;
+  }
+  const install = context.addInitScript(cancelModalPasskeyRequests).then(
+    () => {
+      for (const page of context.pages())
+        for (const frame of page.frames())
+          void frame.evaluate(cancelModalPasskeyRequests, undefined).catch(() => undefined);
+    },
+    () => {
+      passkeyContextGuards.delete(context);
+      console.warn('[browserclaw] Passkey guard registration failed.');
+    },
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const ready = Promise.race([
+    install,
+    new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        console.warn(
+          '[browserclaw] Passkey guard registration is still waiting after 5000 ms; continuing while it finishes.',
+        );
+        resolve();
+      }, HEADLESS_PASSKEY_GUARD_TIMEOUT_MS);
+      timer.unref();
+    }),
+  ]).finally(() => {
+    clearTimeout(timer);
+  });
+  passkeyContextGuards.set(context, ready);
+  await ready;
+}
 
 export interface ObserveOptions {
   stealth?: boolean;
@@ -272,6 +342,7 @@ async function applyStealthToPage(page: Page, stealthEnabled: boolean): Promise<
 }
 
 export async function observeContext(context: BrowserContext, opts?: ObserveOptions): Promise<void> {
+  await guardHeadlessContext(context);
   const stealthEnabled = resolveContextStealth(context, opts);
   ensureContextState(context);
 

@@ -123,6 +123,15 @@ export function writeProfileJson(pathname: string, data: Record<string, unknown>
   fs.mkdirSync(pathForWindowsFilesystem(directory), { recursive: true, mode: 0o700 });
   // Preserve literal parents so staging and publication follow the same symlinks.
   const stagingPath = path.format({ ...path.parse(filePath), base: `.browserclaw-profile-${randomUUID()}.tmp` });
+  if (process.platform === 'win32') {
+    try {
+      // Windows O_EXCL may create a dangling symlink's missing referent.
+      if (fs.lstatSync(stagingPath).isSymbolicLink())
+        throw Object.assign(new Error('Chrome profile JSON staging path already exists'), { code: 'EEXIST' });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
   const fd = fs.openSync(stagingPath, 'wx', 0o600);
   let identity: fs.BigIntStats | undefined;
   const ownsPath = (candidate: string): boolean => {
