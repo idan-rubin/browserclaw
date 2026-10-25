@@ -530,8 +530,10 @@ function findPlaywrightChromiumCandidates(): ChromeExecutable[] {
       const requireFromModule = createRequire(typeof __filename === 'string' ? __filename : import.meta.url);
       const packageRoot = path.dirname(requireFromModule.resolve('playwright-core/package.json'));
       cachePaths.unshift(path.join(packageRoot, '.local-browsers'));
-    } catch {
-      /* The ordinary cache remains available if package resolution fails. */
+    } catch (err) {
+      console.warn(
+        `[browserclaw] Could not locate package-local Playwright browsers: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   } else if (configured !== undefined && configured !== '') cachePaths.unshift(configured);
   const configuredBase = getPlaywrightEnv('INIT_CWD');

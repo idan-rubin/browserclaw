@@ -35,24 +35,40 @@ export function markHeadlessBrowser(browser: Browser): void {
 
 // Playwright serializes this function; it must remain self-contained.
 function cancelModalPasskeyRequests(
-  scope: { CredentialsContainer?: typeof CredentialsContainer; DOMException?: typeof DOMException } = globalThis,
+  scope: {
+    CredentialsContainer?: typeof CredentialsContainer;
+    DOMException?: typeof DOMException;
+    Function?: { prototype: { toString: () => string } };
+  } = globalThis,
 ): void {
   const prototype = scope.CredentialsContainer?.prototype;
   const NotAllowed = scope.DOMException;
   if (!prototype || !NotAllowed) return;
-  const nativeGet = Reflect.get(prototype, 'get');
-  const nativeCreate = Reflect.get(prototype, 'create');
   const opensDialog = (options?: { publicKey?: unknown; mediation?: string }): boolean =>
     Boolean(options?.publicKey) && options?.mediation !== 'conditional';
   const dismissed = (): Promise<never> =>
     Promise.reject(new NotAllowed('The operation either timed out or was not allowed.', 'NotAllowedError'));
-  Object.assign(prototype, {
-    get(this: CredentialsContainer, ...args: Parameters<CredentialsContainer['get']>) {
-      return opensDialog(args[0]) ? dismissed() : Reflect.apply(nativeGet, this, args);
-    },
-    create(this: CredentialsContainer, ...args: Parameters<CredentialsContainer['create']>) {
-      return opensDialog(args[0]) ? dismissed() : Reflect.apply(nativeCreate, this, args);
-    },
+  const originals = new WeakMap<object, object>();
+  const mask = <T extends object>(native: T, handler: ProxyHandler<T>): T => {
+    const proxy = new Proxy(native, handler);
+    originals.set(proxy, native);
+    return proxy;
+  };
+  for (const name of ['get', 'create'] as const) {
+    const native = Reflect.get(prototype, name);
+    Reflect.set(
+      prototype,
+      name,
+      mask(native, {
+        apply: (target, thisArg: unknown, args: Parameters<typeof native>) =>
+          opensDialog(args[0]) ? dismissed() : (Reflect.apply(target, thisArg, args) as Promise<Credential | null>),
+      }),
+    );
+  }
+  const functionPrototype = scope.Function?.prototype;
+  if (!functionPrototype) return;
+  functionPrototype.toString = mask(functionPrototype.toString, {
+    apply: (target, thisArg: object, args: []) => Reflect.apply(target, originals.get(thisArg) ?? thisArg, args),
   });
 }
 

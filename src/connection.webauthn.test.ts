@@ -34,7 +34,9 @@ describe('headless passkey guard through a real CDP connection', () => {
       }
       // The real browser API has prototype methods rather than instance fields.
       Object.assign(Credentials.prototype, { get, create });
-      const scope = { CredentialsContainer: Credentials, DOMException };
+      const nativeToString = Reflect.get(Function.prototype, 'toString') as (this: unknown) => string;
+      const functionScope = { prototype: { toString: nativeToString } };
+      const scope = { CredentialsContainer: Credentials, DOMException, Function: functionScope };
       type Installer = (scope?: unknown) => void;
       const scripts: Installer[] = [];
       const evaluate = vi.fn((script: Installer) => {
@@ -69,6 +71,13 @@ describe('headless passkey guard through a real CDP connection', () => {
       await expect(enroll.call(credentials, { password: {} })).resolves.toBe('native create');
       expect(get.mock.contexts[0]).toBe(credentials);
       expect(create.mock.contexts[0]).toBe(credentials);
+      const maskedToString = functionScope.prototype.toString;
+      expect(maskedToString).not.toBe(nativeToString);
+      expect(maskedToString.call(invoke)).toBe(nativeToString.call(get));
+      expect(maskedToString.call(enroll)).toBe(nativeToString.call(create));
+      expect(maskedToString.call(maskedToString)).toBe(nativeToString.call(nativeToString));
+      expect(maskedToString.call(get)).toBe(nativeToString.call(get));
+      expect(invoke.name).toBe(get.name);
 
       const lateAddInitScript = vi.fn(() => Promise.resolve());
       const lateContext = {
