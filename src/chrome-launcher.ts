@@ -1,6 +1,7 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -517,11 +518,27 @@ function findChromeLinux(): ChromeExecutable | null {
 }
 
 function findPlaywrightChromiumCandidates(): ChromeExecutable[] {
-  const configured = nonEmptyEnvironmentValue('PLAYWRIGHT_BROWSERS_PATH');
-  const cacheDirs = new Set([
-    ...(configured !== undefined && configured !== '0' ? [configured] : []),
-    path.join(os.homedir(), '.cache', 'ms-playwright'),
-  ]);
+  const configured = getPlaywrightEnv('PLAYWRIGHT_BROWSERS_PATH');
+  const configuredCacheHome = process.env.XDG_CACHE_HOME;
+  const cacheHome =
+    configuredCacheHome !== undefined && configuredCacheHome !== ''
+      ? configuredCacheHome
+      : path.join(os.homedir(), '.cache');
+  const cachePaths = [path.join(cacheHome, 'ms-playwright')];
+  if (configured === '0') {
+    try {
+      const requireFromModule = createRequire(typeof __filename === 'string' ? __filename : import.meta.url);
+      const packageRoot = path.dirname(requireFromModule.resolve('playwright-core/package.json'));
+      cachePaths.unshift(path.join(packageRoot, '.local-browsers'));
+    } catch (err) {
+      console.warn(
+        `[browserclaw] Could not locate package-local Playwright browsers: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  } else if (configured !== undefined && configured !== '') cachePaths.unshift(configured);
+  const configuredBase = getPlaywrightEnv('INIT_CWD');
+  const base = configuredBase !== undefined && configuredBase !== '' ? configuredBase : process.cwd();
+  const cacheDirs = new Set(cachePaths.map((candidate) => path.resolve(base, candidate)));
   const candidates: ChromeExecutable[] = [];
   for (const cacheDir of cacheDirs) {
     let entries: string[];
@@ -532,12 +549,18 @@ function findPlaywrightChromiumCandidates(): ChromeExecutable[] {
     }
     for (const entry of entries) {
       if (!entry.startsWith('chromium-')) continue;
-      for (const layout of ['chrome-linux64', 'chrome-linux']) {
+      for (const layout of ['chrome-linux64', 'chrome-linux', 'chrome-linux-arm64']) {
         candidates.push({ kind: 'chromium', path: path.join(cacheDir, entry, layout, 'chrome') });
       }
     }
   }
   return candidates;
+}
+
+function getPlaywrightEnv(name: string): string | undefined {
+  const suffix = name.toLowerCase();
+  const value = process.env[name] ?? process.env[`npm_config_${suffix}`] ?? process.env[`npm_package_config_${suffix}`];
+  return value?.trim();
 }
 
 // ── Windows Detection ──

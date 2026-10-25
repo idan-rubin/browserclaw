@@ -14,6 +14,11 @@ export async function startConnectionCdpServer(
     targetSocket?: 'page' | 'browser';
     attachGate?: Promise<void>;
     onAttach?: () => void;
+    browserCommandLine?: string;
+    browserAttachGate?: Promise<void>;
+    onBrowserAttach?: () => void;
+    onBrowserInfo?: () => void;
+    disconnectOnBrowserInfo?: boolean;
     handshakeStatuses?: readonly number[];
     commandFailures?: readonly { method: string; message: string; sessionOnly?: boolean }[];
   } = {},
@@ -22,6 +27,7 @@ export async function startConnectionCdpServer(
   const authSeen: string[] = [];
   let connections = 0;
   let handshakes = 0;
+  let browserSessions = 0;
   const commandFailures = [...(opts.commandFailures ?? [])];
   const server = createServer((req, res) => {
     authSeen.push(req.headers.authorization ?? '');
@@ -77,6 +83,21 @@ export async function startConnectionCdpServer(
         });
         return;
       }
+      if (message.method === 'Target.attachToBrowserTarget' && opts.browserAttachGate !== undefined) {
+        const sessionId = `metadata-session-${String(++browserSessions)}`;
+        opts.onBrowserAttach?.();
+        void opts.browserAttachGate.then(() => {
+          socket.send(JSON.stringify({ id: message.id, result: { sessionId } }));
+        });
+        return;
+      }
+      if (message.method === 'SystemInfo.getInfo') {
+        opts.onBrowserInfo?.();
+        if (opts.disconnectOnBrowserInfo === true) {
+          socket.terminate();
+          return;
+        }
+      }
       if (
         opts.contextlessTarget !== undefined &&
         opts.contextlessTarget !== false &&
@@ -100,11 +121,13 @@ export async function startConnectionCdpServer(
               revision: 'test',
               protocolVersion: '1.3',
             }
-          : message.method === 'Target.attachToBrowserTarget'
-            ? { sessionId: 'metadata-session' }
-            : message.method === 'Target.getTargetInfo'
-              ? { targetInfo: { targetId: 'T1', type: 'page', title: 'Test', url: 'https://example.com/' } }
-              : {};
+          : message.method === 'SystemInfo.getInfo'
+            ? { commandLine: opts.browserCommandLine ?? '/test/chrome' }
+            : message.method === 'Target.attachToBrowserTarget'
+              ? { sessionId: `metadata-session-${String(++browserSessions)}` }
+              : message.method === 'Target.getTargetInfo'
+                ? { targetInfo: { targetId: 'T1', type: 'page', title: 'Test', url: 'https://example.com/' } }
+                : {};
       socket.send(JSON.stringify({ id: message.id, sessionId: message.sessionId, result }));
     });
   });
@@ -114,6 +137,9 @@ export async function startConnectionCdpServer(
     httpUrl: `http://127.0.0.1:${String(port)}`,
     frames,
     authSeen,
+    queueCommandFailure(failure: { method: string; message: string; sessionOnly?: boolean }) {
+      commandFailures.push(failure);
+    },
     get connections() {
       return connections;
     },

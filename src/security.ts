@@ -12,6 +12,7 @@ import { hasProxyEnvConfigured } from './chrome-launcher.js';
 import {
   fitFileNameToPortableComponent,
   hasWindowsPathAlias,
+  isForeignWindowsShareOrDevicePath,
   pathForWindowsFilesystem,
   resolvePathPreservingWindowsRoot,
   sanitizeUntrustedFileName,
@@ -709,7 +710,9 @@ export function createPinnedLookup(params: {
     const candidates =
       requestedFamily === 4 || requestedFamily === 6
         ? records.filter((entry) => entry.family === requestedFamily)
-        : fallbackPool;
+        : opts.all === true
+          ? records
+          : fallbackPool;
     const usable = candidates.length > 0 ? candidates : fallbackPool;
 
     if (opts.all === true) {
@@ -1114,6 +1117,8 @@ export function resolvePathWithinRoot(params: {
   const resolved = resolvePathPreservingWindowsRoot(root, effectivePath);
   const rel = relative(root, resolved);
   if (
+    isForeignWindowsShareOrDevicePath(effectivePath, [root]) ||
+    isForeignWindowsShareOrDevicePath(resolved, [root]) ||
     hasWindowsPathAlias(root) ||
     hasWindowsPathAlias(resolved) ||
     !rel ||
@@ -1321,12 +1326,20 @@ export async function writeViaSiblingTempPath(params: {
     rootDir = resolvePathPreservingWindowsRoot(params.rootDir);
   }
   assertNoAlias(rootDir);
+  const trustedRoots = [resolvePathPreservingWindowsRoot(params.rootDir), rootDir];
+  const assertNoForeignShare = (value: string): void => {
+    if (isForeignWindowsShareOrDevicePath(value, trustedRoots))
+      throw new Error('Target path is outside the allowed root');
+  };
+  assertNoForeignShare(params.targetPath);
   const requestedTargetPath = resolvePathPreservingWindowsRoot(params.targetPath);
   assertNoAlias(requestedTargetPath);
+  assertNoForeignShare(requestedTargetPath);
   const targetPath = await realpath(pathForWindowsFilesystem(dirname(requestedTargetPath)))
     .then((realDir) => join(realDir, basename(requestedTargetPath)))
     .catch(() => requestedTargetPath);
   assertNoAlias(targetPath);
+  assertNoForeignShare(targetPath);
 
   const relativeTargetPath = relative(rootDir, targetPath);
   if (

@@ -170,6 +170,8 @@ const browser = await BrowserClaw.connect();
 
 Always call `stop()` when finished. A handle created by `launch()` owns the Chrome process and terminates it on stop. A handle created by `connect()` releases its connection lease without terminating externally launched Chrome; the shared Playwright adapter closes when the last handle stops. Stopping one connected handle leaves other handles to the same endpoint usable. Stopping the launching handle still terminates its Chrome process, even if connected handles remain.
 
+When headless Chromium is detected, browserclaw installs a guard that rejects modal WebAuthn passkey requests with `NotAllowedError` so clicks and keys remain usable. Conditional (autofill) requests retain their native behavior; use a headed browser for interactive passkey sign-in.
+
 **Anti-detection:** `launch()` always passes Chrome the flag that disables the `AutomationControlled` Blink feature.
 `connect()` attaches to an already-running Chrome, so it cannot add launch flags retroactively. To inject JavaScript
 stealth patches for `navigator.webdriver`, plugins, WebGL vendor, and related browser signals, pass `stealth: true` to

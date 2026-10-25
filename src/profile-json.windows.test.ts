@@ -103,6 +103,46 @@ function mockPublication(observations: fs.BigIntStats[], stable = receipt(2n, 3n
 }
 
 describe('exact Windows profile identities (platform-mocked)', () => {
+  it('rejects an existing dangling staging symlink before Windows exclusive open can create its referent', () => {
+    mockPublication([]);
+    vi.mocked(fs.lstatSync).mockReturnValue({ ...receipt(2n, 3n), isSymbolicLink: () => true });
+    let failure: unknown;
+    try {
+      writeProfileJson('C:\\profile\\Preferences', {});
+    } catch (error) {
+      failure = error;
+    }
+    expect(fs.openSync).not.toHaveBeenCalled();
+    expect(fs.writeFileSync).not.toHaveBeenCalled();
+    expect(fs.renameSync).not.toHaveBeenCalled();
+    expect(fs.unlinkSync).not.toHaveBeenCalled();
+    expect(failure).toMatchObject({ code: 'EEXIST' });
+  });
+
+  it('keeps missing staging names available for exclusive creation (control)', () => {
+    mockPublication([]);
+    vi.mocked(fs.lstatSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error('missing staging name'), { code: 'ENOENT' });
+    });
+    writeProfileJson('C:\\profile\\Preferences', { control: true });
+    expect(fs.openSync).toHaveBeenCalledWith(expect.stringContaining('.browserclaw-profile-'), 'wx', 0o600);
+    expect(fs.writeFileSync).toHaveBeenCalledWith(7, '{\n  "control": true\n}\n');
+    expect(fs.renameSync).toHaveBeenCalledOnce();
+  });
+
+  it('does not bypass metadata failures before exclusive creation', () => {
+    mockPublication([]);
+    const error = Object.assign(new Error('staging access denied'), { code: 'EACCES' });
+    vi.mocked(fs.lstatSync).mockImplementationOnce(() => {
+      throw error;
+    });
+    expect(() => {
+      writeProfileJson('C:\\profile\\Preferences', {});
+    }).toThrow(error);
+    expect(fs.openSync).not.toHaveBeenCalled();
+    expect(fs.writeFileSync).not.toHaveBeenCalled();
+  });
+
   it.each([receipt(0n, 3n), receipt(2n, 0n)])('rejects persistently unknown identities before writing', (unknown) => {
     mockPublication([unknown, unknown]);
     expect(() => {

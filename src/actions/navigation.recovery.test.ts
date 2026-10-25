@@ -44,11 +44,16 @@ describe('page enumeration exact-connection recovery', () => {
   it.each(['Target.attachToBrowserTarget', 'Target.getTargetInfo'])(
     'retries a recoverable metadata failure from %s and returns successor metadata',
     async (method) => {
-      const cdp = await startConnectionCdpServer({
-        commandFailures: [{ method, message: 'Browser disconnected', sessionOnly: method === 'Target.getTargetInfo' }],
-      });
+      const cdp = await startConnectionCdpServer();
       try {
         const old = await connectBrowser(cdp.httpUrl);
+        // Initialization now uses its own browser CDP session to detect headless
+        // mode. Inject this failure at the metadata-read boundary instead.
+        cdp.queueCommandFailure({
+          method,
+          message: 'Browser disconnected',
+          sessionOnly: method === 'Target.getTargetInfo',
+        });
         const originalConnect = connection.connectBrowser;
         vi.spyOn(connection, 'connectBrowser').mockImplementation(async (...args) => {
           const connected = await originalConnect(...args);
@@ -69,11 +74,10 @@ describe('page enumeration exact-connection recovery', () => {
   );
 
   it('control: skips a closed page metadata failure without retiring its connected browser', async () => {
-    const cdp = await startConnectionCdpServer({
-      commandFailures: [{ method: 'Target.getTargetInfo', message: 'Browser disconnected', sessionOnly: true }],
-    });
+    const cdp = await startConnectionCdpServer();
     try {
       const current = await connectBrowser(cdp.httpUrl);
+      cdp.queueCommandFailure({ method: 'Target.getTargetInfo', message: 'Browser disconnected', sessionOnly: true });
       exposeMetadataPage(current.browser, true);
       await expect(listPagesViaPlaywright({ cdpUrl: cdp.httpUrl })).resolves.toEqual([]);
       expect((await connectBrowser(cdp.httpUrl)).browser).toBe(current.browser);
