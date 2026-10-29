@@ -146,6 +146,7 @@ interface PageNavigationRequestGuardOptions<T> {
   cdpUrl: string;
   page: Page;
   ssrfPolicy?: SsrfPolicy;
+  signal?: AbortSignal;
   action: (baselineUrl: string) => Promise<T>;
   onPolicyCheckStarted?: (check: Promise<void>) => void;
   onPolicyDenied?: (event: NavigationPolicyDenialEvent) => void;
@@ -278,12 +279,13 @@ export async function withPageNavigationRequestGuard<T>(opts: PageNavigationRequ
   let outcome: GuardedActionOutcome<T>;
   try {
     let baselineUrl = opts.page.url();
-    await assertBrowserNavigationResultAllowed({ url: baselineUrl, ...navigationPolicy });
+    await assertBrowserNavigationResultAllowed({ url: baselineUrl, ...navigationPolicy, signal: opts.signal });
     const latestUrl = opts.page.url();
     if (latestUrl !== baselineUrl) {
-      await assertBrowserNavigationResultAllowed({ url: latestUrl, ...navigationPolicy });
+      await assertBrowserNavigationResultAllowed({ url: latestUrl, ...navigationPolicy, signal: opts.signal });
       baselineUrl = latestUrl;
     }
+    opts.signal?.throwIfAborted();
     outcome = { ok: true, value: await opts.action(baselineUrl) };
   } catch (err) {
     outcome = { ok: false, error: err };
@@ -332,10 +334,15 @@ export async function assertPageNavigationCompletedSafely(opts: {
   response: Awaited<ReturnType<Page['goto']>>;
   ssrfPolicy?: SsrfPolicy;
   targetId?: string;
+  signal?: AbortSignal;
 }): Promise<void> {
   const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, proxyModeOpts(opts.cdpUrl));
   try {
-    await assertBrowserNavigationRedirectChainAllowed({ request: opts.response?.request(), ...navigationPolicy });
+    await assertBrowserNavigationRedirectChainAllowed({
+      request: opts.response?.request(),
+      ...navigationPolicy,
+      signal: opts.signal,
+    });
   } catch (err) {
     if (isPolicyDenyNavigationError(err))
       await quarantineBlockedTarget({
@@ -634,6 +641,7 @@ async function observeInteractionNavigationCompletedSafely<T>(opts: {
 export async function assertInteractionNavigationCompletedSafely<T>(opts: {
   action: () => Promise<T>;
   abortPromise?: Promise<never>;
+  signal?: AbortSignal;
   cdpUrl: string;
   page: Page;
   previousUrl: string;
@@ -674,7 +682,13 @@ export async function assertInteractionNavigationCompletedSafely<T>(opts: {
             await new Promise<void>((resolve) => {
               setTimeout(resolve, remainingMs);
             });
-          await assertPageNavigationCompletedSafely({ ...opts, response: null, ssrfPolicy: opts.ssrfPolicy ?? {} });
+          // Once input starts, retain late-denial enforcement even after caller cancellation.
+          await assertPageNavigationCompletedSafely({
+            ...opts,
+            response: null,
+            ssrfPolicy: opts.ssrfPolicy ?? {},
+            signal: undefined,
+          });
         }
       }
     },

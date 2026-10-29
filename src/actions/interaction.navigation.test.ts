@@ -1,19 +1,25 @@
+import type * as DnsModule from 'node:dns/promises';
 import { EventEmitter } from 'node:events';
 
-import type { Request, Route } from 'playwright-core';
-import { describe, expect, it, vi } from 'vitest';
+import type { Page, Request, Route } from 'playwright-core';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as ConnectionModule from '../connection.js';
 import type * as SecurityModule from '../security.js';
 import type { SsrfPolicy } from '../types.js';
 
-const mocks = vi.hoisted(() => ({ page: vi.fn(), locator: vi.fn(), state: vi.fn() }));
+const mocks = vi.hoisted(() => ({ page: vi.fn(), locator: vi.fn(), state: vi.fn(), lookup: vi.fn() }));
+vi.mock('node:dns/promises', async (importOriginal) => ({
+  ...(await importOriginal<typeof DnsModule>()),
+  lookup: mocks.lookup,
+}));
 vi.mock('../connection.js', async (importOriginal) => ({
   ...(await importOriginal<typeof ConnectionModule>()),
   getPageForTargetId: mocks.page,
   getRestoredPageForTarget: mocks.page,
   refLocator: mocks.locator,
   ensurePageState: mocks.state,
+  tryTerminateExecutionForPage: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../security.js', async (importOriginal) => ({
   ...(await importOriginal<typeof SecurityModule>()),
@@ -22,6 +28,7 @@ vi.mock('../security.js', async (importOriginal) => ({
 }));
 
 import { downloadViaPlaywright, waitForDownloadViaPlaywright } from './download.js';
+import { evaluateViaPlaywright } from './evaluate.js';
 import {
   hoverViaPlaywright,
   scrollIntoViewViaPlaywright,
@@ -31,19 +38,31 @@ import {
   typeViaPlaywright,
   selectOptionViaPlaywright,
   dragViaPlaywright,
+  fillFormViaPlaywright,
+  mouseClickViaPlaywright,
   uploadViaPlaywright,
 } from './interaction.js';
+import { withPageNavigationRequestGuard } from './navigation.js';
 import { waitForViaPlaywright } from './wait.js';
+
+afterEach(() => vi.restoreAllMocks());
+beforeEach(() => {
+  mocks.lookup.mockReset().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+});
 
 type RouteHandler = (route: Route, request: Request) => Promise<void>;
 
-function fixture(afterDispatch?: () => Promise<void>, chooserOnly = false) {
+function fixture(
+  afterDispatch?: () => Promise<void>,
+  chooserOnly = false,
+  requestUrl = 'http://169.254.169.254/latest/meta-data/',
+) {
   let handler: RouteHandler | undefined;
   const frame = {};
   const sent = vi.fn().mockResolvedValue(undefined);
   const fulfill = vi.fn().mockResolvedValue(undefined);
   const request = {
-    url: () => 'http://169.254.169.254/latest/meta-data/',
+    url: () => requestUrl,
     frame: () => frame,
     isNavigationRequest: () => true,
     resourceType: () => 'document',
@@ -61,7 +80,7 @@ function fixture(afterDispatch?: () => Promise<void>, chooserOnly = false) {
   };
   const chooser = { setFiles: dispatch, element: () => null };
   const page = Object.assign(new EventEmitter(), {
-    url: () => 'about:blank',
+    url: (): string => 'about:blank',
     mainFrame: () => frame,
     route: (_pattern: string, value: RouteHandler) => {
       handler = value;
@@ -75,6 +94,8 @@ function fixture(afterDispatch?: () => Promise<void>, chooserOnly = false) {
     evaluateHandle: () => Promise.resolve({ dispose: () => Promise.resolve() }),
     waitForEvent: () => Promise.resolve(chooser),
     keyboard: { press: vi.fn().mockResolvedValue(undefined) },
+    mouse: { click: dispatch },
+    evaluate: dispatch,
   });
   const locator = {
     hover: dispatch,
@@ -97,7 +118,7 @@ function fixture(afterDispatch?: () => Promise<void>, chooserOnly = false) {
     nextArmIdDownload: 0,
     downloadWaiterDepth: 0,
   });
-  return { page, sent, fulfill, dispatch };
+  return { page, locator, sent, fulfill, dispatch };
 }
 
 const options = (ssrfPolicy?: SsrfPolicy) => ({ cdpUrl: 'http://localhost:9222', targetId: 'target', ssrfPolicy });
@@ -194,6 +215,141 @@ const cancellableActions = {
   atomicUpload: (signal: AbortSignal) =>
     uploadViaPlaywright({ ...options(), ref: 'e1', paths: ['/validated/file.txt'], signal }),
 };
+
+describe('interaction policy preflight cancellation', () => {
+  const preflightActions = {
+    ...cancellableActions,
+    fill: (signal: AbortSignal) =>
+      fillFormViaPlaywright({ ...options(), fields: [{ ref: 'e1', type: 'text', value: 'value' }], signal }),
+    mouse: (signal: AbortSignal) => mouseClickViaPlaywright({ ...options(), x: 1, y: 2, signal }),
+    evaluate: (signal: AbortSignal) => evaluateViaPlaywright({ ...options(), fn: '() => 42', signal }),
+    evaluateRef: (signal: AbortSignal) => evaluateViaPlaywright({ ...options(), ref: 'e1', fn: '() => 42', signal }),
+  };
+
+  it.each(Object.keys(preflightActions) as (keyof typeof preflightActions)[])(
+    '%s cancels stalled DNS before dispatch and removes its route',
+    async (name) => {
+      const { page, locator, sent } = fixture();
+      page.url = () => `https://${name.toLowerCase()}.preflight.example/`;
+      let finishLookup!: (addresses: { address: string; family: number }[]) => void;
+      const lookup = new Promise((resolve) => {
+        finishLookup = resolve;
+      });
+      mocks.lookup.mockReturnValue(lookup);
+      const controller = new AbortController();
+      const reason = new Error('cancel stalled preflight');
+      const pending = preflightActions[name](controller.signal);
+      const settled = vi.fn();
+      void pending.then(settled, settled);
+      try {
+        await vi.waitFor(() => {
+          expect(mocks.lookup).toHaveBeenCalled();
+        });
+        controller.abort(reason);
+        await vi.waitFor(() => {
+          expect(settled).toHaveBeenCalledWith(reason);
+        });
+        await expect(pending).rejects.toBe(reason);
+        await vi.waitFor(() => {
+          expect(page.unroute).toHaveBeenCalledOnce();
+        });
+      } finally {
+        finishLookup([{ address: '93.184.216.34', family: 4 }]);
+        await pending.catch(() => undefined);
+      }
+      expect(sent).not.toHaveBeenCalled();
+      // All fake native mutations dispatch through the same sent callback.
+      expect(locator.waitFor).not.toHaveBeenCalled();
+      mocks.lookup.mockClear();
+    },
+  );
+
+  it('dispatches normally after an uncancelled DNS preflight', async () => {
+    const { page, sent } = fixture(undefined, false, 'https://allowed.preflight.example/next');
+    page.url = () => 'https://allowed.preflight.example/';
+    mocks.lookup.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+    const controller = new AbortController();
+    await hoverViaPlaywright({ ...options(), ref: 'e1', signal: controller.signal });
+    expect(mocks.lookup).toHaveBeenCalled();
+    expect(sent).toHaveBeenCalled();
+  });
+
+  it('cancels the reread current URL check before dispatch', async () => {
+    const { page } = fixture();
+    let url = 'https://first.preflight.example/';
+    page.url = () => url;
+    let finishLookup!: (addresses: { address: string; family: number }[]) => void;
+    mocks.lookup
+      .mockImplementationOnce(() => {
+        url = 'https://second.preflight.example/';
+        return Promise.resolve([{ address: '93.184.216.34', family: 4 }]);
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishLookup = resolve;
+          }),
+      );
+    const controller = new AbortController();
+    const reason = new Error('cancel second preflight');
+    const action = vi.fn().mockResolvedValue(undefined);
+    const pending = withPageNavigationRequestGuard({
+      ...options(),
+      page: page as unknown as Page,
+      action,
+      signal: controller.signal,
+    });
+    const settled = vi.fn();
+    void pending.then(settled, settled);
+    try {
+      await vi.waitFor(() => {
+        expect(mocks.lookup).toHaveBeenCalledTimes(2);
+      });
+      controller.abort(reason);
+      await vi.waitFor(() => {
+        expect(settled).toHaveBeenCalledWith(reason);
+      });
+      await expect(pending).rejects.toBe(reason);
+      expect(page.unroute).toHaveBeenCalledOnce();
+    } finally {
+      finishLookup([{ address: '93.184.216.34', family: 4 }]);
+      await pending.catch(() => undefined);
+    }
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it('cancels the evaluator explicit-policy check before installing an input guard', async () => {
+    const { page, sent } = fixture();
+    page.url = () => 'https://explicit-evaluate.preflight.example/';
+    let finishLookup!: (addresses: { address: string; family: number }[]) => void;
+    mocks.lookup.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishLookup = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    const reason = new Error('cancel evaluator preflight');
+    const pending = evaluateViaPlaywright({ ...options({}), fn: '() => 42', signal: controller.signal });
+    const settled = vi.fn();
+    void pending.then(settled, settled);
+    try {
+      await vi.waitFor(() => {
+        expect(mocks.lookup).toHaveBeenCalledOnce();
+      });
+      controller.abort(reason);
+      await vi.waitFor(() => {
+        expect(settled).toHaveBeenCalledWith(reason);
+      });
+      await expect(pending).rejects.toBe(reason);
+    } finally {
+      finishLookup([{ address: '93.184.216.34', family: 4 }]);
+      await pending.catch(() => undefined);
+    }
+    expect(sent).not.toHaveBeenCalled();
+    expect(page.unroute).not.toHaveBeenCalled();
+  });
+});
 
 describe('native mutation cancellation and navigation policy precedence', () => {
   const cases = (Object.keys(cancellableActions) as (keyof typeof cancellableActions)[]).map((name) => ({

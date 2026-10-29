@@ -406,6 +406,8 @@ await page.fill([
 
 `fill()` field types: `'text'` (default) calls Playwright `fill()` with the string value. `'checkbox'` and `'radio'` call `setChecked()` with `force: true` (works on hidden inputs behind custom styling). Truthy values are `true`, `1`, `'1'`, `'true'`. Type can be omitted and defaults to `'text'`. Fields with an empty or whitespace-only ref are silently skipped. `fill()` resolves without a result value.
 
+For actions that accept an abort `signal`, cancellation also interrupts the current-page DNS policy check before input is dispatched. Once input starts, navigation guards remain active until browser work settles so late policy denials are still enforced.
+
 `fill()` is the ergonomic form-filling case of the lower-level `batch()`, which runs a heterogeneous sequence of actions (click, mouseClick, type, insertText, press, hover, drag, select, fill, wait, …) in a single call:
 
 ```typescript

@@ -242,6 +242,7 @@ export async function evaluateViaPlaywright(opts: {
       response: null,
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
+      signal: opts.signal,
     });
   }
 
@@ -324,6 +325,7 @@ export async function evaluateViaPlaywright(opts: {
         previousUrl,
         ssrfPolicy: opts.ssrfPolicy,
         targetId: opts.targetId,
+        signal: opts.signal,
       });
     }
 
@@ -341,6 +343,7 @@ export async function evaluateViaPlaywright(opts: {
       previousUrl,
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
+      signal: opts.signal,
     });
   } finally {
     if (signal && abortListener) signal.removeEventListener('abort', abortListener);
