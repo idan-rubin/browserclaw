@@ -349,6 +349,7 @@ export async function clickViaPlaywright(opts: {
       previousUrl,
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
+      signal: opts.signal,
     });
     signal?.throwIfAborted();
   } catch (err) {
@@ -428,6 +429,7 @@ export async function typeViaPlaywright(opts: {
       previousUrl,
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
+      signal: opts.signal,
     });
     opts.signal?.throwIfAborted();
   } catch (err) {
@@ -465,6 +467,7 @@ export async function selectOptionViaPlaywright(opts: {
       previousUrl,
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
+      signal: opts.signal,
     });
     opts.signal?.throwIfAborted();
   } catch (err) {
@@ -505,6 +508,7 @@ export async function dragViaPlaywright(opts: {
       previousUrl,
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
+      signal: opts.signal,
     });
     opts.signal?.throwIfAborted();
   } catch (err) {
@@ -587,6 +591,7 @@ export async function fillFormViaPlaywright(opts: {
     previousUrl,
     ssrfPolicy: opts.ssrfPolicy,
     targetId: opts.targetId,
+    signal: opts.signal,
   });
 }
 
