@@ -369,6 +369,8 @@ const { nodes } = await page.ariaSnapshot({ limit: 500 });
 
 All actions target elements by ref ID from the most recent snapshot.
 
+Actions that accept an abort `signal` stop waiting during page selection and before input dispatch. Policy checks already in progress continue in the background so a late denial still quarantines an unsafe document. Once input starts, navigation guards retain ownership until browser work and its policy checks settle.
+
 > **Default timeouts:** 8000 ms for actions (click, type, fill, select, drag), 20000 ms for waits and navigation.
 
 ```typescript

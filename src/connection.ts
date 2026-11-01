@@ -3,6 +3,7 @@ import https from 'node:https';
 
 import type { Browser, Page, Frame, CDPSession } from 'playwright-core';
 
+import { raceWithAbort } from './abort.js';
 import { closeCdpSocket, fetchCdpJson, openPinnedCdpSocket, sendCdpCommand, type CdpEndpoint } from './cdp-network.js';
 import { connectOverPinnedCdp } from './cdp-transport.js';
 import {
@@ -418,20 +419,24 @@ export async function assertSelectedPageAllowed(opts: {
   ssrfPolicy?: SsrfPolicy;
   signal?: AbortSignal;
 }): Promise<void> {
-  try {
-    await assertBrowserNavigationResultAllowed({
-      url: opts.page.url(),
-      signal: opts.signal,
-      ...withBrowserNavigationPolicy(opts.ssrfPolicy, {
-        browserProxyMode: isCdpUrlProxyRouted(opts.cdpUrl) ? 'explicit-browser-proxy' : undefined,
-      }),
-    });
-  } catch (error) {
-    if (error instanceof InvalidBrowserNavigationUrlError) {
-      await quarantineBlockedTarget(opts);
+  opts.signal?.throwIfAborted();
+  const check = async () => {
+    try {
+      await assertBrowserNavigationResultAllowed({
+        url: opts.page.url(),
+        ...withBrowserNavigationPolicy(opts.ssrfPolicy, {
+          browserProxyMode: isCdpUrlProxyRouted(opts.cdpUrl) ? 'explicit-browser-proxy' : undefined,
+        }),
+      });
+    } catch (error) {
+      if (error instanceof InvalidBrowserNavigationUrlError) {
+        await quarantineBlockedTarget(opts);
+      }
+      throw error;
     }
-    throw error;
-  }
+  };
+  // A caller abort must not discard a later denial for the selected document.
+  await raceWithAbort(check(), opts.signal);
 }
 
 export function getStealthEnabledForCdpUrl(cdpUrl: string): boolean {
@@ -1130,14 +1135,22 @@ export function isRecoverableStalePageSelectionError(
   return message.toLowerCase().includes('tab not found');
 }
 
-async function getPageForTargetIdOnce(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: SsrfPolicy }) {
+interface PageSelectionOptions {
+  cdpUrl: string;
+  targetId?: string;
+  ssrfPolicy?: SsrfPolicy;
+  signal?: AbortSignal;
+}
+
+async function getPageForTargetIdOnce(opts: PageSelectionOptions) {
+  opts.signal?.throwIfAborted();
   if (
     opts.targetId !== undefined &&
     opts.targetId !== '' &&
     isBlockedTarget(opts.cdpUrl, opts.targetId, opts.ssrfPolicy)
   )
     throw new BlockedBrowserTargetError();
-  const { browser } = await connectBrowser(opts.cdpUrl, undefined, opts.ssrfPolicy);
+  const { browser } = await connectBrowser(opts.cdpUrl, undefined, opts.ssrfPolicy, undefined, opts.signal);
   const pages = getAllPages(browser);
   if (!pages.length) throw new Error('No pages available in the connected browser.');
   const { accessible, blockedCount } = await partitionAccessiblePages({
@@ -1173,19 +1186,24 @@ async function getPageForTargetIdOnce(opts: { cdpUrl: string; targetId?: string;
   return found;
 }
 
-export async function getPageForTargetId(opts: { cdpUrl: string; targetId?: string; ssrfPolicy?: SsrfPolicy }) {
+export async function getPageForTargetId(opts: PageSelectionOptions) {
+  opts.signal?.throwIfAborted();
   const cachedBrowser = cachedByCdpUrl.get(normalizeCdpUrl(opts.cdpUrl))?.browser;
-  try {
-    return await getPageForTargetIdOnce(opts);
-  } catch (err) {
-    if (
-      !cachedBrowser ||
-      !isRecoverableStalePageSelectionError(err, true, opts.targetId !== undefined && opts.targetId !== '')
-    )
-      throw err;
-    evictStaleConnection(opts.cdpUrl, cachedBrowser);
-    return await getPageForTargetIdOnce(opts);
-  }
+  const select = async () => {
+    try {
+      return await getPageForTargetIdOnce(opts);
+    } catch (err) {
+      opts.signal?.throwIfAborted();
+      if (
+        !cachedBrowser ||
+        !isRecoverableStalePageSelectionError(err, true, opts.targetId !== undefined && opts.targetId !== '')
+      )
+        throw err;
+      evictStaleConnection(opts.cdpUrl, cachedBrowser);
+      return await getPageForTargetIdOnce(opts);
+    }
+  };
+  return await raceWithAbort(select(), opts.signal);
 }
 
 /**
@@ -1243,11 +1261,7 @@ export async function resolvePageByTargetIdForClose(opts: {
 /**
  * Get a page for a target, ensuring page state is initialized.
  */
-export async function getRestoredPageForTarget(opts: {
-  cdpUrl: string;
-  targetId?: string;
-  ssrfPolicy?: SsrfPolicy;
-}): Promise<Page> {
+export async function getRestoredPageForTarget(opts: PageSelectionOptions): Promise<Page> {
   const page = await getPageForTargetId(opts);
   ensurePageState(page);
   return page;

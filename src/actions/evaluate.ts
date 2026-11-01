@@ -228,28 +228,16 @@ export async function evaluateViaPlaywright(opts: {
   const fnText = opts.fn.trim();
   if (!fnText) throw new Error('function is required');
 
-  const page = await getPageForTargetId({
-    cdpUrl: opts.cdpUrl,
-    targetId: opts.targetId,
-    ssrfPolicy: opts.ssrfPolicy,
-  });
+  opts.signal?.throwIfAborted();
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
-
-  if (opts.ssrfPolicy) {
-    await assertPageNavigationCompletedSafely({
-      cdpUrl: opts.cdpUrl,
-      page,
-      response: null,
-      ssrfPolicy: opts.ssrfPolicy,
-      targetId: opts.targetId,
-    });
-  }
 
   const outerTimeout = normalizeTimeoutMs(opts.timeoutMs, 20000);
   // Reserve time for Playwright to surface the error without exceeding a small caller budget.
   const evaluateTimeout = Math.min(outerTimeout, Math.max(1000, Math.min(120000, outerTimeout - 1000)));
 
   const signal = opts.signal;
+  let evaluationRunning = false;
   let abortListener: (() => void) | undefined;
   let abortReject: ((reason: unknown) => void) | undefined;
   let abortPromise: Promise<never> | undefined;
@@ -289,58 +277,66 @@ export async function evaluateViaPlaywright(opts: {
         });
       }
     };
-    if (signal.aborted) {
-      disconnect();
-      throw signal.reason ?? new Error('aborted');
-    }
+    signal.throwIfAborted();
     abortListener = () => {
-      disconnect();
-      abortReject?.(signal.reason ?? new Error('aborted'));
+      if (evaluationRunning) disconnect();
+      abortReject?.(signal.reason);
     };
     signal.addEventListener('abort', abortListener, { once: true });
     // Re-check after adding listener to handle race where signal was aborted between checks
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (signal.aborted) {
       abortListener();
-      throw signal.reason ?? new Error('aborted');
+      signal.throwIfAborted();
     }
   }
+
+  const runEvaluation = async (evaluate: () => Promise<unknown>): Promise<unknown> => {
+    signal?.throwIfAborted();
+    evaluationRunning = true;
+    try {
+      return await evaluate();
+    } finally {
+      evaluationRunning = false;
+    }
+  };
 
   const previousUrl = page.url();
   try {
     if (opts.ref !== undefined && opts.ref !== '') {
       const locator = refLocator(page, opts.ref);
       return await assertInteractionNavigationCompletedSafely({
-        action: () => {
-          signal?.throwIfAborted();
-          return locator.evaluate(ELEMENT_EVALUATOR as (...args: unknown[]) => unknown, {
-            fnBody: fnText,
-            timeoutMs: evaluateTimeout,
-          });
-        },
+        action: () =>
+          runEvaluation(() =>
+            locator.evaluate(ELEMENT_EVALUATOR as (...args: unknown[]) => unknown, {
+              fnBody: fnText,
+              timeoutMs: evaluateTimeout,
+            }),
+          ),
         abortPromise,
         cdpUrl: opts.cdpUrl,
         page,
         previousUrl,
         ssrfPolicy: opts.ssrfPolicy,
         targetId: opts.targetId,
+        signal: opts.signal,
       });
     }
 
     return await assertInteractionNavigationCompletedSafely({
-      action: () => {
-        signal?.throwIfAborted();
-        return page.evaluate(BROWSER_EVALUATOR as (...args: unknown[]) => unknown, {
-          fnBody: fnText,
-          timeoutMs: evaluateTimeout,
-        });
-      },
+      action: () =>
+        runEvaluation(() =>
+          page.evaluate(BROWSER_EVALUATOR as (...args: unknown[]) => unknown, {
+            fnBody: fnText,
+            timeoutMs: evaluateTimeout,
+          }),
+        ),
       abortPromise,
       cdpUrl: opts.cdpUrl,
       page,
       previousUrl,
       ssrfPolicy: opts.ssrfPolicy,
       targetId: opts.targetId,
+      signal: opts.signal,
     });
   } finally {
     if (signal && abortListener) signal.removeEventListener('abort', abortListener);

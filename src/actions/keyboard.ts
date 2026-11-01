@@ -31,11 +31,7 @@ export async function pressKeyViaPlaywright(
   opts.signal?.throwIfAborted();
   const key = opts.key.trim();
   if (!key) throw new Error('key is required');
-  const page = await getPageForTargetId({
-    cdpUrl: opts.cdpUrl,
-    targetId: opts.targetId,
-    ssrfPolicy: opts.ssrfPolicy,
-  });
+  const page = await getPageForTargetId(opts);
   ensurePageState(page);
   await runGuardedInput(page, opts, async () => {
     await page.keyboard.press(key, { delay: Math.max(0, Math.floor(opts.delayMs ?? 0)) });
