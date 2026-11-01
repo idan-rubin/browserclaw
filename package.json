@@ -62,7 +62,8 @@
     "node": ">=22"
   },
   "overrides": {
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "minimatch": "^11.0.3"
   },
   "dependencies": {
     "file-type": "^22.1.0",
