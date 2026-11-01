@@ -289,7 +289,7 @@ export async function downloadViaPlaywright(opts: {
   opts.signal?.throwIfAborted();
   await assertSafeOutputPath(opts.path, opts.allowedOutputRoots);
 
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: opts.ssrfPolicy });
+  const page = await getPageForTargetId(opts);
   const state = ensurePageState(page);
   opts.signal?.throwIfAborted();
 
@@ -297,26 +297,33 @@ export async function downloadViaPlaywright(opts: {
   const outPath = opts.path.trim();
   if (!outPath) throw new Error('path is required');
 
-  const armId = bumpDownloadArmId(state);
-  state.armIdDownload = armId;
-  const waiter = createPageDownloadWaiter(page, state, timeout, {
-    signal: opts.signal,
-    cancelOnError: () => state.armIdDownload === armId,
-  });
-
+  let admission: { armId: number; waiter: ReturnType<typeof createPageDownloadWaiter> } | undefined;
   try {
     const locator = refLocator(page, opts.ref);
     await assertInteractionNavigationCompletedSafely({
       ...opts,
       page,
       previousUrl: page.url(),
-      action: () => locator.click({ timeout, signal: waiter.signal }),
+      action: () => {
+        opts.signal?.throwIfAborted();
+        const armId = bumpDownloadArmId(state);
+        state.armIdDownload = armId;
+        const waiter = createPageDownloadWaiter(page, state, timeout, {
+          signal: opts.signal,
+          cancelOnError: () => state.armIdDownload === armId,
+        });
+        admission = { armId, waiter };
+        return locator.click({ timeout, signal: waiter.signal });
+      },
     });
   } catch (err) {
     const error = toAIFriendlyError(err, opts.ref);
-    waiter.abort(error, state.armIdDownload === armId);
+    admission?.waiter.abort(error, state.armIdDownload === admission.armId);
+    if (opts.signal?.aborted === true && err === opts.signal.reason) opts.signal.throwIfAborted();
     throw error;
   }
+  if (!admission) throw new Error('Download click did not start');
+  const { waiter, armId } = admission;
   return await waiter.run(() =>
     awaitDownloadPayload({
       waiter,
@@ -339,14 +346,11 @@ export async function waitForDownloadViaPlaywright(opts: {
   signal?: AbortSignal;
 }): Promise<DownloadResult> {
   opts.signal?.throwIfAborted();
-  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: opts.ssrfPolicy });
+  const page = await getPageForTargetId(opts);
   const state = ensurePageState(page);
   opts.signal?.throwIfAborted();
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
-
-  state.armIdDownload = bumpDownloadArmId(state);
-  const armId = state.armIdDownload;
 
   let activeWaiter: ReturnType<typeof createPageDownloadWaiter> | undefined;
   return await withPageNavigationRequestGuard({
@@ -362,6 +366,9 @@ export async function waitForDownloadViaPlaywright(opts: {
       }
     },
     action: async () => {
+      opts.signal?.throwIfAborted();
+      const armId = bumpDownloadArmId(state);
+      state.armIdDownload = armId;
       const waiter = createPageDownloadWaiter(page, state, timeout, {
         signal: opts.signal,
         cancelOnError: () => state.armIdDownload === armId,

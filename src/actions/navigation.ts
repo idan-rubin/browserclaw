@@ -1,5 +1,6 @@
 import type { Browser, BrowserContext, Page, Route, Request, Frame } from 'playwright-core';
 
+import { raceWithAbort } from '../abort.js';
 import { isCdpUrlProxyRouted } from '../chrome-launcher.js';
 import {
   BrowserTabNotFoundError,
@@ -270,50 +271,60 @@ export async function withPageNavigationRequestGuard<T>(opts: PageNavigationRequ
     void operation.finally(() => inFlight.delete(operation));
     return operation;
   };
-  try {
-    await opts.page.route('**', handler);
-  } catch (err) {
-    await removePageNavigationRequestGuard(opts.page, handler);
-    throw err;
-  }
-  let outcome: GuardedActionOutcome<T>;
-  try {
-    let baselineUrl = opts.page.url();
-    await assertBrowserNavigationResultAllowed({ url: baselineUrl, ...navigationPolicy, signal: opts.signal });
-    const latestUrl = opts.page.url();
-    if (latestUrl !== baselineUrl) {
-      await assertBrowserNavigationResultAllowed({ url: latestUrl, ...navigationPolicy, signal: opts.signal });
-      baselineUrl = latestUrl;
+  opts.signal?.throwIfAborted();
+  let actionStarted = false;
+  const run = async () => {
+    try {
+      await opts.page.route('**', handler);
+    } catch (err) {
+      await removePageNavigationRequestGuard(opts.page, handler);
+      throw err;
     }
-    opts.signal?.throwIfAborted();
-    outcome = { ok: true, value: await opts.action(baselineUrl) };
-  } catch (err) {
-    outcome = { ok: false, error: err };
-    if (isPolicyDenyNavigationError(err)) {
-      recordGuardError(err);
-      notifyPolicyDeniedDetected();
-      unpreservedDocumentCount++;
-      updateImmediateSourcePreservation();
+    let outcome: GuardedActionOutcome<T>;
+    try {
+      let baselineUrl = opts.page.url();
+      await assertBrowserNavigationResultAllowed({ url: baselineUrl, ...navigationPolicy });
+      const latestUrl = opts.page.url();
+      if (latestUrl !== baselineUrl) {
+        await assertBrowserNavigationResultAllowed({ url: latestUrl, ...navigationPolicy });
+        baselineUrl = latestUrl;
+      }
+      opts.signal?.throwIfAborted();
+      actionStarted = true;
+      outcome = { ok: true, value: await opts.action(baselineUrl) };
+    } catch (err) {
+      outcome = { ok: false, error: err };
+      if (isPolicyDenyNavigationError(err)) {
+        recordGuardError(err);
+        notifyPolicyDeniedDetected();
+        unpreservedDocumentCount++;
+        updateImmediateSourcePreservation();
+        if (!actionStarted) await quarantineBlockedTarget(opts);
+      }
     }
-  }
-  const cleanupError = await removePageNavigationRequestGuard(opts.page, handler);
-  while (inFlight.size > 0) await Promise.allSettled(inFlight);
-  if (guardState.hasError) {
-    const sourcePreserved =
-      isPolicyDenyNavigationError(firstGuardError) &&
-      deniedDocumentCount > 0 &&
-      fulfilledDeniedDocumentCount === deniedDocumentCount &&
-      unpreservedDocumentCount === 0 &&
-      !(!outcome.ok && isPolicyDenyNavigationError(outcome.error));
-    if (typeof firstGuardError === 'object' && firstGuardError !== null) {
-      if (sourcePreserved) sourcePreservedPolicyDenials.add(firstGuardError);
-      else sourcePreservedPolicyDenials.delete(firstGuardError);
+    const cleanupError = await removePageNavigationRequestGuard(opts.page, handler);
+    while (inFlight.size > 0) await Promise.allSettled(inFlight);
+    if (guardState.hasError) {
+      const sourcePreserved =
+        isPolicyDenyNavigationError(firstGuardError) &&
+        deniedDocumentCount > 0 &&
+        fulfilledDeniedDocumentCount === deniedDocumentCount &&
+        unpreservedDocumentCount === 0 &&
+        !(!outcome.ok && isPolicyDenyNavigationError(outcome.error));
+      if (typeof firstGuardError === 'object' && firstGuardError !== null) {
+        if (sourcePreserved) sourcePreservedPolicyDenials.add(firstGuardError);
+        else sourcePreservedPolicyDenials.delete(firstGuardError);
+      }
+      throw toNavigationError(firstGuardError);
     }
-    throw toNavigationError(firstGuardError);
-  }
-  if (!outcome.ok) throw toNavigationError(outcome.error);
-  if (cleanupError !== undefined) throw toNavigationError(cleanupError);
-  return outcome.value;
+    if (!outcome.ok) {
+      if (opts.signal?.aborted === true && outcome.error === opts.signal.reason) opts.signal.throwIfAborted();
+      throw toNavigationError(outcome.error);
+    }
+    if (cleanupError !== undefined) throw toNavigationError(cleanupError);
+    return outcome.value;
+  };
+  return await raceWithAbort(run(), opts.signal, () => !actionStarted && !isPolicyDenyNavigationError(firstGuardError));
 }
 
 async function closeBlockedNavigationTarget(opts: {

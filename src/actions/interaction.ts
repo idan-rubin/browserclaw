@@ -32,6 +32,7 @@ const DEFAULT_SCROLL_TIMEOUT_MS = 20_000;
 const CHECKABLE_ROLES = new Set(['menuitemcheckbox', 'menuitemradio', 'checkbox', 'radio', 'switch']);
 
 function interactionError(error: unknown, label: string, signal?: AbortSignal): Error {
+  if (signal?.aborted === true && error === signal.reason) signal.throwIfAborted();
   if (
     signal?.aborted === true &&
     error instanceof Error &&

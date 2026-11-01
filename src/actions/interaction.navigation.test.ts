@@ -2,7 +2,7 @@ import type * as DnsModule from 'node:dns/promises';
 import { EventEmitter } from 'node:events';
 
 import type { Page, Request, Route } from 'playwright-core';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as ConnectionModule from '../connection.js';
 import type * as SecurityModule from '../security.js';
@@ -45,7 +45,6 @@ import {
 import { withPageNavigationRequestGuard } from './navigation.js';
 import { waitForViaPlaywright } from './wait.js';
 
-afterEach(() => vi.restoreAllMocks());
 beforeEach(() => {
   mocks.lookup.mockReset().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
 });
@@ -73,11 +72,11 @@ function fixture(
     fulfill,
     abort: vi.fn().mockResolvedValue(undefined),
   } as unknown as Route;
-  const dispatch = async () => {
+  const dispatch = vi.fn(async () => {
     if (handler) await handler(route, request);
     else await sent();
     await afterDispatch?.();
-  };
+  });
   const chooser = { setFiles: dispatch, element: () => null };
   const page = Object.assign(new EventEmitter(), {
     url: (): string => 'about:blank',
@@ -229,7 +228,7 @@ describe('interaction policy preflight cancellation', () => {
   it.each(Object.keys(preflightActions) as (keyof typeof preflightActions)[])(
     '%s cancels stalled DNS before dispatch and removes its route',
     async (name) => {
-      const { page, locator, sent } = fixture();
+      const { page, locator, sent, fulfill, dispatch } = fixture();
       page.url = () => `https://${name.toLowerCase()}.preflight.example/`;
       let finishLookup!: (addresses: { address: string; family: number }[]) => void;
       const lookup = new Promise((resolve) => {
@@ -250,17 +249,18 @@ describe('interaction policy preflight cancellation', () => {
           expect(settled).toHaveBeenCalledWith(reason);
         });
         await expect(pending).rejects.toBe(reason);
-        await vi.waitFor(() => {
-          expect(page.unroute).toHaveBeenCalledOnce();
-        });
       } finally {
         finishLookup([{ address: '93.184.216.34', family: 4 }]);
         await pending.catch(() => undefined);
       }
+      await vi.waitFor(() => {
+        expect(page.unroute).toHaveBeenCalledOnce();
+      });
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(fulfill).not.toHaveBeenCalled();
       expect(sent).not.toHaveBeenCalled();
-      // All fake native mutations dispatch through the same sent callback.
+      // Assert native dispatch itself, not just requests allowed by the route guard.
       expect(locator.waitFor).not.toHaveBeenCalled();
-      mocks.lookup.mockClear();
     },
   );
 
@@ -310,15 +310,17 @@ describe('interaction policy preflight cancellation', () => {
         expect(settled).toHaveBeenCalledWith(reason);
       });
       await expect(pending).rejects.toBe(reason);
-      expect(page.unroute).toHaveBeenCalledOnce();
     } finally {
       finishLookup([{ address: '93.184.216.34', family: 4 }]);
       await pending.catch(() => undefined);
     }
+    await vi.waitFor(() => {
+      expect(page.unroute).toHaveBeenCalledOnce();
+    });
     expect(action).not.toHaveBeenCalled();
   });
 
-  it('cancels the evaluator explicit-policy check before installing an input guard', async () => {
+  it('cancels evaluator current-page validation before dispatch', async () => {
     const { page, sent } = fixture();
     page.url = () => 'https://explicit-evaluate.preflight.example/';
     let finishLookup!: (addresses: { address: string; family: number }[]) => void;
@@ -347,7 +349,9 @@ describe('interaction policy preflight cancellation', () => {
       await pending.catch(() => undefined);
     }
     expect(sent).not.toHaveBeenCalled();
-    expect(page.unroute).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(page.unroute).toHaveBeenCalledOnce();
+    });
   });
 });
 
