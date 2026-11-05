@@ -730,6 +730,28 @@ describe('wipeChromeSessionState', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('reserveFreePortFromList', () => {
+  it('does not select a port occupied only on the IPv4 CDP address', async () => {
+    const net = await import('node:net');
+    const blocker = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      blocker.once('error', reject).listen(0, '127.0.0.1', resolve);
+    });
+    const address = blocker.address();
+    if (address === null || typeof address === 'string') {
+      throw new Error('Expected an ephemeral TCP port');
+    }
+    try {
+      await expect(reserveFreePortFromList([address.port])).rejects.toThrow(/No free port/);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        blocker.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    }
+  });
+
   it('returns the first free port from the candidate list', async () => {
     const start = 39000 + Math.floor(Math.random() * 1000);
     const candidates = [start, start + 1, start + 2];
@@ -747,7 +769,7 @@ describe('reserveFreePortFromList', () => {
         .once('listening', () => {
           resolve(s);
         })
-        .listen(start);
+        .listen(start, '127.0.0.1');
     });
     try {
       const port = await reserveFreePortFromList([start, start + 1]);
@@ -771,7 +793,7 @@ describe('reserveFreePortFromList', () => {
         .once('listening', () => {
           resolve(s);
         })
-        .listen(start);
+        .listen(start, '127.0.0.1');
     });
     try {
       await expect(reserveFreePortFromList([start])).rejects.toThrow(/No free port/);

@@ -720,7 +720,7 @@ async function isPortAvailable(port: number): Promise<boolean> {
           resolve(true);
         });
       })
-      .listen(port);
+      .listen(port, '127.0.0.1');
   });
 }
 
