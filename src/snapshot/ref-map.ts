@@ -110,9 +110,6 @@ export function parseSnapshotLine(line: string): ParsedSnapshotLine | null {
   };
 }
 
-// Playwright inlines a node's text only when the node has no props. A textbox
-// with a placeholder gets a "/placeholder" prop, so its value moves to a child
-// "- text:" line that interactive mode would otherwise drop.
 function withNestedText(line: string, lines: string[], index: number): string {
   if (!line.endsWith(':')) return line;
   const childDepth = getIndentLevel(lines[index]) + 1;
