@@ -110,6 +110,18 @@ export function parseSnapshotLine(line: string): ParsedSnapshotLine | null {
   };
 }
 
+function withNestedText(line: string, lines: string[], index: number): string {
+  if (!line.endsWith(':')) return line;
+  const childDepth = getIndentLevel(lines[index]) + 1;
+  const texts: string[] = [];
+  for (let i = index + 1; i < lines.length && getIndentLevel(lines[i]) >= childDepth; i++) {
+    if (getIndentLevel(lines[i]) !== childDepth) continue;
+    const text = /^\s*- text: (.+)$/.exec(lines[i])?.[1];
+    if (text !== undefined) texts.push(text);
+  }
+  return texts.length === 0 ? line : `${line} ${texts.join(' ')}`;
+}
+
 function matchInteractiveSnapshotLine(line: string, options: SnapshotBuildOptions): ParsedSnapshotLine | null {
   if (options.maxDepth !== undefined && getIndentLevel(line) > options.maxDepth) return null;
   return parseSnapshotLine(line);
@@ -311,25 +323,25 @@ export function buildRoleSnapshotFromAiSnapshot(
     };
 
     const out: string[] = [];
-    for (const line of lines) {
+    for (const [index, line] of lines.entries()) {
       const parsed = matchInteractiveSnapshotLine(line, options);
       if (!parsed) continue;
       const { prefix, roleRaw, role, name, suffix } = parsed;
       if (!INTERACTIVE_ROLES.has(role)) continue;
       const ref = parseAiSnapshotRef(parsed.ref);
       const state = parseStateFromSuffix(suffix);
+      let enhanced = `${prefix}${roleRaw}`;
+      if (name !== undefined && name !== '') enhanced += ` ${JSON.stringify(name)}`;
       if (ref !== null) {
         refs[ref] = { role, ...(name !== undefined && name !== '' ? { name } : {}), ...state };
-        out.push(`${prefix}${roleRaw}${name !== undefined && name !== '' ? ` ${JSON.stringify(name)}` : ''}${suffix}`);
+        enhanced += suffix;
       } else {
         const generatedRef = nextInteractiveRef();
         refs[generatedRef] = { role, ...(name !== undefined && name !== '' ? { name } : {}), ...state };
-        let enhanced = `${prefix}${roleRaw}`;
-        if (name !== undefined && name !== '') enhanced += ` ${JSON.stringify(name)}`;
         enhanced += ` [ref=${generatedRef}]`;
         if (suffix.trim() !== '') enhanced += suffix;
-        out.push(enhanced);
       }
+      out.push(withNestedText(enhanced, lines, index));
     }
     return { snapshot: out.join('\n') || '(no interactive elements)', refs };
   }
