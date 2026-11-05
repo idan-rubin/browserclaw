@@ -155,6 +155,53 @@ describe('buildRoleSnapshotFromAriaSnapshot', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('buildRoleSnapshotFromAiSnapshot', () => {
+  describe('values under props (regression: placeholder hid typed text in interactive mode)', () => {
+    it('keeps the value Playwright moved under a placeholder prop', () => {
+      const source = [
+        '- textbox "Expiration date" [active] [ref=e3]:',
+        '  - /placeholder: MM/YY',
+        '  - text: 12/28',
+        '- textbox "Security code" [ref=e4]: "123"',
+      ].join('\n');
+      const { snapshot, refs } = buildRoleSnapshotFromAiSnapshot(source, { interactive: true, compact: true });
+      expect(snapshot).toBe(
+        ['- textbox "Expiration date" [active] [ref=e3]: 12/28', '- textbox "Security code" [ref=e4]: "123"'].join(
+          '\n',
+        ),
+      );
+      expect(refs.e3).toEqual({ role: 'textbox', name: 'Expiration date' });
+    });
+
+    it('keeps the value when the ref is generated', () => {
+      const source = ['- textbox "Amount":', '  - /placeholder: 0.00', '  - text: 147.50'].join('\n');
+      const { snapshot } = buildRoleSnapshotFromAiSnapshot(source, { interactive: true });
+      expect(snapshot).toBe('- textbox "Amount" [ref=e1]: 147.50');
+    });
+
+    it('leaves an empty field with only a placeholder untouched', () => {
+      const source = [
+        '- textbox "Expiration date" [ref=e3]:',
+        '  - /placeholder: MM/YY',
+        '- button "Pay" [ref=e4]',
+      ].join('\n');
+      const { snapshot } = buildRoleSnapshotFromAiSnapshot(source, { interactive: true });
+      expect(snapshot).toBe(['- textbox "Expiration date" [ref=e3]:', '- button "Pay" [ref=e4]'].join('\n'));
+    });
+
+    it('does not pull text out of nested interactive children', () => {
+      const source = [
+        '- listbox "Country" [ref=e1]:',
+        '  - option "Israel" [ref=e2]:',
+        '    - text: IL',
+        '  - option "Spain" [ref=e3]',
+      ].join('\n');
+      const { snapshot } = buildRoleSnapshotFromAiSnapshot(source, { interactive: true });
+      expect(snapshot).toBe(
+        ['- listbox "Country" [ref=e1]:', '  - option "Israel" [ref=e2]: IL', '  - option "Spain" [ref=e3]'].join('\n'),
+      );
+    });
+  });
+
   describe('undefined name handling (regression: "undefined" text injection)', () => {
     it('does not emit "undefined" text for a nameless interactive element without ref', () => {
       // No ref in suffix → falls into the generated-ref branch
