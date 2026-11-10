@@ -92,13 +92,12 @@ Choose by the integration surface your application needs. Competitor details che
 
 browserclaw exposes snapshots and actions directly in application code. It ships no agent loop or hosted browser service. The other tools also support composing browser operations into your application; their APIs, hosting options, and model involvement differ.
 
-## In production
+## Case studies
 
-browserclaw is the engine under [browserclaw-agent](https://github.com/idan-rubin/browserclaw-agent), which is trusted with real money in production:
+Two proof-of-concept products are built on browserclaw, through [browserclaw-agent](https://github.com/idan-rubin/browserclaw-agent):
 
-- **[beelz.ai](https://beelz.ai)** — automated bill pay. The agent logs in to a biller's site, fills the payment form, and pays. No per-provider integrations.
-- **[tovli.ai](https://tovli.ai)** — AI-powered charitable giving. The agent completes the donation form on each nonprofit's own website.
-- **[browserclaw.org](https://browserclaw.org)** — the open playground.
+- **[beelz.ai](https://beelz.ai)** — bill pay. The agent is built to log in to a biller's own website, fill the payment form, and pay, with no per-provider integration.
+- **[tovli.ai](https://tovli.ai)** — charitable giving. The agent is built to complete the donation form on each nonprofit's own website.
 
 ## Try It Live — Or On Your Machine
 
