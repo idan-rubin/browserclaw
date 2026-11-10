@@ -92,6 +92,14 @@ Choose by the integration surface your application needs. Competitor details che
 
 browserclaw exposes snapshots and actions directly in application code. It ships no agent loop or hosted browser service. The other tools also support composing browser operations into your application; their APIs, hosting options, and model involvement differ.
 
+## In production
+
+browserclaw is the engine under [browserclaw-agent](https://github.com/idan-rubin/browserclaw-agent), which runs in production completing real payments on third-party websites:
+
+- **[beelz.ai](https://beelz.ai)** — automated bill pay. The agent logs in to a biller's site, fills the payment form, and pays. No per-provider integrations.
+- **[tovli.ai](https://tovli.ai)** — AI-powered charitable giving. The agent completes the donation form on each nonprofit's own website.
+- **[browserclaw.org](https://browserclaw.org)** — the open playground.
+
 ## Try It Live — Or On Your Machine
 
 [browserclaw.org](https://browserclaw.org) is an open-source playground — type a prompt and watch an AI agent drive a real browser with browserclaw, live. No setup, no API keys, just a text box and a browser stream. It runs on this library in production, and browserclaw stays current by syncing with the upstream [OpenClaw](https://github.com/openclaw/openclaw) browser SDK.
@@ -784,6 +792,8 @@ A documentation-only follow-up does not require a package version bump.
 ## Acknowledgments
 
 browserclaw was born from the browser automation module in [OpenClaw](https://github.com/openclaw/openclaw), built by [Peter Steinberger](https://github.com/steipete) and an [amazing community of contributors](https://github.com/openclaw/openclaw?tab=readme-ov-file#community). The snapshot + ref system, CDP connection management, and Playwright integration originate from that project.
+
+browserclaw is an independent project and is not affiliated with OpenClaw.
 
 ## License
 
