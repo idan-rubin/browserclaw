@@ -35,6 +35,32 @@ const CHROME_SINGLETON_LOCK_PATHS = ['SingletonLock', 'SingletonSocket', 'Single
 // Brand-agnostic: stderr says "Chromium", "Google Chrome", "Microsoft Edge", ... per build; localized (non-English) messages won't match.
 export const CHROME_SINGLETON_IN_USE_PATTERN = /profile appears to be in use by another .{1,40} process/i;
 
+function readLinuxProcessStatus(pid: number): string | undefined {
+  try {
+    return fs.readFileSync(`/proc/${String(pid)}/status`, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+function isExitedLinuxProcess(pid: number): boolean {
+  const status = readLinuxProcessStatus(pid);
+  if (status !== undefined) {
+    const state = /^State:\s+(\S)/m.exec(status)?.[1];
+    const threads = /^Threads:[ \t]+(\d+)[ \t]*$/m.exec(status)?.[1];
+    if (threads !== '0') {
+      const tgid = /^Tgid:[ \t]+(\d+)[ \t]*$/m.exec(status)?.[1];
+      return (tgid !== undefined && Number(tgid) !== pid) || ((state === 'Z' || state === 'X') && threads === '1');
+    }
+  }
+  try {
+    process.kill(pid, 0);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+  return false;
+}
+
 export function processExists(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -42,13 +68,7 @@ export function processExists(pid: number): boolean {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EPERM') return false;
   }
-  if (process.platform !== 'linux') return true;
-  try {
-    const status = fs.readFileSync(`/proc/${String(pid)}/status`, 'utf8');
-    return !(/^State:\s+(\S)/m.exec(status)?.[1] === 'Z' && /^Threads:[ \t]+1[ \t]*$/m.test(status));
-  } catch {
-    return true;
-  }
+  return process.platform !== 'linux' || !isExitedLinuxProcess(pid);
 }
 
 export function clearChromeSingletonArtifacts(userDataDir: string): void {
