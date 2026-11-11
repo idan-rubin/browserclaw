@@ -427,6 +427,16 @@ describe('processExists', () => {
     expect(processExists(1.5)).toBe(false);
     expect(processExists(Number.NaN)).toBe(false);
   });
+
+  it.runIf(process.platform === 'linux')('rejects a worker thread ID that signal 0 reports alive', () => {
+    const workerTid = fs
+      .readdirSync('/proc/self/task')
+      .map(Number)
+      .find((tid) => tid !== process.pid);
+    if (workerTid === undefined) throw new Error('expected a worker thread');
+    expect(() => process.kill(workerTid, 0)).not.toThrow();
+    expect(processExists(workerTid)).toBe(false);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
