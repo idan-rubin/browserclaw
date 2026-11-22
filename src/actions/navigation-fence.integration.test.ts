@@ -95,7 +95,10 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
           res.end();
           return;
         case '/later':
-          html(res, `<p>source</p><script>setTimeout(() => { location.href = ${JSON.stringify(to)}; }, 150);</script>`);
+          html(
+            res,
+            `<p data-next=${JSON.stringify(to)}>source</p><script>setTimeout(() => { location.href = document.querySelector('p').dataset.next; }, 150);</script>`,
+          );
           return;
         case '/frame-host':
           html(res, `<p>host</p><iframe src=${JSON.stringify(to)}></iframe>`);
