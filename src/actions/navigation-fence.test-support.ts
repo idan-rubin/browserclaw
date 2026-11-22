@@ -27,6 +27,8 @@ export interface FakeNavigationFence {
     options?: { subframe?: boolean; failPreserve?: boolean },
   ) => Promise<FakeDocumentOutcome>;
   failNext: (method: string, error: Error) => void;
+  /** Leaves the named commands unanswered, as Chrome does for renderer commands while a navigation is pending. */
+  hold: (methods: string[], options?: { until?: string }) => () => void;
   claims: () => number;
   releases: () => number;
   stops: () => number;
@@ -41,11 +43,17 @@ export function createFakeNavigationFence(page: {
   const pending = new Map<string, (outcome: FakeDocumentOutcome) => void>();
   const unpreservable = new Set<string>();
   const failures = new Map<string, Error>();
+  const holds: { methods: Set<string>; until?: string; gate: Promise<void>; open: () => void }[] = [];
   let nextRequest = 0;
   const emit = (event: string, payload?: unknown): void => {
     for (const listener of [...(listeners.get(event) ?? [])]) listener(payload);
   };
   const send: FakeFenceSession['send'] = vi.fn((method, params) => {
+    for (const hold of holds) if (hold.until === method) hold.open();
+    const hold = holds.find((candidate) => candidate.methods.has(method));
+    return hold ? hold.gate.then(() => answer(method, params)) : answer(method, params);
+  });
+  const answer = (method: string, params?: Record<string, unknown>): Promise<unknown> => {
     const failure = failures.get(method);
     if (failure) {
       failures.delete(method);
@@ -62,7 +70,7 @@ export function createFakeNavigationFence(page: {
       pending.delete(requestId);
     }
     return Promise.resolve(page.respond?.(method) ?? {});
-  });
+  };
   const session: FakeFenceSession = {
     send,
     on: (event: string, listener: Listener): void => {
@@ -96,6 +104,14 @@ export function createFakeNavigationFence(page: {
     },
     failNext: (method, error) => {
       failures.set(method, error);
+    },
+    hold: (methods, options = {}) => {
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      holds.push({ methods: new Set(methods), until: options.until, gate, open });
+      return open;
     },
     claims: () => sent('Network.enable'),
     releases: () => sent('Network.disable'),

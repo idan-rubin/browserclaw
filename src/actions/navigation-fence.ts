@@ -50,6 +50,7 @@ interface TargetState {
   documents: Map<string, string | undefined>;
   finishedDocuments: Set<string>;
   transferredFrames: Set<string>;
+  documentPending: () => boolean;
   removeListeners: () => void;
 }
 
@@ -210,6 +211,26 @@ function createTabFence(page: Page, session: CDPSession) {
   const failInvocations = (error: unknown): void => {
     for (const invocation of invocations) invocation.fail(error);
   };
+  // Chrome answers a target's renderer commands only once that target's pending document commits or stops.
+  const answeredUnlessHeld = async (target: FenceTarget, operation: Promise<unknown>): Promise<void> => {
+    const progress = { settled: false };
+    const isSettled = (): boolean => progress.settled;
+    const isHeld = (): boolean => states.get(target)?.documentPending() === true;
+    const settled = operation.finally(() => {
+      progress.settled = true;
+      notify();
+    });
+    const held = async (): Promise<void> => {
+      for (;;) {
+        while (!isSettled() && !isHeld()) await change.promise;
+        if (isSettled()) break;
+        await session.send('Target.getTargetInfo');
+        if (!isSettled() && isHeld()) return;
+      }
+      await settled;
+    };
+    await Promise.race([settled, held()]);
+  };
   const decideStanding = async (target: FenceTarget, event: PausedRequest): Promise<void> => {
     const errorReason = await standing.denial({
       url: event.request.url,
@@ -246,6 +267,14 @@ function createTabFence(page: Page, session: CDPSession) {
     const documents = new Map<string, string | undefined>();
     const finishedDocuments = new Set<string>();
     const transferredFrames = new Set<string>();
+    let documentPending = false;
+    const setDocumentPending = (pending: boolean): void => {
+      if (documentPending === pending) return;
+      documentPending = pending;
+      notify();
+    };
+    const hostsFrame = (frameId: string | undefined): boolean =>
+      frameId === undefined || frameId === (target.parent ? target.frameId : mainFrameId);
     const onRequestWillBeSent = (event: TrackedRequest): void => {
       if (
         invocations.size > 0 &&
@@ -269,7 +298,11 @@ function createTabFence(page: Page, session: CDPSession) {
           documents.delete(requestId);
           finishedDocuments.add(requestId);
         }
+      if (hostsFrame(event.frame.id)) documentPending = false;
       notify();
+    };
+    const onFrameStoppedLoading = (event: { frameId: string }): void => {
+      if (hostsFrame(event.frameId)) setDocumentPending(false);
     };
     const decide = async (event: PausedRequest, remaining: FenceInvocation[]): Promise<void> => {
       if (remaining.length === 0) {
@@ -343,6 +376,7 @@ function createTabFence(page: Page, session: CDPSession) {
       });
     };
     const onRequestPaused = (event: PausedRequest): void => {
+      if (hostsFrame(event.frameId)) setDocumentPending(true);
       if (event.networkId !== undefined && event.networkId !== '')
         onRequestWillBeSent({ requestId: event.networkId, type: event.resourceType, frameId: event.frameId });
       const claiming = [...invocations];
@@ -364,12 +398,14 @@ function createTabFence(page: Page, session: CDPSession) {
       documents,
       finishedDocuments,
       transferredFrames,
+      documentPending: () => documentPending,
       removeListeners: () => {
         target.events.off('Fetch.requestPaused', onRequestPaused);
         target.events.off('Network.requestWillBeSent', onRequestWillBeSent);
         target.events.off('Network.loadingFinished', onLoadingDone);
         target.events.off('Network.loadingFailed', onLoadingDone);
         target.events.off('Page.frameNavigated', onFrameNavigated);
+        target.events.off('Page.frameStoppedLoading', onFrameStoppedLoading);
         stopObserving();
       },
     };
@@ -379,6 +415,7 @@ function createTabFence(page: Page, session: CDPSession) {
     target.events.on('Network.loadingFinished', onLoadingDone);
     target.events.on('Network.loadingFailed', onLoadingDone);
     target.events.on('Page.frameNavigated', onFrameNavigated);
+    target.events.on('Page.frameStoppedLoading', onFrameStoppedLoading);
     if (target.parent && target.frameId !== undefined) {
       const parentState = states.get(target.parent);
       parentState?.transferredFrames.add(target.frameId);
@@ -432,6 +469,7 @@ function createTabFence(page: Page, session: CDPSession) {
     'Network.loadingFailed',
     'Fetch.requestPaused',
     'Page.frameNavigated',
+    'Page.frameStoppedLoading',
     'Page.frameRequestedNavigation',
     'Page.frameDetached',
     'Target.attachedToTarget',
@@ -589,6 +627,7 @@ function createTabFence(page: Page, session: CDPSession) {
     ready,
     notify,
     changed: () => change.promise,
+    answeredUnlessHeld,
     untilReleased: async (): Promise<void> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -604,10 +643,12 @@ function createTabFence(page: Page, session: CDPSession) {
         clearTimeout(timer);
       }
     },
-    claim: () => Promise.all([...states.keys()].map(enableNetwork)),
+    claim: () => Promise.all([...states.keys()].map((target) => answeredUnlessHeld(target, enableNetwork(target)))),
     release: (): Promise<unknown> => {
       networkEnabled = new Map();
-      released = Promise.allSettled([...states.keys()].map((target) => target.send('Network.disable'))).then(() => {
+      released = Promise.allSettled(
+        [...states.keys()].map((target) => answeredUnlessHeld(target, target.send('Network.disable'))),
+      ).then(() => {
         for (const state of states.values()) {
           state.documents.clear();
           state.finishedDocuments.clear();
@@ -680,7 +721,7 @@ export async function installNavigationAuthorityFence(
         await bounded(Promise.allSettled([...inFlight, ...initialization]));
     };
     try {
-      await bounded(session.send('Runtime.evaluate', { expression: 'void 0' }));
+      await bounded(tab.answeredUnlessHeld(session, session.send('Runtime.evaluate', { expression: 'void 0' })));
       let stopped = false;
       for (;;) {
         const changed = tab.changed();

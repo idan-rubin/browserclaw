@@ -14,7 +14,11 @@ vi.mock('../connection.js', async (importOriginal) => ({
   ...(await importOriginal<typeof Connection>()),
   getPageForTargetId: mocks.page,
 }));
-import { navigateViaPlaywright, withPageNavigationRequestGuard } from './navigation.js';
+import {
+  assertInteractionNavigationCompletedSafely,
+  navigateViaPlaywright,
+  withPageNavigationRequestGuard,
+} from './navigation.js';
 
 const executablePath = [chromium.executablePath(), '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].find(
   existsSync,
@@ -93,6 +97,20 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
         case '/redirect':
           res.writeHead(302, { location: to });
           res.end();
+          return;
+        case '/slow-redirect':
+          setTimeout(() => {
+            res.writeHead(302, { location: to });
+            res.end();
+          }, 500);
+          return;
+        case '/hang':
+          return;
+        case '/replace':
+          html(
+            res,
+            `<p data-next=${JSON.stringify(to)}>source</p><script>location.replace(document.querySelector('p').dataset.next);</script>`,
+          );
           return;
         case '/later':
           html(
@@ -235,6 +253,104 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
       ).rejects.toBeInstanceOf(InvalidBrowserNavigationUrlError);
       expect(hits.secret).toBe(0);
     });
+
+    it('returns from an action that leaves the frame waiting on its server and keeps the tab usable', async () => {
+      const host = route(allowed, '/frame-host', `${denied}/`);
+      await navigateViaPlaywright({ cdpUrl, url: host, ssrfPolicy: twoSites });
+      await page.frames()[1]?.waitForURL(`${denied}/`);
+      expect(await separatelyHostedFrame()).toBe(true);
+      const started = Date.now();
+      await assertInteractionNavigationCompletedSafely({
+        cdpUrl,
+        page,
+        previousUrl: page.url(),
+        ssrfPolicy: twoSites,
+        action: async () => {
+          await page.frames()[1]?.evaluate((url) => {
+            setTimeout(() => {
+              location.href = url;
+            }, 0);
+          }, `${denied}/hang`);
+        },
+      });
+      await expect(
+        withPageNavigationRequestGuard({
+          cdpUrl,
+          page,
+          ssrfPolicy: twoSites,
+          action: () => page.evaluate(() => document.querySelector('p')?.textContent),
+        }),
+      ).resolves.toBe('host');
+      const next = await navigateViaPlaywright({ cdpUrl, url: `${allowed}/?next`, ssrfPolicy: twoSites });
+      expect(next.url).toBe(`${allowed}/?next`);
+      expect(Date.now() - started).toBeLessThan(8000);
+    }, 40_000);
+  });
+
+  describe('while a top-level navigation waits on its server', () => {
+    it('reports a navigation timeout promptly and leaves the tab usable', async () => {
+      await navigateViaPlaywright({ cdpUrl, url: `${allowed}/`, ssrfPolicy: strict });
+      const started = Date.now();
+      await expect(
+        navigateViaPlaywright({ cdpUrl, url: `${allowed}/hang`, ssrfPolicy: strict, timeoutMs: 1000 }),
+      ).rejects.toThrow(/Timeout 1000ms exceeded/);
+      expect(Date.now() - started).toBeLessThan(8000);
+      const next = await navigateViaPlaywright({ cdpUrl, url: `${allowed}/?next`, ssrfPolicy: strict });
+      expect(next.url).toBe(`${allowed}/?next`);
+    }, 40_000);
+
+    it('returns at commit when the page starts a navigation of its own', async () => {
+      const source = route(allowed, '/replace', `${allowed}/hang`);
+      const started = Date.now();
+      const result = await navigateViaPlaywright({ cdpUrl, url: source, ssrfPolicy: strict });
+      expect(Date.now() - started).toBeLessThan(8000);
+      expect(result.url).toBe(source);
+    }, 40_000);
+
+    it('lets an interaction return and keeps the tab usable', async () => {
+      await navigateViaPlaywright({ cdpUrl, url: `${allowed}/`, ssrfPolicy: strict });
+      const started = Date.now();
+      await assertInteractionNavigationCompletedSafely({
+        cdpUrl,
+        page,
+        previousUrl: page.url(),
+        ssrfPolicy: strict,
+        action: () =>
+          page.evaluate((url) => {
+            setTimeout(() => {
+              location.href = url;
+            }, 0);
+          }, `${allowed}/hang`),
+      });
+      expect(Date.now() - started).toBeLessThan(8000);
+      const next = await navigateViaPlaywright({ cdpUrl, url: `${allowed}/?next`, ssrfPolicy: strict });
+      expect(next.url).toBe(`${allowed}/?next`);
+      expect(Date.now() - started).toBeLessThan(8000);
+    }, 40_000);
+
+    it('starts the next navigation while one the page began between actions is still waiting', async () => {
+      await navigateViaPlaywright({ cdpUrl, url: route(allowed, '/later', `${allowed}/hang`), ssrfPolicy: strict });
+      await page.waitForTimeout(700);
+      const started = Date.now();
+      const next = await navigateViaPlaywright({ cdpUrl, url: `${allowed}/?next`, ssrfPolicy: strict });
+      expect(next.url).toBe(`${allowed}/?next`);
+      expect(Date.now() - started).toBeLessThan(8000);
+    }, 40_000);
+
+    it('refuses a denied redirect hop that arrives after the navigation returned', async () => {
+      const source = route(allowed, '/replace', route(allowed, '/slow-redirect', `${denied}/secret`));
+      const result = await navigateViaPlaywright({ cdpUrl, url: source, ssrfPolicy: strict });
+      expect(result.url).toBe(source);
+      await page.waitForTimeout(1200);
+      expect(hits.secret).toBe(0);
+    }, 40_000);
+
+    it('control: the same late redirect hop is followed under a policy that allows it', async () => {
+      const source = route(allowed, '/replace', route(allowed, '/slow-redirect', `${denied}/secret`));
+      await navigateViaPlaywright({ cdpUrl, url: source, ssrfPolicy: permissive });
+      await page.waitForURL(`${denied}/secret`);
+      expect(hits.secret).toBe(1);
+    }, 40_000);
   });
 
   it('leaves CORS preflights to the server during a guarded action', async () => {

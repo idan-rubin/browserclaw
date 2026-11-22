@@ -321,6 +321,91 @@ describe('interaction request policy enforcement', () => {
     expect(page.url()).toBe('about:blank');
   });
 
+  describe('release while Chrome holds renderer commands', () => {
+    const settledWithin = async (operation: Promise<unknown>, ms: number): Promise<boolean> => {
+      const settled = operation.then(
+        () => true,
+        () => true,
+      );
+      return await Promise.race([settled, new Promise<boolean>((resolve) => setTimeout(resolve, ms, false))]);
+    };
+
+    it('returns once a top-level document is pending, without waiting for the held flush', async () => {
+      const { page, fence, dispatch } = fixture();
+      fence.hold(['Runtime.evaluate', 'Network.disable']);
+      const guarded = withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          expect(await dispatch('http://8.8.8.8/slow')).toEqual({ continued: true });
+          return 'clicked';
+        },
+      });
+      await expect(guarded).resolves.toBe('clicked');
+      expect(fence.releases()).toBe(1);
+      expect(await dispatch('http://127.0.0.1/after-hand-off')).toEqual({
+        continued: false,
+        errorReason: 'BlockedByClient',
+      });
+    });
+
+    it('control: waits for the flush when only a subframe document is pending', async () => {
+      const { page, fence, dispatch } = fixture();
+      const answer = fence.hold(['Runtime.evaluate']);
+      const guarded = withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          expect(await dispatch('http://8.8.8.8/frame', { subframe: true })).toEqual({ continued: true });
+          return 'clicked';
+        },
+      });
+      expect(await settledWithin(guarded, 50)).toBe(false);
+      answer();
+      await expect(guarded).resolves.toBe('clicked');
+    });
+
+    it('stops a pending top-level document after a guard error without waiting for the held flush', async () => {
+      const { page, fence, dispatch } = fixture();
+      fence.hold(['Runtime.evaluate'], { until: 'Page.stopLoading' });
+      const guarded = withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          expect(await dispatch('http://8.8.8.8/slow')).toEqual({ continued: true });
+          await dispatch('http://127.0.0.1/private-frame', { subframe: true });
+        },
+      });
+      expect(await settledWithin(guarded, 1000)).toBe(true);
+      await expect(guarded).rejects.toBeInstanceOf(InvalidBrowserNavigationUrlError);
+      expect(fence.stops()).toBeGreaterThan(0);
+    });
+
+    it('claims a tab whose earlier release Chrome is still holding', async () => {
+      const { page, fence, dispatch } = fixture();
+      const first = withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          fence.hold(['Runtime.evaluate', 'Network.disable', 'Network.enable']);
+          expect(await dispatch('http://8.8.8.8/slow')).toEqual({ continued: true });
+          return 'first';
+        },
+      });
+      await expect(first).resolves.toBe('first');
+      const second = withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          expect(await dispatch('http://127.0.0.1/private')).toEqual(preserved);
+          return 'second';
+        },
+      });
+      expect(await settledWithin(second, 1000)).toBe(true);
+      await expect(second).rejects.toBeInstanceOf(InvalidBrowserNavigationUrlError);
+    });
+  });
+
   it('fails closed if the fence cannot be installed or released on a live page', async () => {
     const { page, fence, dispatch } = fixture();
     const action = vi.fn().mockResolvedValue('done');
