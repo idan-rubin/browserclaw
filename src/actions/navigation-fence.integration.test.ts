@@ -69,6 +69,12 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
   let denied6: string;
   let apiOrigin: string;
   const hits: Hits = { secret: 0, preflight: 0, api: 0 };
+  const targets = new Map<string, string>();
+  const route = (base: string, pathname: string, target: string): string => {
+    const key = String(targets.size);
+    targets.set(key, target);
+    return `${base}${pathname}?to=${key}`;
+  };
 
   const html = (res: ServerResponse, body: string): void => {
     res.writeHead(200, { 'content-type': 'text/html' });
@@ -78,7 +84,7 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
   beforeAll(async () => {
     const serveSite = (req: IncomingMessage, res: ServerResponse): void => {
       const url = new URL(req.url ?? '/', 'http://placeholder');
-      const to = url.searchParams.get('to') ?? '';
+      const to = targets.get(url.searchParams.get('to') ?? '') ?? '';
       switch (url.pathname) {
         case '/secret':
           hits.secret += 1;
@@ -138,7 +144,7 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
     await Promise.all([close(site), close(site6), close(api)]);
   });
 
-  const redirectTo = (target: string): string => `${allowed}/redirect?to=${encodeURIComponent(target)}`;
+  const redirectTo = (target: string): string => route(allowed, '/redirect', target);
 
   it('never sends a redirect hop the policy denies', async () => {
     await expect(
@@ -158,7 +164,7 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
   });
 
   it('stops a denied document the page requests between actions and keeps the source', async () => {
-    const source = `${allowed}/later?to=${encodeURIComponent(`${denied}/secret`)}`;
+    const source = route(allowed, '/later', `${denied}/secret`);
     await navigateViaPlaywright({ cdpUrl, url: source, ssrfPolicy: strict });
     await page.waitForTimeout(600);
     expect(hits.secret).toBe(0);
@@ -167,14 +173,14 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
   });
 
   it('control: an allowed document the page requests between actions still loads', async () => {
-    const source = `${allowed}/later?to=${encodeURIComponent(`${denied}/secret`)}`;
+    const source = route(allowed, '/later', `${denied}/secret`);
     await navigateViaPlaywright({ cdpUrl, url: source, ssrfPolicy: permissive });
     await page.waitForURL(`${denied}/secret`);
     expect(hits.secret).toBe(1);
   });
 
   it('stops a denied subframe document without failing the top-level navigation', async () => {
-    const host = `${allowed}/frame-host?to=${encodeURIComponent(redirectTo(`${denied}/secret`))}`;
+    const host = route(allowed, '/frame-host', redirectTo(`${denied}/secret`));
     const result = await navigateViaPlaywright({ cdpUrl, url: host, ssrfPolicy: strict });
     await page.waitForTimeout(600);
     expect(result.url).toBe(host);
@@ -191,7 +197,7 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
 
   describe.skipIf(!hasIpv6Loopback)('separately hosted iframes', () => {
     const hostWithSelfNavigatingFrame = (): string =>
-      `${allowed}/frame-host?to=${encodeURIComponent(`${denied}/later?to=${encodeURIComponent(`${denied6}/secret`)}`)}`;
+      route(allowed, '/frame-host', route(denied, '/later', `${denied6}/secret`));
 
     it('stops a denied document the frame requests between actions', async () => {
       await navigateViaPlaywright({ cdpUrl, url: hostWithSelfNavigatingFrame(), ssrfPolicy: twoSites });
@@ -207,7 +213,7 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
     });
 
     it('refuses a guarded action that sends the frame to a denied document', async () => {
-      const host = `${allowed}/frame-host?to=${encodeURIComponent(`${denied}/`)}`;
+      const host = route(allowed, '/frame-host', `${denied}/`);
       await navigateViaPlaywright({ cdpUrl, url: host, ssrfPolicy: twoSites });
       await page.frames()[1]?.waitForURL(`${denied}/`);
       expect(await separatelyHostedFrame()).toBe(true);
