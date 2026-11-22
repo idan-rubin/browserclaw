@@ -734,7 +734,9 @@ async function gotoPageWithNavigationGuard(opts: {
     navigationFailed = true;
     navigationError = err;
   }
-  const cleanupError = await release?.({ stopLoading: navigationFailed, handOffPendingDocuments: true });
+  // Only a timeout leaves this call's own navigation pending; after any other failure a newer one may have replaced it.
+  const stopLoading = navigationError instanceof Error && navigationError.name === 'TimeoutError';
+  const cleanupError = await release?.({ stopLoading, handOffPendingDocuments: true });
   if (state.blocked !== undefined) {
     if (isPolicyDenyNavigationError(state.blocked)) await closeBlockedNavigationTarget(opts);
     throw toNavigationError(state.blocked);

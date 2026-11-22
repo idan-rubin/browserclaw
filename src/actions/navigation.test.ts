@@ -132,6 +132,32 @@ describe('navigateViaPlaywright retry ownership', () => {
   });
 });
 
+describe('navigateViaPlaywright stop-loading scope', () => {
+  const stopsAfterFailedNavigation = async (error: Error): Promise<number> => {
+    const fence = createFakeNavigationFence({ url: () => 'https://example.test/' });
+    const page = buildFakePage({
+      goto: vi.fn().mockRejectedValue(error),
+      context: () => ({ newCDPSession: fence.newCDPSession }),
+    });
+    mockGetPageForTargetId.mockReset();
+    mockGetPageForTargetId.mockResolvedValue(page as unknown as Page);
+    await expect(
+      navigateViaPlaywright({ cdpUrl: 'http://localhost:9222', targetId: 'T1', url: 'https://example.test/next' }),
+    ).rejects.toThrow(error.message);
+    return fence.stops();
+  };
+
+  it('stops loading when its own navigation timed out', async () => {
+    const timeout = Object.assign(new Error('page.goto: Timeout 1000ms exceeded.'), { name: 'TimeoutError' });
+    expect(await stopsAfterFailedNavigation(timeout)).toBe(1);
+  });
+
+  it('leaves loading alone when the navigation failed because another one replaced it', async () => {
+    const replaced = new Error('page.goto: net::ERR_ABORTED at https://example.test/next');
+    expect(await stopsAfterFailedNavigation(replaced)).toBe(0);
+  });
+});
+
 interface FakeBrowser {
   contexts: () => FakeContext[];
   newContext: ReturnType<typeof vi.fn>;

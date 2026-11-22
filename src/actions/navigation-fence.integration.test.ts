@@ -106,6 +106,15 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
           return;
         case '/hang':
           return;
+        case '/with-asset':
+          html(res, '<p>whole</p><img src="/slow-asset">');
+          return;
+        case '/slow-asset':
+          setTimeout(() => {
+            res.writeHead(200, { 'content-type': 'image/gif' });
+            res.end(Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64'));
+          }, 500);
+          return;
         case '/replace':
           html(
             res,
@@ -295,8 +304,27 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
         navigateViaPlaywright({ cdpUrl, url: `${allowed}/hang`, ssrfPolicy: strict, timeoutMs: 1000 }),
       ).rejects.toThrow(/Timeout 1000ms exceeded/);
       expect(Date.now() - started).toBeLessThan(8000);
+      const answered = await Promise.race([
+        page.evaluate(() => document.querySelector('p')?.textContent),
+        page.waitForTimeout(3000).then(() => 'unanswered'),
+      ]);
+      expect(answered).toBe('home');
       const next = await navigateViaPlaywright({ cdpUrl, url: `${allowed}/?next`, ssrfPolicy: strict });
       expect(next.url).toBe(`${allowed}/?next`);
+    }, 40_000);
+
+    it('lets a newer navigation replace a pending one and load in full', async () => {
+      await navigateViaPlaywright({ cdpUrl, url: `${allowed}/`, ssrfPolicy: strict });
+      const replaced = navigateViaPlaywright({ cdpUrl, url: `${allowed}/hang`, ssrfPolicy: strict }).then(
+        () => 'resolved',
+        () => 'rejected',
+      );
+      await page.waitForTimeout(300);
+      const newer = await navigateViaPlaywright({ cdpUrl, url: `${allowed}/with-asset`, ssrfPolicy: strict });
+      expect(newer.url).toBe(`${allowed}/with-asset`);
+      expect(await replaced).toBe('rejected');
+      await page.waitForFunction(() => document.querySelector('img')?.complete === true);
+      expect(await page.evaluate(() => document.querySelector('img')?.naturalWidth)).toBe(1);
     }, 40_000);
 
     it('returns at commit when the page starts a navigation of its own', async () => {
