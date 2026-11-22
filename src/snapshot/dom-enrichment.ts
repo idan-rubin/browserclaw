@@ -27,6 +27,8 @@ import type { Page, Frame } from 'playwright-core';
 
 import type { RoleRefs } from '../types.js';
 
+import { isSensitiveFieldDescriptor, REDACTED_FIELD_VALUE } from './sensitive-field-values.js';
+
 // ── Tunables ──
 
 /** Upper bound on enriched elements per snapshot. Prevents runaway growth on huge SPAs. */
@@ -55,6 +57,8 @@ export interface DomEnrichedElement {
   id: string;
   /** `type` attribute for `<input>` elements, otherwise `null` */
   inputType: string | null;
+  /** The element's `autocomplete` attribute, or `null` if absent */
+  autocomplete?: string | null;
   /** Up to five `data-*` attributes, in source order */
   dataAttrs: { name: string; value: string }[];
 }
@@ -138,10 +142,15 @@ export function buildDomEnrichedLines(elements: DomEnrichedElement[]): { lines: 
     if (el.tagName === 'input' && el.inputType !== null && el.inputType !== '') {
       attrs.push(`[type="${sanitizeAttrValue(el.inputType)}"]`);
     }
+    const sensitive = isSensitiveFieldDescriptor({
+      tagName: el.tagName,
+      type: el.inputType,
+      autocomplete: el.autocomplete,
+    });
     for (const { name, value } of el.dataAttrs) {
       const safeName = name.replace(/[^a-z0-9-]/gi, '');
       if (!safeName.startsWith('data-')) continue;
-      attrs.push(`[${safeName}="${sanitizeAttrValue(value)}"]`);
+      attrs.push(`[${safeName}="${sanitizeAttrValue(sensitive ? REDACTED_FIELD_VALUE : value)}"]`);
     }
 
     const attrStr = attrs.length > 0 ? ` ${attrs.join(' ')}` : '';
@@ -268,6 +277,7 @@ export async function enrichSnapshotFromDom(
           explicitRole: el.getAttribute('role'),
           id,
           inputType: el.getAttribute('type'),
+          autocomplete: el.getAttribute('autocomplete'),
           dataAttrs,
         });
       };

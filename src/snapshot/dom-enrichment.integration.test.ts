@@ -44,6 +44,17 @@ const SHADOW_DOM_PAGE = [
   '</body></html>',
 ].join('');
 
+const MIRRORED_VALUE_PAGE = [
+  '<!doctype html><html><body>',
+  '<input id="pw" type="password" data-typed="">',
+  '<input id="otp" autocomplete="one-time-code" data-typed="">',
+  '<input id="city" data-typed="">',
+  '<script>',
+  "for (const el of document.querySelectorAll('input')) el.addEventListener('input', () => { el.dataset.typed = el.value; });",
+  '</script>',
+  '</body></html>',
+].join('');
+
 function dataUrl(html: string): string {
   return `data:text/html;base64,${Buffer.from(html).toString('base64')}`;
 }
@@ -119,6 +130,20 @@ d('enrichSnapshotFromDom (integration)', () => {
     await page.locator(selector).click();
     const clicks = await page.evaluate(() => (window as unknown as { __clicks?: number }).__clicks ?? 0);
     expect(clicks).toBe(1);
+  });
+
+  it('masks a typed secret the page mirrors into a data attribute', async () => {
+    await page.goto(dataUrl(MIRRORED_VALUE_PAGE));
+    await page.fill('#pw', 'hunter2-typed');
+    await page.fill('#otp', '246810');
+    await page.fill('#city', 'Lisbon');
+    const { lines } = await enrichSnapshotFromDom(page, 1);
+    const text = lines.join('\n');
+    expect(text).not.toContain('hunter2-typed');
+    expect(text).not.toContain('246810');
+    expect(text).toContain('[id="pw"] [type="password"] [data-typed="redacted"]');
+    expect(text).toContain('[id="otp"] [data-typed="redacted"]');
+    expect(text).toContain('[id="city"] [data-typed="Lisbon"]');
   });
 
   it('nextRefCounter round-trips with a scoped scan', async () => {

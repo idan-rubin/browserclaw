@@ -332,6 +332,33 @@ describe('buildDomEnrichedLines sanitization', () => {
 // mergeSnapshotWithEnrichment
 // ─────────────────────────────────────────────────────────────────────────────
 
+describe('buildDomEnrichedLines sensitive fields', () => {
+  const field = (extra: Partial<DomEnrichedElement>): DomEnrichedElement => ({
+    ref: 'e1',
+    tagName: 'input',
+    explicitRole: null,
+    id: 'field',
+    inputType: 'text',
+    dataAttrs: [{ name: 'data-initial-value', value: 'hunter2' }],
+    ...extra,
+  });
+
+  it.each([
+    ['a password input', { inputType: 'password' }],
+    ['a one-time-code field', { autocomplete: 'one-time-code' }],
+    ['a card number field', { autocomplete: 'section-pay cc-number' }],
+  ])('masks the data-* values of %s', (_name, extra) => {
+    const { lines } = buildDomEnrichedLines([field(extra)]);
+    expect(lines[0]).not.toContain('hunter2');
+    expect(lines[0]).toContain('[data-initial-value="redacted"]');
+  });
+
+  it('control: keeps the data-* values of an ordinary field', () => {
+    const { lines } = buildDomEnrichedLines([field({ autocomplete: 'username' })]);
+    expect(lines[0]).toContain('[data-initial-value="hunter2"]');
+  });
+});
+
 describe('mergeSnapshotWithEnrichment', () => {
   it('returns the original built result when enrichment is empty', () => {
     const built = { snapshot: 'base', refs: { e1: { role: 'button' } } };

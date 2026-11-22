@@ -6,7 +6,7 @@ import { takeAiSnapshotText } from '../connection.js';
 import { axValue, type AXNode } from './native-tree.js';
 import { getIndentLevel, parseAiSnapshotRef, parseSnapshotLine } from './ref-map.js';
 
-const REDACTED_FIELD_VALUE = '[redacted]';
+export const REDACTED_FIELD_VALUE = '[redacted]';
 
 const VALUE_FIELD_ROLES = new Set(['combobox', 'searchbox', 'spinbutton', 'textbox']);
 
