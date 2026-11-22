@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { Page, Request, Route } from 'playwright-core';
+import type { Page } from 'playwright-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as Connection from '../connection.js';
@@ -18,9 +18,9 @@ vi.mock('../connection.js', async (original) => ({
 }));
 
 import { downloadViaPlaywright } from './download.js';
+import { createFakeNavigationFence } from './navigation-fence.test-support.js';
 import { navigateViaPlaywright } from './navigation.js';
 
-type Handler = (route: Route, request: Request) => Promise<void>;
 let directory: string;
 const published: string[] = [];
 beforeEach(async () => {
@@ -32,39 +32,20 @@ afterEach(async () => {
 });
 
 function fixture() {
-  let handler: Handler | undefined;
   const frame = {};
+  const fence = createFakeNavigationFence({ url: () => 'about:blank' });
   const page = Object.assign(new EventEmitter(), {
     url: () => 'about:blank',
     mainFrame: () => frame,
     isClosed: () => false,
     close: vi.fn().mockResolvedValue(undefined),
     goto: vi.fn(),
-    route: (_pattern: string, next: Handler) => {
-      handler = next;
-      return Promise.resolve();
-    },
-    unroute: () => {
-      handler = undefined;
-      return Promise.resolve();
-    },
+    context: () => ({ newCDPSession: fence.newCDPSession }),
   });
-  const fallback = vi.fn().mockResolvedValue(undefined);
-  const fulfill = vi.fn().mockResolvedValue(undefined);
-  const route = { fallback, fulfill, abort: vi.fn().mockResolvedValue(undefined) } as unknown as Route;
-  const request = {
-    url: () => 'http://169.254.169.254/latest/meta-data/',
-    frame: () => frame,
-    isNavigationRequest: () => true,
-    resourceType: () => 'document',
-  } as unknown as Request;
-  const dispatch = async () => {
-    if (handler) await handler(route, request);
-    else await fallback();
-  };
+  const dispatch = () => fence.pauseDocument('http://169.254.169.254/latest/meta-data/');
   mocks.page.mockResolvedValue(page as unknown as Page);
   mocks.state.mockReturnValue({ nextArmIdDownload: 0, armIdDownload: 0, downloadWaiterDepth: 0 });
-  return { page, dispatch, fallback, fulfill, guarded: () => handler !== undefined };
+  return { page, fence, dispatch };
 }
 
 describe('download navigation ownership', () => {
@@ -95,15 +76,13 @@ describe('download navigation ownership', () => {
     controller.abort(new Error('cancel download'));
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(settled).toBe(false);
-    expect(f.guarded()).toBe(true);
-    await f.dispatch();
-    expect(f.fulfill).toHaveBeenCalledWith({ status: 204, body: '' });
-    expect(f.fallback).not.toHaveBeenCalled();
+    expect(f.fence.releases()).toBe(0);
+    expect(await f.dispatch()).toEqual({ continued: false, errorReason: 'Aborted' });
     finish();
     await rejection;
-    expect(f.guarded()).toBe(false);
-    await f.dispatch();
-    expect(f.fallback).toHaveBeenCalledOnce();
+    expect(f.fence.releases()).toBe(1);
+    // Control: once released, the tab's standing policy answers instead of the download.
+    expect(await f.dispatch()).toEqual({ continued: false, errorReason: 'BlockedByClient' });
   });
 
   it.each([

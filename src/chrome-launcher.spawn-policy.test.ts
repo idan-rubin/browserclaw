@@ -55,10 +55,45 @@ describe('Chrome spawn policy', () => {
       'spawn captured',
     );
     const args = spawnMock.mock.calls[0]?.[1] as string[];
+    const options = spawnMock.mock.calls[0]?.[2] as ChildProcess.SpawnOptions;
     expect(args.includes('--use-mock-keychain')).toBe(testCase.mock);
-    // Incomplete profiles still bootstrap headlessly, independently of keychain mode.
-    if (!testCase.localState || !testCase.preferences) expect(args).toContain('--headless=new');
+    const incomplete = !testCase.localState || !testCase.preferences;
+    // Only a headed launch of an incomplete profile runs the detached bootstrap, and that run is headless.
+    expect(options.detached === true).toBe(incomplete && !testCase.headless);
+    if (incomplete) expect(args).toContain('--headless=new');
   });
+
+  it('writes the profile files itself for a headless launch of a new profile', async () => {
+    await expect(launchChrome({ executablePath, userDataDir, headless: true, profileName: 'fresh' })).rejects.toThrow(
+      'spawn captured',
+    );
+    expect(spawnMock).toHaveBeenCalledOnce();
+    const localState = JSON.parse(fs.readFileSync(path.join(userDataDir, 'Local State'), 'utf8')) as {
+      profile: { info_cache: { Default: { name: string } } };
+    };
+    const preferences = JSON.parse(fs.readFileSync(path.join(userDataDir, 'Default', 'Preferences'), 'utf8')) as {
+      profile: { name: string };
+      exit_type: string;
+    };
+    expect(localState.profile.info_cache.Default.name).toBe('fresh');
+    expect(preferences.profile.name).toBe('fresh');
+    expect(preferences.exit_type).toBe('Normal');
+  });
+
+  it.each(['chrome-headless-shell', 'headless_shell', 'chrome-headless-shell.exe'])(
+    'refuses a headed launch of %s before spawning',
+    async (name) => {
+      const shell = path.join(userDataDir, name);
+      fs.writeFileSync(shell, 'test fixture');
+      await expect(launchChrome({ executablePath: shell, userDataDir })).rejects.toThrow(
+        'Chromium headless shell cannot open a headed window',
+      );
+      expect(spawnMock).not.toHaveBeenCalled();
+      await expect(launchChrome({ executablePath: shell, userDataDir, headless: true })).rejects.toThrow(
+        'spawn captured',
+      );
+    },
+  );
 
   it('strips child proxy environment while preserving the parent, unrelated env and explicit proxy args', async () => {
     const keys = [

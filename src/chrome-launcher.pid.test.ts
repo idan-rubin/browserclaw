@@ -79,6 +79,14 @@ describe('Chrome singleton PID liveness', () => {
     expect(read).not.toHaveBeenCalled();
   });
 
+  it('reads the same proc status on Android', () => {
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'android' });
+    const read = vi.spyOn(fs, 'readFileSync').mockReturnValue('State:\tZ (zombie)\nThreads:\t1\n');
+    expect(processExists(pid)).toBe(false);
+    read.mockReturnValue('State:\tS (sleeping)\nThreads:\t1\n');
+    expect(processExists(pid)).toBe(true);
+  });
+
   it('does not inspect Linux proc files on other platforms', () => {
     Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' });
     const read = vi.spyOn(fs, 'readFileSync');

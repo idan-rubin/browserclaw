@@ -1,13 +1,12 @@
 import { EventEmitter } from 'node:events';
 
-import type { Page, Request, Route } from 'playwright-core';
+import type { Page } from 'playwright-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as connection from '../connection.js';
 
 import { evaluateViaPlaywright } from './evaluate.js';
-
-type Handler = (route: Route, request: Request) => Promise<void>;
+import { createFakeNavigationFence } from './navigation-fence.test-support.js';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -27,18 +26,18 @@ describe('evaluate navigation guard lifetime', () => {
       release = resolve;
     });
     const evaluate = vi.fn().mockResolvedValue(42);
-    const unroute = vi.fn().mockResolvedValue(undefined);
     const frame = {};
+    const fence = createFakeNavigationFence({ url: () => 'about:blank' });
+    fence.newCDPSession.mockImplementation(() => {
+      entered();
+      return installed.then(() => fence.session);
+    });
     const page = Object.assign(new EventEmitter(), {
       url: () => 'about:blank',
       mainFrame: () => frame,
       isClosed: () => false,
       evaluate,
-      route: vi.fn(() => {
-        entered();
-        return installed;
-      }),
-      unroute,
+      context: () => ({ newCDPSession: fence.newCDPSession }),
     }) as unknown as Page;
     vi.spyOn(connection, 'getPageForTargetId').mockResolvedValue(page);
     vi.spyOn(connection, 'refLocator').mockReturnValue({ evaluate } as unknown as ReturnType<
@@ -65,7 +64,7 @@ describe('evaluate navigation guard lifetime', () => {
       release();
       await outcome;
       await vi.waitFor(() => {
-        expect(unroute).toHaveBeenCalledOnce();
+        expect(fence.releases()).toBe(1);
       });
       expect(evaluate).toHaveBeenCalledTimes(abort ? 0 : 1);
     } finally {
@@ -74,7 +73,6 @@ describe('evaluate navigation guard lifetime', () => {
   });
 
   it.each([undefined, 'e1'])('retains native request coverage after failed cancellation (ref=%s)', async (ref) => {
-    let handler: Handler | undefined;
     let enter!: () => void;
     const started = new Promise<void>((resolve) => {
       enter = resolve;
@@ -88,19 +86,13 @@ describe('evaluate navigation guard lifetime', () => {
       return native;
     });
     const frame = {};
+    const fence = createFakeNavigationFence({ url: () => 'about:blank' });
     const page = Object.assign(new EventEmitter(), {
       url: () => 'about:blank',
       mainFrame: () => frame,
       isClosed: () => false,
       evaluate,
-      route: vi.fn((_pattern: string, installed: Handler) => {
-        handler = installed;
-        return Promise.resolve();
-      }),
-      unroute: vi.fn(() => {
-        handler = undefined;
-        return Promise.resolve();
-      }),
+      context: () => ({ newCDPSession: fence.newCDPSession }),
     }) as unknown as Page;
     vi.spyOn(connection, 'getPageForTargetId').mockResolvedValue(page);
     vi.spyOn(connection, 'refLocator').mockReturnValue({ evaluate } as unknown as ReturnType<
@@ -119,15 +111,7 @@ describe('evaluate navigation guard lifetime', () => {
       signal: controller.signal,
     });
     const rejected = expect(result).rejects.toBe(reason);
-    const dispatch = async () => {
-      const fallback = vi.fn().mockResolvedValue(undefined);
-      const fulfill = vi.fn().mockResolvedValue(undefined);
-      const route = { fallback, fulfill, abort: vi.fn().mockResolvedValue(undefined) };
-      const request = { url: () => 'http://127.0.0.1/private', frame: () => frame, isNavigationRequest: () => true };
-      if (handler) await handler(route as unknown as Route, request as unknown as Request);
-      else await fallback();
-      return { fallback, fulfill };
-    };
+    const dispatch = () => fence.pauseDocument('http://127.0.0.1/private');
     try {
       await started;
       controller.abort(reason);
@@ -135,18 +119,14 @@ describe('evaluate navigation guard lifetime', () => {
       expect(terminate).toHaveBeenCalledWith(expect.objectContaining({ page, targetId: 'owned' }));
       // The former inner race removed the guard after its 250ms grace.
       await new Promise((resolve) => setTimeout(resolve, 350));
-      expect(handler).toBeDefined();
-      const blocked = await dispatch();
-      expect(blocked.fallback).not.toHaveBeenCalled();
-      expect(blocked.fulfill).toHaveBeenCalledWith({ status: 204, body: '' });
+      expect(fence.releases()).toBe(0);
+      expect(await dispatch()).toEqual({ continued: false, errorReason: 'Aborted' });
       settle();
       await vi.waitFor(() => {
-        expect(handler).toBeUndefined();
+        expect(fence.releases()).toBe(1);
       });
-      // Control: the fixture really dispatches that request after guard removal.
-      const unguarded = await dispatch();
-      expect(unguarded.fallback).toHaveBeenCalledOnce();
-      expect(unguarded.fulfill).not.toHaveBeenCalled();
+      // Control: once released, the tab's standing policy answers instead of the evaluation.
+      expect(await dispatch()).toEqual({ continued: false, errorReason: 'BlockedByClient' });
     } finally {
       settle();
     }

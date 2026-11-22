@@ -67,13 +67,13 @@ vi.mock('../page-target.js', () => ({
 
 const { createPageViaPlaywright, assertPageNavigationCompletedSafely, listPagesViaPlaywright, navigateViaPlaywright } =
   await import('./navigation.js');
+const { createFakeNavigationFence } = await import('./navigation-fence.test-support.js');
 const { InvalidBrowserNavigationUrlError } = await import('../security.js');
 
 interface FakePage {
   goto: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
-  route: ReturnType<typeof vi.fn>;
-  unroute: ReturnType<typeof vi.fn>;
+  context: () => unknown;
   url: () => string;
   title: () => Promise<string>;
   on: ReturnType<typeof vi.fn>;
@@ -85,11 +85,11 @@ interface FakePage {
 }
 
 function buildFakePage(overrides: Partial<FakePage> = {}): FakePage {
+  const fence = createFakeNavigationFence({ url: () => 'https://example.test/' });
   return {
     goto: vi.fn().mockResolvedValue({ request: () => ({ redirectedFrom: () => null }) }),
     close: vi.fn().mockResolvedValue(undefined),
-    route: vi.fn().mockResolvedValue(undefined),
-    unroute: vi.fn().mockResolvedValue(undefined),
+    context: () => ({ newCDPSession: fence.newCDPSession }),
     url: () => 'https://example.test/',
     title: () => Promise.resolve('ok'),
     on: vi.fn(),

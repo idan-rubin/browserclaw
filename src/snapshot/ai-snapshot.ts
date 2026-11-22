@@ -1,11 +1,5 @@
 import { assertPageNavigationCompletedSafely } from '../actions/navigation.js';
-import {
-  getPageForTargetId,
-  ensurePageState,
-  storeRoleRefsForTarget,
-  normalizeTimeoutMs,
-  takeAiSnapshotText,
-} from '../connection.js';
+import { getPageForTargetId, ensurePageState, storeRoleRefsForTarget, normalizeTimeoutMs } from '../connection.js';
 import { NavigationRaceError, SnapshotHydrationError } from '../errors.js';
 import type { SnapshotResult, SnapshotOptions, SsrfPolicy } from '../types.js';
 
@@ -13,6 +7,7 @@ import { withSnapshotFrameGuard } from './capture-guard.js';
 import { enrichSnapshotFromDom, mergeSnapshotWithEnrichment, nextRefCounter } from './dom-enrichment.js';
 import { finalizeSnapshot } from './finalize.js';
 import { buildRoleSnapshotFromAiSnapshot } from './ref-map.js';
+import { takeRedactedAiSnapshotText } from './sensitive-field-values.js';
 
 const DEFAULT_HYDRATION_BUDGET_MS = 5000;
 const HYDRATION_POLL_INTERVAL_MS = 250;
@@ -73,7 +68,7 @@ export async function snapshotAi(opts: {
       for (;;) {
         assertCurrent();
         attempts += 1;
-        const snapshot = await takeAiSnapshotText(page, normalizeTimeoutMs(opts.timeoutMs, 5000, 60000));
+        const snapshot = await takeRedactedAiSnapshotText(page, normalizeTimeoutMs(opts.timeoutMs, 5000, 60000));
         assertCurrent();
         // Capture the URL the refs were built against. Used for contentMeta and
         // for race detection before we return.

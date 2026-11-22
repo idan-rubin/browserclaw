@@ -1,11 +1,21 @@
 import { chromium, type Browser, type ConnectOverCDPTransport } from 'playwright-core';
 
 import { cdpMessageText, closeCdpSocket, openPinnedCdpSocket, type CdpEndpoint } from './cdp-network.js';
+import { UnresponsiveCdpTargetError } from './errors.js';
+
+const MAX_DIAGNOSTIC_TARGETS = 3;
+const MAX_DIAGNOSTIC_TARGET_ID_CHARS = 128;
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function isConnectTimeout(error: unknown): boolean {
+  if (error instanceof Error && error.name === 'TimeoutError') return true;
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return message.includes('timeout') || message.includes('timed out');
 }
 
 /** Public Playwright transport API: our validated DNS pin owns the actual socket. */
@@ -22,6 +32,9 @@ export async function connectOverPinnedCdp(
   let closeNotified = false;
   let nextInternalId = -10_000;
   const pendingResumes = new Map<number, string>();
+  const attachedPageTargets = new Map<string, string>();
+  const pendingSessionCommands = new Map<number, string>();
+  let initializing = true;
   const close = (reason = 'CDP socket closed'): void => {
     if (closeReason !== undefined) return;
     closeReason = reason;
@@ -57,9 +70,15 @@ export async function connectOverPinnedCdp(
   const transport: ConnectOverCDPTransport = {
     send(message) {
       if (closeReason !== undefined) throw new Error('CDP transport closed');
+      const command = record(message);
+      const id = command?.id;
+      const sessionId = command?.sessionId;
+      if (initializing && typeof id === 'number' && id > 0 && typeof sessionId === 'string' && sessionId !== '')
+        pendingSessionCommands.set(id, sessionId);
       try {
         socket.send(JSON.stringify(message));
       } catch (error) {
+        if (typeof id === 'number') pendingSessionCommands.delete(id);
         close();
         throw error;
       }
@@ -103,6 +122,27 @@ export async function connectOverPinnedCdp(
         }
         return;
       }
+      if (typeof message.id === 'number') pendingSessionCommands.delete(message.id);
+      if (initializing && message.method === 'Target.attachedToTarget') {
+        const params = record(message.params);
+        const target = record(params?.targetInfo);
+        if (
+          typeof params?.sessionId === 'string' &&
+          params.sessionId !== '' &&
+          typeof target?.targetId === 'string' &&
+          target.targetId !== '' &&
+          target.targetId.length <= MAX_DIAGNOSTIC_TARGET_ID_CHARS &&
+          target.type === 'page'
+        )
+          attachedPageTargets.set(params.sessionId, target.targetId);
+      } else if (initializing && message.method === 'Target.detachedFromTarget') {
+        const detached = record(message.params)?.sessionId;
+        if (typeof detached === 'string' && detached !== '') {
+          attachedPageTargets.delete(detached);
+          for (const [id, sessionId] of pendingSessionCommands)
+            if (sessionId === detached) pendingSessionCommands.delete(id);
+        }
+      }
       if (
         message.method === 'Target.attachedToTarget' &&
         (typeof message.sessionId !== 'string' || message.sessionId === '')
@@ -132,9 +172,21 @@ export async function connectOverPinnedCdp(
     notifyClose(error.message);
   });
   try {
-    return await chromium.connectOverCDP(transport, { timeout: Math.max(1, deadline - Date.now()) });
+    const browser = await chromium.connectOverCDP(transport, { timeout: Math.max(1, deadline - Date.now()) });
+    initializing = false;
+    attachedPageTargets.clear();
+    pendingSessionCommands.clear();
+    return browser;
   } catch (error) {
     close();
+    if (isConnectTimeout(error)) {
+      const unresponsive = [
+        ...new Set(
+          [...pendingSessionCommands.values()].flatMap((sessionId) => attachedPageTargets.get(sessionId) ?? []),
+        ),
+      ].slice(0, MAX_DIAGNOSTIC_TARGETS);
+      if (unresponsive.length > 0) throw new UnresponsiveCdpTargetError(unresponsive);
+    }
     throw error;
   }
 }

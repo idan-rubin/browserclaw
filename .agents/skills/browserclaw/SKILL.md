@@ -98,6 +98,8 @@ await page.insertText('pasted text'); // inserts into the focused element withou
 
 **After typing — check for autocomplete before pressing Enter.** Re-snapshot and look for `combobox`, `listbox`, or suggestion items. If a dropdown appeared, click the right option; pressing Enter usually submits without selecting.
 
+**Password, one-time-code and card fields show `[redacted]` once they hold a value.** That confirms the field is filled; the snapshot never prints the secret, so do not retype it to "fix" the masked value.
+
 `type()` uses Playwright `fill()` by default, as does the text-field branch of `page.fill([...])`. Playwright `fill()` dispatches input events. Use `{ slowly: true }` when a site needs individual key events, such as key-driven autocomplete.
 
 ### Select (dropdowns)

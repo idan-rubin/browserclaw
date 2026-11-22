@@ -86,3 +86,23 @@ export class NavigationRaceError extends Error {
     this.toUrl = opts.toUrl;
   }
 }
+
+/**
+ * Thrown when connecting to a browser timed out because one of its page
+ * targets never answered Playwright's initialization commands.
+ *
+ * Retrying cannot help while the target is open: close it in the browser or
+ * provider dashboard, or restart the browser.
+ */
+export class UnresponsiveCdpTargetError extends Error {
+  /** Target ids of the pages that did not respond (at most three). */
+  readonly targetIds: string[];
+  constructor(targetIds: string[]) {
+    const ids = targetIds.map((id) => JSON.stringify(id)).join(', ');
+    super(
+      `Playwright connection timed out while page target${targetIds.length === 1 ? '' : 's'} ${ids} did not respond during initialization. Close the target in the browser or provider dashboard, then retry. If it cannot be closed there, restart the browser.`,
+    );
+    this.name = 'UnresponsiveCdpTargetError';
+    this.targetIds = targetIds;
+  }
+}

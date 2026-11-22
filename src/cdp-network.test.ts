@@ -10,6 +10,7 @@ import { connectOverPinnedCdp } from './cdp-transport.js';
 import { getChromeWebSocketUrl } from './chrome-launcher.js';
 import { startConnectionCdpServer } from './connection-cdp.test-support.js';
 import { connectBrowser, disconnectBrowser } from './connection.js';
+import { UnresponsiveCdpTargetError } from './errors.js';
 import { createPinnedLookup } from './security.js';
 
 const { dnsMock } = vi.hoisted(() => ({ dnsMock: vi.fn() }));
@@ -145,6 +146,36 @@ describe('pinned CDP network', () => {
       );
       expect(browser.isConnected()).toBe(true);
       await browser.close();
+    } finally {
+      await cdp.close();
+    }
+  });
+
+  it('names the page target that never answered initialization instead of a bare timeout', async () => {
+    const cdp = await startConnectionCdpServer({ unresponsive: 'page-target' });
+    try {
+      const connecting = connectOverPinnedCdp(
+        { url: `${cdp.httpUrl.replace('http:', 'ws:')}/devtools/browser/x` },
+        { timeoutMs: 700 },
+      );
+      await expect(connecting).rejects.toBeInstanceOf(UnresponsiveCdpTargetError);
+      await expect(connecting).rejects.toMatchObject({ targetIds: ['HUNG-TARGET'] });
+      expect(cdp.frames.some((frame) => frame.sessionId === 'hung-session')).toBe(true);
+    } finally {
+      await cdp.close();
+    }
+  });
+
+  it('control: a timeout with no pending page target stays a plain timeout', async () => {
+    const cdp = await startConnectionCdpServer({ unresponsive: 'browser' });
+    try {
+      const failure = await connectOverPinnedCdp(
+        { url: `${cdp.httpUrl.replace('http:', 'ws:')}/devtools/browser/x` },
+        { timeoutMs: 700 },
+      ).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(UnresponsiveCdpTargetError);
+      expect((failure as Error).message).toMatch(/timeout/i);
     } finally {
       await cdp.close();
     }

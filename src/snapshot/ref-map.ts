@@ -63,7 +63,7 @@ export const STRUCTURAL_ROLES = new Set([
   'none',
 ]);
 
-function getIndentLevel(line: string): number {
+export function getIndentLevel(line: string): number {
   const match = /^(\s*)/.exec(line);
   return match ? Math.floor(match[1].length / 2) : 0;
 }
@@ -108,6 +108,10 @@ export function parseSnapshotLine(line: string): ParsedSnapshotLine | null {
     ...(ref !== undefined && ref !== '' ? { ref } : {}),
     suffix: suffix + (quoted?.[2] ?? ''),
   };
+}
+
+export function parseAiSnapshotRef(ref: string | undefined): string | null {
+  return ref !== undefined && /^(?:f\d+)?e\d+$|^\d{1,9}$/i.test(ref) ? ref : null;
 }
 
 function withNestedText(line: string, lines: string[], index: number): string {
@@ -305,10 +309,6 @@ export function buildRoleSnapshotFromAiSnapshot(
 ): { snapshot: string; refs: RoleRefs } {
   const lines = aiSnapshot.split('\n');
   const refs: RoleRefs = {};
-
-  function parseAiSnapshotRef(ref: string | undefined): string | null {
-    return ref !== undefined && /^(?:f\d+)?e\d+$|^\d{1,9}$/i.test(ref) ? ref : null;
-  }
 
   if (options.interactive === true) {
     let interactiveMaxRef = 0;

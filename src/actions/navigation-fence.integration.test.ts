@@ -1,0 +1,251 @@
+import { existsSync } from 'node:fs';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+
+import { chromium, type Browser, type Page } from 'playwright-core';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type * as Connection from '../connection.js';
+import { InvalidBrowserNavigationUrlError } from '../security.js';
+import type { SsrfPolicy } from '../types.js';
+
+const mocks = vi.hoisted(() => ({ page: vi.fn<() => Promise<Page>>() }));
+vi.mock('../connection.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof Connection>()),
+  getPageForTargetId: mocks.page,
+}));
+import { navigateViaPlaywright, withPageNavigationRequestGuard } from './navigation.js';
+
+const executablePath = [chromium.executablePath(), '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].find(
+  existsSync,
+);
+
+const cdpUrl = 'test';
+// `localhost` is exempted by name; the same server reached as 127.0.0.1 stays private.
+const strict: SsrfPolicy = { allowedHostnames: ['localhost'] };
+// Two exempt sites let a frame live in its own process while [::1] stays private.
+const twoSites: SsrfPolicy = { allowedHostnames: ['localhost', '127.0.0.1'] };
+const permissive: SsrfPolicy = { dangerouslyAllowPrivateNetwork: true };
+
+interface Hits {
+  secret: number;
+  preflight: number;
+  api: number;
+}
+
+function listen(server: Server, host = '127.0.0.1'): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, host, () => {
+      resolve((server.address() as AddressInfo).port);
+    });
+  });
+}
+
+function close(server: Server): Promise<void> {
+  return new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(() => {
+      resolve();
+    });
+  });
+}
+
+const probe = createServer();
+const hasIpv6Loopback = await listen(probe, '::1').then(
+  () => true,
+  () => false,
+);
+await close(probe);
+
+describe.skipIf(executablePath === undefined)('navigation authority fence (real Chromium)', () => {
+  let browser: Browser;
+  let page: Page;
+  let site: Server;
+  let site6: Server;
+  let api: Server;
+  let allowed: string;
+  let denied: string;
+  let denied6: string;
+  let apiOrigin: string;
+  const hits: Hits = { secret: 0, preflight: 0, api: 0 };
+
+  const html = (res: ServerResponse, body: string): void => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(`<!doctype html><title>fence</title>${body}`);
+  };
+
+  beforeAll(async () => {
+    const serveSite = (req: IncomingMessage, res: ServerResponse): void => {
+      const url = new URL(req.url ?? '/', 'http://placeholder');
+      const to = url.searchParams.get('to') ?? '';
+      switch (url.pathname) {
+        case '/secret':
+          hits.secret += 1;
+          html(res, '<p id="secret">internal</p>');
+          return;
+        case '/redirect':
+          res.writeHead(302, { location: to });
+          res.end();
+          return;
+        case '/later':
+          html(res, `<p>source</p><script>setTimeout(() => { location.href = ${JSON.stringify(to)}; }, 150);</script>`);
+          return;
+        case '/frame-host':
+          html(res, `<p>host</p><iframe src=${JSON.stringify(to)}></iframe>`);
+          return;
+        default:
+          html(res, '<p>home</p>');
+      }
+    };
+    site = createServer(serveSite);
+    site6 = createServer(serveSite);
+    api = createServer((req: IncomingMessage, res: ServerResponse) => {
+      const cors = {
+        'access-control-allow-origin': req.headers.origin ?? '*',
+        'access-control-allow-methods': 'PUT',
+        'access-control-allow-headers': 'content-type',
+      };
+      if (req.method === 'OPTIONS') {
+        hits.preflight += 1;
+        res.writeHead(204, cors);
+        res.end();
+        return;
+      }
+      hits.api += 1;
+      res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    const [sitePort, apiPort] = await Promise.all([listen(site), listen(api)]);
+    allowed = `http://localhost:${String(sitePort)}`;
+    denied = `http://127.0.0.1:${String(sitePort)}`;
+    if (hasIpv6Loopback) denied6 = `http://[::1]:${String(await listen(site6, '::1'))}`;
+    apiOrigin = `http://localhost:${String(apiPort)}`;
+    browser = await chromium.launch({ headless: true, executablePath });
+  });
+  beforeEach(async () => {
+    hits.secret = 0;
+    hits.preflight = 0;
+    hits.api = 0;
+    page = await browser.newPage();
+    mocks.page.mockResolvedValue(page);
+  });
+  afterEach(async () => {
+    await page.close().catch(() => undefined);
+  });
+  afterAll(async () => {
+    await browser.close();
+    await Promise.all([close(site), close(site6), close(api)]);
+  });
+
+  const redirectTo = (target: string): string => `${allowed}/redirect?to=${encodeURIComponent(target)}`;
+
+  it('never sends a redirect hop the policy denies', async () => {
+    await expect(
+      navigateViaPlaywright({ cdpUrl, url: redirectTo(`${denied}/secret`), ssrfPolicy: strict }),
+    ).rejects.toBeInstanceOf(InvalidBrowserNavigationUrlError);
+    expect(hits.secret).toBe(0);
+  });
+
+  it('control: the same redirect reaches its target under a policy that allows it', async () => {
+    const result = await navigateViaPlaywright({
+      cdpUrl,
+      url: redirectTo(`${denied}/secret`),
+      ssrfPolicy: permissive,
+    });
+    expect(result.url).toBe(`${denied}/secret`);
+    expect(hits.secret).toBe(1);
+  });
+
+  it('stops a denied document the page requests between actions and keeps the source', async () => {
+    const source = `${allowed}/later?to=${encodeURIComponent(`${denied}/secret`)}`;
+    await navigateViaPlaywright({ cdpUrl, url: source, ssrfPolicy: strict });
+    await page.waitForTimeout(600);
+    expect(hits.secret).toBe(0);
+    expect(page.url()).toBe(source);
+    expect(await page.locator('p').textContent()).toBe('source');
+  });
+
+  it('control: an allowed document the page requests between actions still loads', async () => {
+    const source = `${allowed}/later?to=${encodeURIComponent(`${denied}/secret`)}`;
+    await navigateViaPlaywright({ cdpUrl, url: source, ssrfPolicy: permissive });
+    await page.waitForURL(`${denied}/secret`);
+    expect(hits.secret).toBe(1);
+  });
+
+  it('stops a denied subframe document without failing the top-level navigation', async () => {
+    const host = `${allowed}/frame-host?to=${encodeURIComponent(redirectTo(`${denied}/secret`))}`;
+    const result = await navigateViaPlaywright({ cdpUrl, url: host, ssrfPolicy: strict });
+    await page.waitForTimeout(600);
+    expect(result.url).toBe(host);
+    expect(hits.secret).toBe(0);
+    expect(await page.locator('p').textContent()).toBe('host');
+  });
+
+  const separatelyHostedFrame = async (): Promise<boolean> => {
+    const session = await browser.newBrowserCDPSession();
+    const { targetInfos } = await session.send('Target.getTargets');
+    await session.detach();
+    return targetInfos.some((target) => target.type === 'iframe' && target.url.startsWith(denied));
+  };
+
+  describe.skipIf(!hasIpv6Loopback)('separately hosted iframes', () => {
+    const hostWithSelfNavigatingFrame = (): string =>
+      `${allowed}/frame-host?to=${encodeURIComponent(`${denied}/later?to=${encodeURIComponent(`${denied6}/secret`)}`)}`;
+
+    it('stops a denied document the frame requests between actions', async () => {
+      await navigateViaPlaywright({ cdpUrl, url: hostWithSelfNavigatingFrame(), ssrfPolicy: twoSites });
+      await page.waitForTimeout(800);
+      expect(await separatelyHostedFrame()).toBe(true);
+      expect(hits.secret).toBe(0);
+    });
+
+    it('control: the frame reaches the same document under a policy that allows it', async () => {
+      await navigateViaPlaywright({ cdpUrl, url: hostWithSelfNavigatingFrame(), ssrfPolicy: permissive });
+      await page.frames()[1]?.waitForURL(`${denied6}/secret`);
+      expect(hits.secret).toBe(1);
+    });
+
+    it('refuses a guarded action that sends the frame to a denied document', async () => {
+      const host = `${allowed}/frame-host?to=${encodeURIComponent(`${denied}/`)}`;
+      await navigateViaPlaywright({ cdpUrl, url: host, ssrfPolicy: twoSites });
+      await page.frames()[1]?.waitForURL(`${denied}/`);
+      expect(await separatelyHostedFrame()).toBe(true);
+      await expect(
+        withPageNavigationRequestGuard({
+          cdpUrl,
+          page,
+          ssrfPolicy: twoSites,
+          action: async () => {
+            await page.frames()[1]?.evaluate((url) => {
+              location.href = url;
+            }, `${denied6}/secret`);
+            await page.waitForTimeout(400);
+          },
+        }),
+      ).rejects.toBeInstanceOf(InvalidBrowserNavigationUrlError);
+      expect(hits.secret).toBe(0);
+    });
+  });
+
+  it('leaves CORS preflights to the server during a guarded action', async () => {
+    await navigateViaPlaywright({ cdpUrl, url: `${allowed}/`, ssrfPolicy: strict });
+    const status = await withPageNavigationRequestGuard({
+      cdpUrl,
+      page,
+      ssrfPolicy: strict,
+      action: () =>
+        page.evaluate(async (url) => {
+          const response = await fetch(url, {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: '{}',
+          });
+          return response.status;
+        }, `${apiOrigin}/api`),
+    });
+    expect(status).toBe(200);
+    expect(hits.api).toBe(1);
+    expect(hits.preflight).toBe(1);
+  });
+});

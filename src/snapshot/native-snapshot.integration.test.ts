@@ -100,4 +100,29 @@ describe.skipIf(executablePath === undefined)('native snapshot capture (real Chr
     expect(boundedAi.truncated).toBe(true);
     for (const ref of Object.keys(boundedAi.refs)) expect(boundedAi.snapshot).toContain(`[ref=${ref}]`);
   });
+
+  describe('sensitive field values', () => {
+    const form =
+      '<input aria-label="Password" type="password" value="hunter2-secret">' +
+      '<input aria-label="Code" autocomplete="one-time-code" value="246810-otp">' +
+      '<input aria-label="Card" placeholder="Card number" autocomplete="section-pay cc-number" value="4111-card">' +
+      '<input aria-label="City" value="Lisbon-visible">';
+    const captures = {
+      ai: async () => (await snapshotAi({ cdpUrl: 'test' })).snapshot,
+      'aria refs': async () => (await snapshotRole({ cdpUrl: 'test', refsMode: 'aria' })).snapshot,
+      role: async () => (await snapshotRole({ cdpUrl: 'test' })).snapshot,
+      'aria tree': async () => JSON.stringify((await snapshotAria({ cdpUrl: 'test' })).nodes),
+    };
+
+    it.each(Object.keys(captures) as (keyof typeof captures)[])(
+      'masks them in a %s snapshot and keeps ordinary values',
+      async (mode) => {
+        await page.setContent(form);
+        const captured = await captures[mode]();
+        for (const secret of ['hunter2-secret', '246810-otp', '4111-card']) expect(captured).not.toContain(secret);
+        expect(captured).toContain('[redacted]');
+        expect(captured).toContain('Lisbon-visible');
+      },
+    );
+  });
 });

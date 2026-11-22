@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import type { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
 
@@ -68,7 +69,7 @@ export function processExists(pid: number): boolean {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EPERM') return false;
   }
-  return process.platform !== 'linux' || !isExitedLinuxProcess(pid);
+  return (process.platform !== 'linux' && process.platform !== 'android') || !isExitedLinuxProcess(pid);
 }
 
 export function clearChromeSingletonArtifacts(userDataDir: string): void {
@@ -130,6 +131,19 @@ async function waitForChromeProcessExit(proc: ChildProcess, timeoutMs: number): 
     proc.once('exit', onExit);
     proc.once('close', onExit);
     if (processHasExited(proc)) onExit();
+  });
+}
+
+async function waitForStreamClose(stream: Readable, timeoutMs: number): Promise<void> {
+  if (stream.destroyed || stream.readableEnded) return;
+  await new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      stream.off('close', done);
+      resolve();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    stream.once('close', done);
   });
 }
 
@@ -533,23 +547,24 @@ function findChromeLinux(): ChromeExecutable | null {
     { kind: 'chromium', path: '/snap/bin/chromium' },
     { kind: 'chromium', path: '/usr/lib/chromium/chromium' },
     { kind: 'chromium', path: '/usr/lib/chromium-browser/chromium-browser' },
-    ...findPlaywrightChromiumCandidates(),
   ]);
 }
 
-function findPlaywrightChromiumCandidates(): ChromeExecutable[] {
+function playwrightCacheDirs(platform: NodeJS.Platform): string[] {
+  const p = platform === 'win32' ? path.win32 : path;
   const configured = getPlaywrightEnv('PLAYWRIGHT_BROWSERS_PATH');
-  const configuredCacheHome = process.env.XDG_CACHE_HOME;
   const cacheHome =
-    configuredCacheHome !== undefined && configuredCacheHome !== ''
-      ? configuredCacheHome
-      : path.join(os.homedir(), '.cache');
-  const cachePaths = [path.join(cacheHome, 'ms-playwright')];
+    platform === 'darwin'
+      ? p.join(os.homedir(), 'Library', 'Caches')
+      : platform === 'win32'
+        ? (nonEmptyEnvironmentValue('LOCALAPPDATA') ?? p.join(os.homedir(), 'AppData', 'Local'))
+        : (nonEmptyEnvironmentValue('XDG_CACHE_HOME') ?? p.join(os.homedir(), '.cache'));
+  const cachePaths = [p.join(cacheHome, 'ms-playwright')];
   if (configured === '0') {
     try {
       const requireFromModule = createRequire(typeof __filename === 'string' ? __filename : import.meta.url);
       const packageRoot = path.dirname(requireFromModule.resolve('playwright-core/package.json'));
-      cachePaths.unshift(path.join(packageRoot, '.local-browsers'));
+      cachePaths.unshift(p.join(packageRoot, '.local-browsers'));
     } catch (err) {
       console.warn(
         `[browserclaw] Could not locate package-local Playwright browsers: ${err instanceof Error ? err.message : String(err)}`,
@@ -558,23 +573,50 @@ function findPlaywrightChromiumCandidates(): ChromeExecutable[] {
   } else if (configured !== undefined && configured !== '') cachePaths.unshift(configured);
   const configuredBase = getPlaywrightEnv('INIT_CWD');
   const base = configuredBase !== undefined && configuredBase !== '' ? configuredBase : process.cwd();
-  const cacheDirs = new Set(cachePaths.map((candidate) => path.resolve(base, candidate)));
-  const candidates: ChromeExecutable[] = [];
-  for (const cacheDir of cacheDirs) {
-    let entries: string[];
+  return [...new Set(cachePaths.map((candidate) => p.resolve(base, candidate)))];
+}
+
+function findPlaywrightChromium(platform: NodeJS.Platform): ChromeExecutable | null {
+  if (platform !== 'linux' && platform !== 'darwin' && platform !== 'win32') return null;
+  const join = platform === 'win32' ? path.win32.join : path.join;
+  const appleSilicon = platform === 'darwin' && os.cpus().some((cpu) => cpu.model.includes('Apple'));
+  const layouts =
+    platform === 'linux'
+      ? [
+          [`chrome-${process.arch === 'arm64' ? 'linux-arm64' : 'linux64'}`, 'chrome'],
+          ['chrome-linux', 'chrome'],
+        ]
+      : platform === 'darwin'
+        ? [
+            [
+              `chrome-mac-${appleSilicon ? 'arm64' : 'x64'}`,
+              'Google Chrome for Testing.app',
+              'Contents',
+              'MacOS',
+              'Google Chrome for Testing',
+            ],
+            ['chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'],
+          ]
+        : [
+            ['chrome-win64', 'chrome.exe'],
+            ['chrome-win', 'chrome.exe'],
+          ];
+  for (const cacheDir of playwrightCacheDirs(platform)) {
+    let revisions: string[];
     try {
-      entries = fs.readdirSync(cacheDir).sort();
+      revisions = fs.readdirSync(cacheDir).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
     } catch {
       continue;
     }
-    for (const entry of entries) {
-      if (!entry.startsWith('chromium-')) continue;
-      for (const layout of ['chrome-linux64', 'chrome-linux', 'chrome-linux-arm64']) {
-        candidates.push({ kind: 'chromium', path: path.join(cacheDir, entry, layout, 'chrome') });
+    for (const revision of revisions) {
+      if (!revision.startsWith('chromium-')) continue;
+      for (const layout of layouts) {
+        const candidate = join(cacheDir, revision, ...layout);
+        if (isExecutable(candidate)) return { kind: 'chromium', path: candidate };
       }
     }
   }
-  return candidates;
+  return null;
 }
 
 function getPlaywrightEnv(name: string): string | undefined {
@@ -718,9 +760,11 @@ export function resolveBrowserExecutable(opts?: { executablePath?: string }): Ch
     return { kind: 'custom', path: directPath };
   }
   const platform = process.platform;
-  if (platform === 'darwin') return detectDefaultChromiumMac() ?? findChromeMac();
-  if (platform === 'linux') return detectDefaultChromiumLinux() ?? findChromeLinux();
-  if (platform === 'win32') return detectDefaultChromiumWindows() ?? findChromeWindows();
+  if (platform === 'darwin') return detectDefaultChromiumMac() ?? findChromeMac() ?? findPlaywrightChromium(platform);
+  if (platform === 'linux')
+    return detectDefaultChromiumLinux() ?? findChromeLinux() ?? findPlaywrightChromium(platform);
+  if (platform === 'win32')
+    return detectDefaultChromiumWindows() ?? findChromeWindows() ?? findPlaywrightChromium(platform);
   return null;
 }
 
@@ -1412,6 +1456,10 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   const exe = resolveBrowserExecutable({ executablePath: opts.executablePath });
   if (!exe)
     throw new Error('No supported browser found (Chrome/Brave/Edge/Chromium). Install one or provide executablePath.');
+  if (opts.headless !== true && /(?:^|[\\/])(?:chrome-headless-shell|headless_shell)(?:\.exe)?$/i.test(exe.path))
+    throw new Error(
+      'Chromium headless shell cannot open a headed window; use headless mode or a full Chromium executable.',
+    );
 
   const isolated = opts.isolated;
   const isolatedResolved = isolated === undefined || isolated === false ? null : resolveIsolatedProfile(isolated);
@@ -1422,7 +1470,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
   const localStatePath = path.join(userDataDir, 'Local State');
   const preferencesPath = path.join(userDataDir, 'Default', 'Preferences');
   const profileIsNew = !fileExists(localStatePath);
-  const needsBootstrap = profileIsNew || !fileExists(preferencesPath);
+  const needsBootstrap = opts.headless !== true && (profileIsNew || !fileExists(preferencesPath));
   const useMockKeychain =
     process.platform === 'darwin' &&
     (usesBrowserclawMockKeychain(userDataDir) || (profileIsNew && opts.headless === true));
@@ -1505,15 +1553,34 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
     };
     proc.stderr.on('data', onStderr);
 
+    const exited = () => processHasExited(proc);
     const readyDeadline = Date.now() + 15000;
     let pollDelay = 200;
+    let ready = false;
     while (Date.now() < readyDeadline) {
-      if (await isChromeCdpReady(cdpUrl, 500)) break;
+      if (exited()) break;
+      const reachable = await isChromeCdpReady(cdpUrl, 500);
+      if (exited()) break;
+      if (reachable) {
+        ready = true;
+        break;
+      }
       await new Promise((r) => setTimeout(r, pollDelay));
       pollDelay = Math.min(pollDelay + 100, 1000);
     }
 
-    if (!(await isChromeCdpReady(cdpUrl, 500))) {
+    let exitDetail = '';
+    if (!ready) {
+      const reachable = !exited() && (await isChromeCdpReady(cdpUrl, 500));
+      if (exited()) {
+        await waitForStreamClose(proc.stderr, 200);
+        exitDetail = ` Chrome process exited before CDP became ready (code ${String(proc.exitCode)}, signal ${String(proc.signalCode)}).`;
+      } else {
+        ready = reachable;
+      }
+    }
+
+    if (!ready) {
       const stderrOutput = stderrDiagnostics.text().trim();
       if (
         allowSingletonRecovery &&
@@ -1537,7 +1604,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
         const lockFile = path.join(userDataDir, 'SingletonLock');
         if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
       } catch {}
-      throw new Error(`Failed to start Chrome CDP on port ${String(cdpPort)}.${sandboxHint}${stderrHint}`);
+      throw new Error(`Failed to start Chrome CDP on port ${String(cdpPort)}.${exitDetail}${sandboxHint}${stderrHint}`);
     }
 
     proc.stderr.off('data', onStderr);
