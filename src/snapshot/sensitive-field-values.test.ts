@@ -62,7 +62,7 @@ describe('takeRedactedAiSnapshotText', () => {
       ariaSnapshot: () => Promise.resolve(snapshot),
       locator: (selector: string) => ({
         count: () => Promise.resolve(present),
-        and: () => ({ count: () => ordinary(selector) }),
+        locator: () => ({ count: () => ordinary(selector) }),
       }),
     }) as unknown as Page;
 

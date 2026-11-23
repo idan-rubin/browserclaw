@@ -4,6 +4,7 @@ import { chromium, type Browser, type Page } from 'playwright-core';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as Connection from '../connection.js';
+import { takeAiSnapshotText } from '../connection.js';
 import { getPageState } from '../page-utils.js';
 import { refLocator } from '../ref-resolver.js';
 
@@ -15,6 +16,7 @@ vi.mock('../connection.js', async (importOriginal) => ({
 
 import { snapshotAi } from './ai-snapshot.js';
 import { snapshotRole, snapshotAria } from './aria-snapshot.js';
+import { takeRedactedAiSnapshotText } from './sensitive-field-values.js';
 
 const executablePath = [chromium.executablePath(), '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].find(
   existsSync,
@@ -124,6 +126,27 @@ describe.skipIf(executablePath === undefined)('native snapshot capture (real Chr
         expect(captured).toContain('Lisbon-visible');
       },
     );
+
+    it('classifies each field against its own element, not the whole document', async () => {
+      await page.setContent(
+        Array.from(
+          { length: 200 },
+          (_, i) => `<input aria-label="Field ${String(i)}" value="value-${String(i)}">`,
+        ).join('') +
+          '<input aria-label="Password" type="password" value="hunter2-secret">' +
+          `<table>${Array.from({ length: 2000 }, (_, i) => `<tr><td>row ${String(i)}</td><td>cell</td></tr>`).join('')}</table>`,
+      );
+      const timed = async (run: () => Promise<string>): Promise<{ text: string; ms: number }> => {
+        const start = performance.now();
+        const text = await run();
+        return { text, ms: performance.now() - start };
+      };
+      const plain = await timed(() => takeAiSnapshotText(page, 30_000));
+      const redacted = await timed(() => takeRedactedAiSnapshotText(page, 30_000));
+      expect(redacted.text).not.toContain('hunter2-secret');
+      expect(redacted.text).toContain('value-150');
+      expect(redacted.ms).toBeLessThan(plain.ms * 5 + 250);
+    });
 
     it.each(Object.keys(captures) as (keyof typeof captures)[])(
       'masks them in a %s snapshot when the page overrides its own attribute reads',

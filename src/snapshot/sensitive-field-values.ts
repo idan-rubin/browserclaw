@@ -116,11 +116,11 @@ export const ORDINARY_FIELD_SELECTOR = `:not(${[
 export async function takeRedactedAiSnapshotText(page: Page, timeoutMs: number): Promise<string> {
   const deadline = performance.now() + timeoutMs;
   return await redactAiSnapshotFieldValues(await takeAiSnapshotText(page, timeoutMs), async (ref) => {
-    const field = page.locator(`aria-ref=${ref}`);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const ordinary = await Promise.race([
-        field.and(page.locator(ORDINARY_FIELD_SELECTOR)).count(),
+        // Scoped to the referenced element; intersecting with a page-wide locator rescans the document per field.
+        page.locator(`aria-ref=${ref}`).locator(`:scope${ORDINARY_FIELD_SELECTOR}`).count(),
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
             () => {
