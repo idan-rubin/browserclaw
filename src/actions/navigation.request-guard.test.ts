@@ -414,6 +414,18 @@ describe('interaction request policy enforcement', () => {
       expect(await dispatch('http://8.8.8.8/go')).toEqual({ continued: true });
       expect(await dispatch('http://127.0.0.1/secret')).toEqual(blockedPage);
     });
+
+    it('works on a runtime without URL.parse', async () => {
+      const { page, dispatch } = fixture();
+      const parse = Object.getOwnPropertyDescriptor(URL, 'parse');
+      Object.defineProperty(URL, 'parse', { value: undefined, configurable: true, writable: true });
+      try {
+        await settleFirstAction(page);
+        expect(await dispatch('http://8.8.8.8/go')).toEqual({ continued: true });
+      } finally {
+        if (parse) Object.defineProperty(URL, 'parse', parse);
+      }
+    });
   });
 
   describe('a frame at an origin no policy check has passed', () => {

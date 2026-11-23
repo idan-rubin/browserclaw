@@ -106,8 +106,8 @@ export function isRetiredFetchInterceptionError(error: unknown): boolean {
 }
 
 function networkOrigin(url: string): string | undefined {
-  const origin = URL.parse(url)?.origin;
-  return origin !== undefined && origin !== 'null' ? origin : undefined;
+  const origin = URL.canParse(url) ? new URL(url).origin : 'null';
+  return origin !== 'null' ? origin : undefined;
 }
 
 function createStandingNavigationPolicy() {
