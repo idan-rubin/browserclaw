@@ -127,6 +127,21 @@ describe.skipIf(executablePath === undefined)('native snapshot capture (real Chr
       },
     );
 
+    it.each(Object.keys(captures) as (keyof typeof captures)[])(
+      'masks text nested inside a sensitive editable field in a %s snapshot',
+      async (mode) => {
+        const editable = 'role="textbox" contenteditable="true"';
+        await page.setContent(
+          `<div ${editable} aria-label="Code" autocomplete="one-time-code"><p>246810-otp</p>` +
+            '<ul><li>again <a href="https://example.test/">246810-link</a></li></ul></div>' +
+            `<div ${editable} aria-label="Notes"><p>Lisbon-visible</p></div>`,
+        );
+        const captured = await captures[mode]();
+        expect(captured).not.toContain('246810');
+        expect(captured).toContain('Lisbon-visible');
+      },
+    );
+
     it('classifies each field against its own element, not the whole document', async () => {
       await page.setContent(
         Array.from(

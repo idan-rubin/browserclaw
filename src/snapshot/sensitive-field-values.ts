@@ -73,37 +73,55 @@ export async function redactSensitiveAXNodeValues(session: CDPSession, nodes: AX
   );
 }
 
+const SNAPSHOT_LINE_NAME = /^(\s*-\s+'?\w+\s+)"(?:\\.|[^"\\])*"/;
+
+function snapshotLineText(line: string): { rest: string; inline: boolean; named: boolean } | null {
+  const parsed = parseSnapshotLine(line);
+  if (!parsed) return null;
+  const attributes = /^(?:\s+\[[^\][]*\])*/.exec(parsed.suffix)?.[0] ?? '';
+  const rest = parsed.suffix.slice(attributes.length);
+  return { rest, inline: /^: \S/.test(rest) && line.endsWith(rest), named: SNAPSHOT_LINE_NAME.test(line) };
+}
+
 export async function redactAiSnapshotFieldValues(
   aiSnapshot: string,
   isSensitive: (ref: string) => Promise<boolean>,
 ): Promise<string> {
   const lines = aiSnapshot.split('\n');
-  const fields: { ref: string | null; values: { index: number; head: string }[] }[] = [];
+  const fields: { ref: string | null; own: number[]; nested: number[] }[] = [];
   for (const [index, line] of lines.entries()) {
     const parsed = parseSnapshotLine(line);
     if (!parsed || !VALUE_FIELD_ROLES.has(parsed.role)) continue;
-    const attributes = /^(?:\s+\[[^\][]*\])*/.exec(parsed.suffix)?.[0] ?? '';
-    const rest = parsed.suffix.slice(attributes.length);
-    const values: { index: number; head: string }[] = [];
-    if (/^: \S/.test(rest) && line.endsWith(rest)) {
-      values.push({ index, head: line.slice(0, line.length - rest.length + 2) });
-    } else if (rest === ':') {
+    const text = snapshotLineText(line);
+    const own = text?.inline === true ? [index] : [];
+    const nested: number[] = [];
+    if (text?.rest === ':') {
+      // An editable field prints its content as descendants of any role, at any depth.
       const childDepth = getIndentLevel(line) + 1;
-      for (let i = index + 1; i < lines.length; i += 1) {
-        const depth = getIndentLevel(lines[i]);
-        if (depth < childDepth) break;
-        const text = /^\s*- text: /.exec(lines[i]);
-        if (text && depth === childDepth) values.push({ index: i, head: text[0] });
+      for (let i = index + 1; i < lines.length && getIndentLevel(lines[i]) >= childDepth; i += 1) {
+        const child = snapshotLineText(lines[i]);
+        if (child?.inline === true || child?.named === true) nested.push(i);
       }
     }
-    if (values.length > 0) fields.push({ ref: parseAiSnapshotRef(parsed.ref), values });
+    if (own.length + nested.length > 0) fields.push({ ref: parseAiSnapshotRef(parsed.ref), own, nested });
   }
+  const values = new Set<number>();
+  const names = new Set<number>();
   await Promise.all(
-    fields.map(async ({ ref, values }) => {
+    fields.map(async ({ ref, own, nested }) => {
       if (ref !== null && !(await isSensitive(ref))) return;
-      for (const { index, head } of values) lines[index] = `${head}${REDACTED_FIELD_VALUE}`;
+      for (const index of [...own, ...nested]) values.add(index);
+      // A field that cannot be inspected loses its text; the names under it are mostly the options of a select.
+      if (ref !== null) for (const index of nested) names.add(index);
     }),
   );
+  for (const index of values) {
+    let line = lines[index];
+    const text = snapshotLineText(line);
+    if (text?.inline === true) line = `${line.slice(0, line.length - text.rest.length + 2)}${REDACTED_FIELD_VALUE}`;
+    if (names.has(index)) line = line.replace(SNAPSHOT_LINE_NAME, `$1"${REDACTED_FIELD_VALUE}"`);
+    lines[index] = line;
+  }
   return lines.join('\n');
 }
 

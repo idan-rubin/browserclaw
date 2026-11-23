@@ -49,6 +49,49 @@ describe('redactAiSnapshotFieldValues', () => {
     expect(isSensitive.mock.calls.map(([ref]) => ref).sort()).toEqual(['e2', 'e3', 'e4']);
   });
 
+  it('masks the text and names a sensitive field prints as descendants, at any depth', async () => {
+    const rich = [
+      '- textbox "Code" [ref=e2]:',
+      '  - paragraph [ref=e3]: 246810',
+      '  - list [ref=e4]:',
+      '    - listitem [ref=e5]:',
+      '      - text: 246',
+      '      - link "810" [ref=e6]:',
+      '        - /url: https://example.test/',
+      '  - \'paragraph [ref=e7]\': "code: 246810"',
+      '- textbox "Notes" [ref=e8]:',
+      '  - paragraph [ref=e9]: Lisbon',
+      '- combobox "Plan" [ref=e10]:',
+      '  - option "Monthly" [selected]',
+      '- combobox "Unbound":',
+      '  - option "Visa" [selected]',
+      '- textbox "Unbound":',
+      '  - paragraph: orphan',
+      '- button "246810" [ref=e11]',
+    ].join('\n');
+    const isSensitive = vi.fn((ref: string) => Promise.resolve(ref === 'e2'));
+    expect((await redactAiSnapshotFieldValues(rich, isSensitive)).split('\n')).toEqual([
+      '- textbox "Code" [ref=e2]:',
+      '  - paragraph [ref=e3]: [redacted]',
+      '  - list [ref=e4]:',
+      '    - listitem [ref=e5]:',
+      '      - text: [redacted]',
+      '      - link "[redacted]" [ref=e6]:',
+      '        - /url: https://example.test/',
+      "  - 'paragraph [ref=e7]': [redacted]",
+      '- textbox "Notes" [ref=e8]:',
+      '  - paragraph [ref=e9]: Lisbon',
+      '- combobox "Plan" [ref=e10]:',
+      '  - option "Monthly" [selected]',
+      '- combobox "Unbound":',
+      '  - option "Visa" [selected]',
+      '- textbox "Unbound":',
+      '  - paragraph: [redacted]',
+      '- button "246810" [ref=e11]',
+    ]);
+    expect(isSensitive.mock.calls.map(([ref]) => ref)).toEqual(['e2', 'e8', 'e10']);
+  });
+
   it('control: leaves every value in place when no field is sensitive', async () => {
     const redacted = await redactAiSnapshotFieldValues(snapshot, () => Promise.resolve(false));
     expect(redacted).toBe(snapshot.replace('orphan-value', '[redacted]'));
