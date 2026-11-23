@@ -455,6 +455,24 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
         expect(hits.secret).toBe(0);
       });
 
+      it('stops the frame once a stricter policy replaces the one that let it load', async () => {
+        await navigateViaPlaywright({
+          cdpUrl,
+          url: route(allowed, '/frame-host', `${denied}/inner`),
+          ssrfPolicy: permissive,
+        });
+        await page.frames()[1]?.waitForURL(`${denied}/inner`);
+        await assertInteractionNavigationCompletedSafely({
+          cdpUrl,
+          page,
+          previousUrl: page.url(),
+          ssrfPolicy: strict,
+          action: () => Promise.resolve(),
+        });
+        await frameAsksForMore();
+        expect(hits.secret).toBe(0);
+      });
+
       it('control: the frame loads it under a policy that allows the origin', async () => {
         await attachWithFrame(permissive);
         await frameAsksForMore();

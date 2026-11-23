@@ -111,6 +111,7 @@ function networkOrigin(url: string): string | undefined {
 
 function createStandingNavigationPolicy() {
   let policy: BrowserNavigationPolicyOptions | undefined;
+  let policyKey: string | undefined;
   let warned = false;
   const committedOrigins = new Map<string, string>();
   // A frame can already sit at an origin when the tab is fenced; only a passed check makes that origin exempt.
@@ -131,8 +132,13 @@ function createStandingNavigationPolicy() {
   };
   return {
     set({ standingSsrfPolicy, browserProxyMode }: BrowserNavigationPolicyOptions): void {
-      if (standingSsrfPolicy)
-        policy = { ssrfPolicy: standingSsrfPolicy, ...(browserProxyMode ? { browserProxyMode } : {}) };
+      if (!standingSsrfPolicy) return;
+      const next = { ssrfPolicy: standingSsrfPolicy, ...(browserProxyMode ? { browserProxyMode } : {}) };
+      const key = JSON.stringify(next);
+      // An origin that passed under another policy has not passed under this one.
+      if (key !== policyKey) checkedOrigins.clear();
+      policyKey = key;
+      policy = next;
     },
     frameCommitted,
     seed,

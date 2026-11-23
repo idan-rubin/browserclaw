@@ -386,6 +386,22 @@ describe('interaction request policy enforcement', () => {
       expect(await dispatch('http://127.0.0.1/secret', { subframe: true })).toEqual(preserved);
     });
 
+    it('is checked again once a stricter policy replaces the one that passed its origin', async () => {
+      const { page, fence, dispatch } = fixture();
+      await withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+        action: async () => {
+          expect(await dispatch('http://127.0.0.1/inner', { subframe: true })).toEqual({ continued: true });
+        },
+      });
+      fence.emit('Page.frameNavigated', { frame: { id: 'subframe', url: 'http://127.0.0.1/inner' } });
+      expect(await dispatch('http://127.0.0.1/more', { subframe: true })).toEqual({ continued: true });
+      await settleFirstAction(page);
+      expect(await dispatch('http://127.0.0.1/secret', { subframe: true })).toEqual(preserved);
+    });
+
     it('control: skips the check once a document for that origin has passed one', async () => {
       const { page, fence, dispatch } = fixture();
       await withPageNavigationRequestGuard({
