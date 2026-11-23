@@ -90,6 +90,7 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
     const serveSite = (req: IncomingMessage, res: ServerResponse): void => {
       const url = new URL(req.url ?? '/', 'http://placeholder');
       const to = targets.get(url.searchParams.get('to') ?? '') ?? '';
+      const quiet = url.searchParams.has('quiet') ? '<meta name="referrer" content="no-referrer">' : '';
       switch (url.pathname) {
         case '/secret':
           hits.secret += 1;
@@ -119,13 +120,13 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
         case '/replace':
           html(
             res,
-            `<p data-next=${JSON.stringify(to)}>source</p><script>location.replace(document.querySelector('p').dataset.next);</script>`,
+            `${quiet}<p data-next=${JSON.stringify(to)}>source</p><script>location.replace(document.querySelector('p').dataset.next);</script>`,
           );
           return;
         case '/later':
           html(
             res,
-            `<p data-next=${JSON.stringify(to)}>source</p><script>setTimeout(() => { location.href = document.querySelector('p').dataset.next; }, 150);</script>`,
+            `${quiet}<p data-next=${JSON.stringify(to)}>source</p><script>setTimeout(() => { location.href = document.querySelector('p').dataset.next; }, 150);</script>`,
           );
           return;
         case '/frame-host':
@@ -198,6 +199,18 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
     const source = route(allowed, '/later', `${denied}/secret`);
     await navigateViaPlaywright({ cdpUrl, url: source, ssrfPolicy: strict });
     await page.waitForTimeout(600);
+    expect(hits.secret).toBe(0);
+    expect(page.url()).toBe(source);
+    expect(await page.locator('p').textContent()).toBe('source');
+  });
+
+  it.each([
+    ['requested between actions', '/later'],
+    ['whose first hop the action already let through', '/replace'],
+  ])('keeps the source when a redirect %s is denied and carries no Referer', async (_name, pathname) => {
+    const source = `${route(allowed, pathname, route(allowed, '/slow-redirect', `${denied}/secret`))}&quiet`;
+    await navigateViaPlaywright({ cdpUrl, url: source, ssrfPolicy: strict });
+    await page.waitForTimeout(1500);
     expect(hits.secret).toBe(0);
     expect(page.url()).toBe(source);
     expect(await page.locator('p').textContent()).toBe('source');

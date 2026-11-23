@@ -21,6 +21,7 @@ interface PausedRequest {
   frameId?: string;
   resourceType?: string;
   networkId?: string;
+  redirectedRequestId?: string;
 }
 
 interface TrackedRequest {
@@ -117,6 +118,7 @@ function createStandingNavigationPolicy() {
   // A frame can already sit at an origin when the tab is fenced; only a passed check makes that origin exempt.
   const checkedOrigins = new Set<string>();
   const requestedNavigations = new Map<string, string>();
+  const requestedHops = new Map<string, string>();
   const frameCommitted = (frameId: string, url: string): void => {
     const origin = networkOrigin(url);
     if (origin !== undefined) committedOrigins.set(frameId, origin);
@@ -149,6 +151,7 @@ function createStandingNavigationPolicy() {
         if (event.reason !== 'swap') {
           committedOrigins.delete(event.frameId);
           requestedNavigations.delete(event.frameId);
+          requestedHops.delete(event.frameId);
         }
       };
       events.on('Page.frameNavigated', onNavigated);
@@ -160,15 +163,26 @@ function createStandingNavigationPolicy() {
         events.off('Page.frameDetached', onDetached);
       };
     },
+    // A redirect hop carries on the navigation that requested the first one, whoever decided that one.
+    pageRequested(frameId: string | undefined, event: PausedRequest): boolean {
+      if (frameId === undefined) return false;
+      const started = requestedNavigations.get(frameId) === event.request.url;
+      if (started) requestedNavigations.delete(frameId);
+      const requested =
+        started ||
+        (event.redirectedRequestId !== undefined && requestedHops.get(frameId) === event.redirectedRequestId);
+      if (requested) requestedHops.set(frameId, event.requestId);
+      else requestedHops.delete(frameId);
+      return requested;
+    },
     async denial(request: {
       url: string;
       headers: Record<string, string>;
       frameId?: string;
       mainFrameId?: string;
+      pageRequested: boolean;
     }): Promise<FailureReason | undefined> {
-      const { frameId, mainFrameId } = request;
-      const pageRequested = frameId !== undefined && requestedNavigations.get(frameId) === request.url;
-      if (pageRequested) requestedNavigations.delete(frameId);
+      const { frameId, mainFrameId, pageRequested } = request;
       if (!policy) return undefined;
       const origin = networkOrigin(request.url);
       for (;;) {
@@ -250,12 +264,18 @@ function createTabFence(page: Page, session: CDPSession) {
     };
     await Promise.race([settled, held()]);
   };
-  const decideStanding = async (target: FenceTarget, event: PausedRequest): Promise<void> => {
+  const decideStanding = async (
+    target: FenceTarget,
+    event: PausedRequest,
+    frameId: string | undefined,
+    pageRequested: boolean,
+  ): Promise<void> => {
     const errorReason = await standing.denial({
       url: event.request.url,
       headers: event.request.headers,
-      frameId: event.frameId ?? (target.parent ? target.frameId : mainFrameId),
-      mainFrameId,
+      ...(frameId !== undefined ? { frameId } : {}),
+      ...(mainFrameId !== undefined ? { mainFrameId } : {}),
+      pageRequested,
     });
     await (
       errorReason === undefined
@@ -398,14 +418,16 @@ function createTabFence(page: Page, session: CDPSession) {
       if (hostsFrame(event.frameId)) setDocumentPending(true);
       if (event.networkId !== undefined && event.networkId !== '')
         onRequestWillBeSent({ requestId: event.networkId, type: event.resourceType, frameId: event.frameId });
+      const frameId = event.frameId ?? (target.parent ? target.frameId : mainFrameId);
+      const pageRequested = standing.pageRequested(frameId, event);
       const claiming = [...invocations].filter((invocation) => invocation.admitsDocuments());
-      const operation = (claiming.length > 0 ? decide(event, claiming) : decideStanding(target, event)).catch(
-        (error: unknown) => {
-          console.warn(
-            `[browserclaw] navigation fence decision failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        },
-      );
+      const operation = (
+        claiming.length > 0 ? decide(event, claiming) : decideStanding(target, event, frameId, pageRequested)
+      ).catch((error: unknown) => {
+        console.warn(
+          `[browserclaw] navigation fence decision failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
       for (const invocation of claiming) invocation.inFlight.add(operation);
       void operation.then(() => {
         for (const invocation of claiming) invocation.inFlight.delete(operation);

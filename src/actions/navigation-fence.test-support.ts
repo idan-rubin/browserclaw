@@ -24,7 +24,7 @@ export interface FakeNavigationFence {
   /** Resolves with the fence's answer, or as continued when nothing fences the page. */
   pauseDocument: (
     url: string,
-    options?: { subframe?: boolean; failPreserve?: boolean },
+    options?: { subframe?: boolean; failPreserve?: boolean; redirected?: boolean },
   ) => Promise<FakeDocumentOutcome>;
   failNext: (method: string, error: Error) => void;
   /** Leaves the named commands unanswered, as Chrome does for renderer commands while a navigation is pending. */
@@ -99,6 +99,7 @@ export function createFakeNavigationFence(page: {
           request: { url, headers: {} },
           frameId: options.subframe === true ? 'subframe' : FAKE_MAIN_FRAME_ID,
           resourceType: 'Document',
+          ...(options.redirected === true ? { redirectedRequestId: `interception-${String(nextRequest - 1)}` } : {}),
         });
       });
     },

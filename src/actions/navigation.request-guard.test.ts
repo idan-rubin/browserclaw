@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { isBlockedPageRef } from '../connection.js';
 import * as Security from '../security.js';
 
-import { createFakeNavigationFence } from './navigation-fence.test-support.js';
+import { createFakeNavigationFence, FAKE_MAIN_FRAME_ID } from './navigation-fence.test-support.js';
 import {
   assertInteractionNavigationCompletedSafely,
   wasBrowserNavigationSourcePreservedAfterPolicyDenial,
@@ -28,7 +28,10 @@ function fixture() {
     mainFrame: () => frame,
     isClosed: () => false,
   } as unknown as Page;
-  const dispatch = async (targetUrl: string, options: { subframe?: boolean; failPreserve?: boolean } = {}) => {
+  const dispatch = async (
+    targetUrl: string,
+    options: { subframe?: boolean; failPreserve?: boolean; redirected?: boolean } = {},
+  ) => {
     const outcome = await fence.pauseDocument(targetUrl, options);
     if (outcome.continued && options.subframe !== true) url = targetUrl;
     return outcome;
@@ -368,6 +371,49 @@ describe('interaction request policy enforcement', () => {
     } finally {
       clearInterval(stream);
     }
+  });
+
+  describe('a document the page requests between actions', () => {
+    const blockedPage = { continued: false, errorReason: 'BlockedByClient' };
+    const settleFirstAction = async (page: Page): Promise<void> => {
+      await withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: () => Promise.resolve(),
+      });
+    };
+
+    it('keeps the source when a redirect hop of that navigation is denied and carries no Referer', async () => {
+      const { page, fence, dispatch } = fixture();
+      await settleFirstAction(page);
+      fence.emit('Page.frameRequestedNavigation', { frameId: FAKE_MAIN_FRAME_ID, url: 'http://8.8.8.8/go' });
+      expect(await dispatch('http://8.8.8.8/go')).toEqual({ continued: true });
+      expect(await dispatch('http://8.8.8.8/again', { redirected: true })).toEqual({ continued: true });
+      expect(await dispatch('http://127.0.0.1/secret', { redirected: true })).toEqual(preserved);
+    });
+
+    it('keeps the source when the first hop was decided by an action and a later hop is denied', async () => {
+      const { page, fence, dispatch } = fixture();
+      await settleFirstAction(page);
+      await withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          fence.emit('Page.frameRequestedNavigation', { frameId: FAKE_MAIN_FRAME_ID, url: 'http://8.8.8.8/top' });
+          expect(await dispatch('http://8.8.8.8/top')).toEqual({ continued: true });
+        },
+      });
+      expect(await dispatch('http://127.0.0.1/secret', { redirected: true })).toEqual(preserved);
+    });
+
+    it('control: shows the blocked page for a denied document no page navigation led to', async () => {
+      const { page, fence, dispatch } = fixture();
+      await settleFirstAction(page);
+      expect(await dispatch('http://127.0.0.1/secret')).toEqual(blockedPage);
+      fence.emit('Page.frameRequestedNavigation', { frameId: FAKE_MAIN_FRAME_ID, url: 'http://8.8.8.8/go' });
+      expect(await dispatch('http://8.8.8.8/go')).toEqual({ continued: true });
+      expect(await dispatch('http://127.0.0.1/secret')).toEqual(blockedPage);
+    });
   });
 
   describe('a frame at an origin no policy check has passed', () => {
