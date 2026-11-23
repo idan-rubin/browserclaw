@@ -5,6 +5,7 @@ import type { AXNode } from './native-tree.js';
 import {
   isSensitiveFieldDescriptor,
   redactAiSnapshotFieldValues,
+  redactAXNodesInsideSensitiveField,
   redactSensitiveAXNodeValues,
   takeRedactedAiSnapshotText,
 } from './sensitive-field-values.js';
@@ -218,5 +219,60 @@ describe('redactSensitiveAXNodeValues', () => {
       nodes,
     );
     expect(nodes).toEqual(tree());
+  });
+});
+
+describe('redactAXNodesInsideSensitiveField', () => {
+  const captured = (): AXNode[] => [
+    { nodeId: '3', childIds: ['4'], backendDOMNodeId: 30, role: { value: 'paragraph' } },
+    { nodeId: '4', role: { value: 'StaticText' }, name: { value: '246810' } },
+  ];
+  const above = (root: AXNode): AXNode[] => [
+    root,
+    {
+      nodeId: '2',
+      backendDOMNodeId: 20,
+      role: { value: 'textbox' },
+      name: { value: 'Code' },
+      value: { value: '246810' },
+    },
+    { nodeId: '1', backendDOMNodeId: 10, role: { value: 'RootWebArea' }, name: { value: 'Checkout' } },
+  ];
+  const session = (chain: AXNode[], describe: () => Promise<unknown>) =>
+    ({
+      send: vi.fn((method: string) =>
+        method === 'Accessibility.getAXNodeAndAncestors' ? Promise.resolve({ nodes: chain }) : describe(),
+      ),
+    }) as unknown as CDPSession;
+  const field = (autocomplete: string) => () =>
+    Promise.resolve({ node: { nodeName: 'DIV', attributes: ['autocomplete', autocomplete] } });
+
+  it.each([
+    ['is sensitive', field('one-time-code')],
+    ['cannot be described', () => Promise.reject(new Error('node is gone'))],
+  ])('masks everything captured below a field that %s', async (_name, describe) => {
+    const nodes = captured();
+    await redactAXNodesInsideSensitiveField(session(above(nodes[0]), describe), nodes, 30);
+    expect(nodes.map((node) => node.name?.value)).toEqual([undefined, '[redacted]']);
+  });
+
+  it('control: leaves a capture below an ordinary field untouched', async () => {
+    const nodes = captured();
+    await redactAXNodesInsideSensitiveField(session(above(nodes[0]), field('off')), nodes, 30);
+    expect(nodes).toEqual(captured());
+  });
+
+  it('control: does not treat the captured root as a field above itself', async () => {
+    const root: AXNode = {
+      nodeId: '2',
+      backendDOMNodeId: 20,
+      role: { value: 'textbox' },
+      name: { value: 'Code' },
+      value: { value: '246810' },
+    };
+    const describe = vi.fn(field('one-time-code'));
+    await redactAXNodesInsideSensitiveField(session([root, above(root)[2]], describe), [root], 20);
+    expect(describe).not.toHaveBeenCalled();
+    expect(root.name?.value).toBe('Code');
   });
 });

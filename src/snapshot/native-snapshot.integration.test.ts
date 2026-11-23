@@ -156,6 +156,22 @@ describe.skipIf(executablePath === undefined)('native snapshot capture (real Chr
       },
     );
 
+    it('masks a snapshot scoped to an element inside a sensitive field', async () => {
+      const editable = 'role="textbox" contenteditable="true"';
+      await page.setContent(
+        `<div ${editable} aria-label="Code" autocomplete="one-time-code">` +
+          '<p id="code">246810-otp <b id="deep">246810-deep</b></p></div>' +
+          '<select aria-label="Card" autocomplete="cc-number"><option id="chosen" selected>4242-chosen</option></select>' +
+          `<div ${editable} aria-label="Notes"><p id="note">Lisbon-visible</p></div>`,
+      );
+      for (const selector of ['#code', '#deep', '#chosen']) {
+        const captured = (await snapshotRole({ cdpUrl: 'test', selector })).snapshot;
+        expect(captured).not.toMatch(/246810|4242/);
+        expect(captured).toContain('[redacted]');
+      }
+      expect((await snapshotRole({ cdpUrl: 'test', selector: '#note' })).snapshot).toContain('Lisbon-visible');
+    });
+
     it('classifies each field against its own element, not the whole document', async () => {
       await page.setContent(
         Array.from(

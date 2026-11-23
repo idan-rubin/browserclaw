@@ -73,6 +73,35 @@ export async function redactSensitiveAXNodeValues(session: CDPSession, nodes: AX
   );
 }
 
+// A capture scoped to an element inside a field does not contain the field, so it is looked for above the root.
+export async function redactAXNodesInsideSensitiveField(
+  session: CDPSession,
+  nodes: AXNode[],
+  rootBackendNodeId: number,
+): Promise<void> {
+  const chain = await session.send('Accessibility.getAXNodeAndAncestors', { backendNodeId: rootBackendNodeId });
+  const enclosing = chain.nodes.filter(
+    (node) =>
+      node.backendDOMNodeId !== rootBackendNodeId &&
+      axValue(node.value) !== '' &&
+      VALUE_FIELD_ROLES.has(axValue(node.role).toLowerCase()),
+  );
+  const sensitive = await Promise.all(
+    enclosing.map(async (node) => {
+      const field =
+        node.backendDOMNodeId !== undefined && node.backendDOMNodeId > 0
+          ? await describeFieldViaCdp(session, node.backendDOMNodeId)
+          : null;
+      return !field || isSensitiveFieldDescriptor(field);
+    }),
+  );
+  if (!sensitive.includes(true)) return;
+  for (const node of nodes) {
+    if (axValue(node.value)) node.value = { value: REDACTED_FIELD_VALUE };
+    if (axValue(node.name)) node.name = { value: REDACTED_FIELD_VALUE };
+  }
+}
+
 const SNAPSHOT_LINE_NAME = /^(\s*-\s+'?\w+\s+)"(?:\\.|[^"\\])*"/;
 
 function snapshotLineText(line: string): { rest: string; inline: boolean; named: boolean } | null {
