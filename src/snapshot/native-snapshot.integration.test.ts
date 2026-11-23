@@ -142,6 +142,20 @@ describe.skipIf(executablePath === undefined)('native snapshot capture (real Chr
       },
     );
 
+    it.each(Object.keys(captures) as (keyof typeof captures)[])(
+      'masks the options of a select marked as a sensitive field in a %s snapshot',
+      async (mode) => {
+        await page.setContent(
+          '<select aria-label="Card" autocomplete="cc-number"><option>1111-first</option>' +
+            '<option selected>4242-chosen</option></select>' +
+            '<select aria-label="Plan"><option selected>Monthly-visible</option><option>Yearly-visible</option></select>',
+        );
+        const captured = await captures[mode]();
+        for (const secret of ['1111-first', '4242-chosen']) expect(captured).not.toContain(secret);
+        for (const shown of ['Monthly-visible', 'Yearly-visible']) expect(captured).toContain(shown);
+      },
+    );
+
     it('classifies each field against its own element, not the whole document', async () => {
       await page.setContent(
         Array.from(

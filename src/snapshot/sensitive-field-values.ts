@@ -80,12 +80,7 @@ function snapshotLineText(line: string): { rest: string; inline: boolean; named:
   if (!parsed) return null;
   const attributes = /^(?:\s+\[[^\][]*\])*/.exec(parsed.suffix)?.[0] ?? '';
   const rest = parsed.suffix.slice(attributes.length);
-  return {
-    rest,
-    inline: /^: \S/.test(rest) && line.endsWith(rest),
-    // An option's name is a choice the page offers, not what the user entered.
-    named: parsed.role !== 'option' && SNAPSHOT_LINE_NAME.test(line),
-  };
+  return { rest, inline: /^: \S/.test(rest) && line.endsWith(rest), named: SNAPSHOT_LINE_NAME.test(line) };
 }
 
 export async function redactAiSnapshotFieldValues(
@@ -101,7 +96,7 @@ export async function redactAiSnapshotFieldValues(
     const own = text?.inline === true ? [index] : [];
     const nested: number[] = [];
     if (text?.rest === ':') {
-      // An editable field prints its content as descendants of any role, at any depth.
+      // A field prints its content as descendants of any role: an editable box its text, a select its options.
       const childDepth = getIndentLevel(line) + 1;
       for (let i = index + 1; i < lines.length && getIndentLevel(lines[i]) >= childDepth; i += 1) {
         const child = snapshotLineText(lines[i]);
