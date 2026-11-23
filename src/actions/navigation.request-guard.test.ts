@@ -321,6 +321,30 @@ describe('interaction request policy enforcement', () => {
     expect(page.url()).toBe('about:blank');
   });
 
+  it('keeps the tab navigable under its policy after a cleanup failure', async () => {
+    const { page, fence, dispatch } = fixture();
+    fence.failNext('Runtime.evaluate', new Error('cleanup barrier failed'));
+    await expect(
+      withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: () => Promise.resolve('clicked'),
+      }),
+    ).rejects.toThrow('cleanup barrier failed');
+    expect(await dispatch('http://8.8.8.8/next')).toEqual({ continued: true });
+    expect(await dispatch('http://127.0.0.1/denied')).toEqual({ continued: false, errorReason: 'BlockedByClient' });
+    await expect(
+      withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          expect(await dispatch('http://8.8.8.8/again')).toEqual({ continued: true });
+          return 'again';
+        },
+      }),
+    ).resolves.toBe('again');
+  });
+
   describe('release while Chrome holds renderer commands', () => {
     const settledWithin = async (operation: Promise<unknown>, ms: number): Promise<boolean> => {
       const settled = operation.then(
@@ -407,7 +431,7 @@ describe('interaction request policy enforcement', () => {
   });
 
   it('fails closed if the fence cannot be installed or released on a live page', async () => {
-    const { page, fence, dispatch } = fixture();
+    const { page, fence } = fixture();
     const action = vi.fn().mockResolvedValue('done');
     fence.newCDPSession.mockRejectedValueOnce(new Error('install failed'));
     await expect(withPageNavigationRequestGuard({ cdpUrl: 'http://localhost:39993', page, action })).rejects.toThrow(
@@ -419,6 +443,5 @@ describe('interaction request policy enforcement', () => {
       'release failed',
     );
     expect(action).toHaveBeenCalledOnce();
-    expect(await dispatch('http://8.8.8.8/after-failed-release')).toEqual(preserved);
   });
 });

@@ -754,7 +754,10 @@ export async function installNavigationAuthorityFence(
       }
       fail(error);
       for (const state of states.values()) state.documents.clear();
+      // A closed invocation left here would refuse every later document on the tab.
+      invocations.delete(invocation);
       notify();
+      if (invocations.size === 0) void tab.release();
       return error;
     } finally {
       clearTimeout(timer);
