@@ -17,6 +17,7 @@ vi.mock('../connection.js', async (importOriginal) => ({
 import {
   assertInteractionNavigationCompletedSafely,
   navigateViaPlaywright,
+  traverseHistoryViaPlaywright,
   withPageNavigationRequestGuard,
 } from './navigation.js';
 
@@ -379,6 +380,54 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
       await page.waitForURL(`${denied}/secret`);
       expect(hits.secret).toBe(1);
     }, 40_000);
+  });
+
+  describe('reload, back and forward on a tab browserclaw did not open', () => {
+    const navigateOnItsOwn = async (): Promise<void> => {
+      await page.evaluate((next) => {
+        setTimeout(() => {
+          location.href = next;
+        }, 50);
+      }, `${denied}/secret`);
+      await page.waitForTimeout(600);
+    };
+
+    it('refuses to go back to a document the policy denies', async () => {
+      await page.goto(`${denied}/secret`);
+      await page.goto(`${allowed}/home`);
+      await expect(
+        traverseHistoryViaPlaywright({ cdpUrl, move: 'goBack', timeoutMs: 5000, ssrfPolicy: strict }),
+      ).rejects.toBeInstanceOf(InvalidBrowserNavigationUrlError);
+    });
+
+    it('control: goes back to the same document under a policy that allows it', async () => {
+      await page.goto(`${denied}/secret`);
+      await page.goto(`${allowed}/home`);
+      await traverseHistoryViaPlaywright({ cdpUrl, move: 'goBack', timeoutMs: 5000, ssrfPolicy: permissive });
+      expect(page.url()).toBe(`${denied}/secret`);
+    });
+
+    it.each(['reload', 'goBack', 'goForward'] as const)(
+      'puts the tab under the standing policy from its first %s',
+      async (move) => {
+        await page.goto(`${allowed}/first`);
+        await page.goto(`${allowed}/second`);
+        if (move === 'goForward') await page.goBack();
+        await traverseHistoryViaPlaywright({ cdpUrl, move, timeoutMs: 5000, ssrfPolicy: strict });
+        hits.secret = 0;
+        const source = page.url();
+        await navigateOnItsOwn();
+        expect(hits.secret).toBe(0);
+        expect(page.url()).toBe(source);
+      },
+    );
+
+    it('control: a tab no guarded action has touched is not intercepted', async () => {
+      await page.goto(`${allowed}/first`);
+      await page.reload();
+      await navigateOnItsOwn();
+      expect(hits.secret).toBe(1);
+    });
   });
 
   it('leaves CORS preflights to the server during a guarded action', async () => {

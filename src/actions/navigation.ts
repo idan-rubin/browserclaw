@@ -852,6 +852,25 @@ export async function navigateViaPlaywright(opts: {
   };
 }
 
+export async function traverseHistoryViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId?: string;
+  move: 'reload' | 'goBack' | 'goForward';
+  timeoutMs: number;
+  ssrfPolicy?: SsrfPolicy;
+}): Promise<void> {
+  const page = await getPageForTargetId({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, ssrfPolicy: opts.ssrfPolicy });
+  ensurePageState(page);
+  await assertInteractionNavigationCompletedSafely({
+    action: () => page[opts.move]({ timeout: opts.timeoutMs }),
+    cdpUrl: opts.cdpUrl,
+    page,
+    previousUrl: page.url(),
+    ssrfPolicy: opts.ssrfPolicy,
+    targetId: opts.targetId,
+  });
+}
+
 async function listPagesViaPlaywrightOnce(
   cdpUrl: string,
   browser: Browser,
