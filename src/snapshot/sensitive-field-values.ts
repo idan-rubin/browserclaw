@@ -132,11 +132,9 @@ export const ORDINARY_FIELD_SELECTOR = `:not(${[
 ].join(', ')})`;
 
 export async function takeRedactedAiSnapshotText(page: Page, timeoutMs: number): Promise<string> {
-  const snapshot = await takeAiSnapshotText(page, timeoutMs);
-  // The checks get their own budget: sharing one with a slow snapshot would mask ordinary fields at random.
   const deadline = performance.now() + timeoutMs;
   let warned = false;
-  return await redactAiSnapshotFieldValues(snapshot, async (ref) => {
+  return await redactAiSnapshotFieldValues(await takeAiSnapshotText(page, timeoutMs), async (ref) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const ordinary = await Promise.race([

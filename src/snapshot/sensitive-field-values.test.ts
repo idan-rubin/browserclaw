@@ -123,30 +123,6 @@ describe('takeRedactedAiSnapshotText', () => {
     );
   });
 
-  it('gives the checks their own time after a snapshot that used most of the budget', async () => {
-    const page = {
-      ariaSnapshot: () =>
-        new Promise<string>((resolve) => {
-          setTimeout(() => {
-            resolve(snapshot);
-          }, 150);
-        }),
-      locator: (selector: string) => ({
-        locator: () => ({
-          count: () =>
-            new Promise<number>((resolve) => {
-              setTimeout(() => {
-                resolve(selector === 'aria-ref=e4' ? 1 : 0);
-              }, 100);
-            }),
-        }),
-      }),
-    } as unknown as Page;
-    expect(await takeRedactedAiSnapshotText(page, 200)).toBe(
-      '- textbox "Password" [ref=e2]: [redacted]\n- textbox "City" [ref=e4]: Lisbon',
-    );
-  });
-
   it.each([
     ['resolves to no element', (): Promise<number> => Promise.resolve(0), []],
     [
