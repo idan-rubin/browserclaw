@@ -318,13 +318,22 @@ export async function enrichSnapshotFromDom(
   // it must be the one issued for that position; a data value is kept only when a selector, matched outside that
   // world, finds an ordinary element that carries this stamp and that value. A stamp alone can be stale or shared.
   const elements = scanned.filter((el, index) => el.ref === `e${String(startRef + index)}`);
+  let warned = false;
   const carried = async (ref: string, attrs: DomEnrichedElement['dataAttrs']): Promise<boolean> => {
     const selector = `[data-bc-ref="${ref}"]${attrs.map(carriesValue).join('')}${ORDINARY_FIELD_SELECTOR}`;
     // A query that enters shadow roots walks the whole document, so it runs only when the plain one finds nothing.
     for (const engine of ['css:light', 'css']) {
       const found = await Promise.resolve()
         .then(() => context.locator(`${engine}=${selector}`).count())
-        .catch(() => 0);
+        .catch((error: unknown) => {
+          // The message can quote the selector, which carries the data values.
+          if (!warned)
+            console.warn(
+              `[browserclaw] masked data values that could not be checked (${error instanceof Error ? error.name : 'error'})`,
+            );
+          warned = true;
+          return 0;
+        });
       if (found > 0) return true;
     }
     return false;

@@ -123,14 +123,49 @@ describe('takeRedactedAiSnapshotText', () => {
     );
   });
 
+  it('gives the checks their own time after a snapshot that used most of the budget', async () => {
+    const page = {
+      ariaSnapshot: () =>
+        new Promise<string>((resolve) => {
+          setTimeout(() => {
+            resolve(snapshot);
+          }, 150);
+        }),
+      locator: (selector: string) => ({
+        locator: () => ({
+          count: () =>
+            new Promise<number>((resolve) => {
+              setTimeout(() => {
+                resolve(selector === 'aria-ref=e4' ? 1 : 0);
+              }, 100);
+            }),
+        }),
+      }),
+    } as unknown as Page;
+    expect(await takeRedactedAiSnapshotText(page, 200)).toBe(
+      '- textbox "Password" [ref=e2]: [redacted]\n- textbox "City" [ref=e4]: Lisbon',
+    );
+  });
+
   it.each([
-    ['resolves to no element', (): Promise<number> => Promise.resolve(0)],
-    ['fails', (): Promise<number> => Promise.reject(new Error('Execution context was destroyed'))],
-    ['does not answer in time', (): Promise<number> => new Promise<number>(() => undefined)],
-  ])('masks every value when the check %s', async (_name, count) => {
+    ['resolves to no element', (): Promise<number> => Promise.resolve(0), []],
+    [
+      'fails',
+      (): Promise<number> => Promise.reject(new Error('Execution context was destroyed\nCall log: aria-ref=e2')),
+      ['[browserclaw] masked a field value that could not be checked (Execution context was destroyed)'],
+    ],
+    [
+      'does not answer in time',
+      (): Promise<number> => new Promise<number>(() => undefined),
+      ['[browserclaw] masked a field value that could not be checked (Sensitive field check timed out)'],
+    ],
+  ])('masks every value when the check %s, and says why once', async (_name, count, warnings) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(await takeRedactedAiSnapshotText(pageAnswering(count), 50)).toBe(
       '- textbox "Password" [ref=e2]: [redacted]\n- textbox "City" [ref=e4]: [redacted]',
     );
+    expect(warn.mock.calls.map(([message]) => String(message))).toEqual(warnings);
+    warn.mockRestore();
   });
 });
 

@@ -16,7 +16,7 @@ import { existsSync } from 'node:fs';
 
 import type { Browser, Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { enrichSnapshotFromDom, mergeSnapshotWithEnrichment, nextRefCounter } from './dom-enrichment.js';
 
@@ -269,6 +269,25 @@ d('enrichSnapshotFromDom (integration)', () => {
     const text = (await enrichSnapshotFromDom(page, 1)).lines.join('\n');
     expect(text).toContain('[data-kind="primary"]');
     expect(text).not.toContain('246810');
+  });
+
+  it('masks data values and says so once when the check cannot run', async () => {
+    await page.goto(dataUrl('<button data-testid="save">S</button><button data-testid="open">O</button>'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const unreachable = new Proxy(page, {
+      get: (target, key): unknown => {
+        if (key === 'locator')
+          return () => ({ count: () => Promise.reject(new Error('[data-testid="save"] could not be queried')) });
+        const value: unknown = Reflect.get(target, key);
+        return typeof value === 'function' ? (value.bind(target) as unknown) : value;
+      },
+    });
+    const text = (await enrichSnapshotFromDom(unreachable, 1)).lines.join('\n');
+    const warnings = warn.mock.calls.map(([message]) => String(message));
+    warn.mockRestore();
+    expect(text).toContain('[ref=e1] [data-testid="redacted"]');
+    expect(text).toContain('[ref=e2] [data-testid="redacted"]');
+    expect(warnings).toEqual(['[browserclaw] masked data values that could not be checked (Error)']);
   });
 
   it('checks data values without walking the whole document for each element', async () => {

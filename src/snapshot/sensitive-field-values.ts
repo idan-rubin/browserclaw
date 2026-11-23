@@ -132,8 +132,11 @@ export const ORDINARY_FIELD_SELECTOR = `:not(${[
 ].join(', ')})`;
 
 export async function takeRedactedAiSnapshotText(page: Page, timeoutMs: number): Promise<string> {
+  const snapshot = await takeAiSnapshotText(page, timeoutMs);
+  // The checks get their own budget: sharing one with a slow snapshot would mask ordinary fields at random.
   const deadline = performance.now() + timeoutMs;
-  return await redactAiSnapshotFieldValues(await takeAiSnapshotText(page, timeoutMs), async (ref) => {
+  let warned = false;
+  return await redactAiSnapshotFieldValues(snapshot, async (ref) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const ordinary = await Promise.race([
@@ -149,7 +152,12 @@ export async function takeRedactedAiSnapshotText(page: Page, timeoutMs: number):
         }),
       ]);
       return ordinary !== 1;
-    } catch {
+    } catch (error) {
+      if (!warned)
+        console.warn(
+          `[browserclaw] masked a field value that could not be checked (${error instanceof Error ? error.message.split('\n', 1)[0] : 'error'})`,
+        );
+      warned = true;
       return true;
     } finally {
       clearTimeout(timer);
