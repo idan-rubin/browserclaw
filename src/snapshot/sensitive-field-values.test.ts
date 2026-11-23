@@ -67,6 +67,7 @@ describe('redactAiSnapshotFieldValues', () => {
       '  - option "Visa" [selected]',
       '- textbox "Unbound":',
       '  - paragraph: orphan',
+      '  - link "orphan" [ref=e12]',
       '- button "246810" [ref=e11]',
     ].join('\n');
     const isSensitive = vi.fn((ref: string) => Promise.resolve(ref === 'e2'));
@@ -87,9 +88,11 @@ describe('redactAiSnapshotFieldValues', () => {
       '  - option "Visa" [selected]',
       '- textbox "Unbound":',
       '  - paragraph: [redacted]',
+      '  - link "[redacted]" [ref=e12]',
       '- button "246810" [ref=e11]',
     ]);
-    expect(isSensitive.mock.calls.map(([ref]) => ref)).toEqual(['e2', 'e8', 'e10']);
+    // A select prints only its options, so it costs no check.
+    expect(isSensitive.mock.calls.map(([ref]) => ref)).toEqual(['e2', 'e8']);
   });
 
   it('control: leaves every value in place when no field is sensitive', async () => {

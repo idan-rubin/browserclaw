@@ -80,7 +80,12 @@ function snapshotLineText(line: string): { rest: string; inline: boolean; named:
   if (!parsed) return null;
   const attributes = /^(?:\s+\[[^\][]*\])*/.exec(parsed.suffix)?.[0] ?? '';
   const rest = parsed.suffix.slice(attributes.length);
-  return { rest, inline: /^: \S/.test(rest) && line.endsWith(rest), named: SNAPSHOT_LINE_NAME.test(line) };
+  return {
+    rest,
+    inline: /^: \S/.test(rest) && line.endsWith(rest),
+    // An option's name is a choice the page offers, not what the user entered.
+    named: parsed.role !== 'option' && SNAPSHOT_LINE_NAME.test(line),
+  };
 }
 
 export async function redactAiSnapshotFieldValues(
@@ -111,8 +116,7 @@ export async function redactAiSnapshotFieldValues(
     fields.map(async ({ ref, own, nested }) => {
       if (ref !== null && !(await isSensitive(ref))) return;
       for (const index of [...own, ...nested]) values.add(index);
-      // A field that cannot be inspected loses its text; the names under it are mostly the options of a select.
-      if (ref !== null) for (const index of nested) names.add(index);
+      for (const index of nested) names.add(index);
     }),
   );
   for (const index of values) {
