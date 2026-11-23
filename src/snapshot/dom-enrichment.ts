@@ -117,6 +117,14 @@ function sanitizeAttrValue(value: string): string {
     .trim();
 }
 
+const CSS_ATTRIBUTE_NAME = /^[a-z_][\w-]*$/i;
+
+function carriesValue({ name, value }: { name: string; value: string }): string {
+  const shown = value.slice(0, MAX_ATTR_VALUE_LEN);
+  const escaped = shown.replace(/[^a-z0-9 _-]/giu, (char) => `\\${(char.codePointAt(0) ?? 0).toString(16)} `);
+  return `[${name}${shown === value ? '' : '^'}="${escaped}"]`;
+}
+
 // ── Pure snapshot builder ──
 
 /**
@@ -305,22 +313,21 @@ export async function enrichSnapshotFromDom(
     },
   );
 
-  const dataBearing = elements.filter((el) => el.dataAttrs.length > 0);
-  if (dataBearing.length > 0) {
-    // The scan above ran in the page's JavaScript world; only an element this count confirms keeps its data values.
-    const ordinary = (stamp: string): Promise<number> =>
-      context
-        .locator(`${stamp}${ORDINARY_FIELD_SELECTOR}`)
-        .count()
-        .catch(() => 0);
-    if ((await ordinary('[data-bc-ref]')) !== elements.length)
-      await Promise.all(
-        dataBearing.map(async (el) => {
-          if ((await ordinary(`[data-bc-ref="${el.ref}"]`)) !== 1)
-            el.dataAttrs = el.dataAttrs.map(({ name }) => ({ name, value: REDACTED_FIELD_VALUE }));
-        }),
-      );
-  }
+  // The scan ran in the page's JavaScript world, so a data value is kept only when a selector, matched outside it,
+  // finds an ordinary element that carries this stamp and that value. A stamp alone can be stale or shared.
+  await Promise.all(
+    elements
+      .filter((el) => el.dataAttrs.length > 0)
+      .map(async (el) => {
+        const carried = el.dataAttrs.every(({ name }) => CSS_ATTRIBUTE_NAME.test(name))
+          ? await context
+              .locator(`[data-bc-ref="${el.ref}"]${el.dataAttrs.map(carriesValue).join('')}${ORDINARY_FIELD_SELECTOR}`)
+              .count()
+              .catch(() => 0)
+          : 0;
+        if (carried === 0) el.dataAttrs = el.dataAttrs.map(({ name }) => ({ name, value: REDACTED_FIELD_VALUE }));
+      }),
+  );
   return buildDomEnrichedLines(elements);
 }
 

@@ -55,6 +55,18 @@ const MIRRORED_VALUE_PAGE = [
   '</body></html>',
 ].join('');
 
+const STALE_SHADOW_STAMP_PAGE = [
+  '<!doctype html><html><body>',
+  '<div id="host"></div>',
+  '<input id="otp" autocomplete="one-time-code" data-typed="">',
+  '<input id="city" data-typed="">',
+  '<script>',
+  "for (const el of document.querySelectorAll('input')) el.addEventListener('input', () => { el.dataset.typed = el.value; });",
+  "document.getElementById('host').attachShadow({ mode: 'open' }).innerHTML = '<button id=\"inner\">S</button>';",
+  '</script>',
+  '</body></html>',
+].join('');
+
 function dataUrl(html: string): string {
   return `data:text/html;base64,${Buffer.from(html).toString('base64')}`;
 }
@@ -162,6 +174,36 @@ d('enrichSnapshotFromDom (integration)', () => {
     expect(text).toContain('[id="pw"] [data-typed="redacted"]');
     expect(text).toContain('[id="otp"] [data-typed="redacted"]');
     expect(text).toContain('[id="city"] [data-typed="Lisbon"]');
+  });
+
+  it('masks a mirrored secret when a stamp left inside a shadow root balances the totals', async () => {
+    await page.goto(dataUrl(STALE_SHADOW_STAMP_PAGE));
+    await page.fill('#otp', '246810');
+    await page.fill('#city', 'Lisbon');
+    expect((await enrichSnapshotFromDom(page, 1)).lines.join('\n')).toContain('[id="inner"]');
+    await page.evaluate(() => {
+      const inner = document.getElementById('host')?.shadowRoot?.querySelector('button');
+      if (inner) inner.style.display = 'none';
+      Element.prototype.getAttribute = () => null;
+      Object.defineProperty(Element.prototype, 'tagName', { get: () => 'DIV' });
+    });
+    for (const startRef of [1, 2]) {
+      const text = (await enrichSnapshotFromDom(page, startRef)).lines.join('\n');
+      expect(text).not.toContain('246810');
+      expect(text).toContain('[id="otp"] [data-typed="redacted"]');
+      expect(text).toContain('[id="city"] [data-typed="Lisbon"]');
+    }
+  });
+
+  it('keeps ordinary data values that need escaping or are cut to the printed length', async () => {
+    const long = 'x'.repeat(300);
+    await page.setContent(
+      `<button id="b" data-label='say "hi" [now]\\ ok' data-url="https://example.test/a?b=1&amp;c=é" data-long="${long}">B</button>`,
+    );
+    const text = (await enrichSnapshotFromDom(page, 1)).lines.join('\n');
+    expect(text).toContain('[data-label="say hi now \\ ok"]');
+    expect(text).toContain('[data-url="https://example.test/a?b=1&c=é"]');
+    expect(text).toContain(`[data-long="${'x'.repeat(120)}…"]`);
   });
 
   it('nextRefCounter round-trips with a scoped scan', async () => {
