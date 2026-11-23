@@ -107,21 +107,34 @@ export async function redactAiSnapshotFieldValues(
   return lines.join('\n');
 }
 
+const SENSITIVE_FIELD_SELECTOR = [
+  'input[type="password" i]',
+  ...[...SENSITIVE_AUTOCOMPLETE_TOKENS].map((token) => `[autocomplete~="${token}" i]`),
+].join(', ');
+
 export async function takeRedactedAiSnapshotText(page: Page, timeoutMs: number): Promise<string> {
   const deadline = performance.now() + timeoutMs;
   return await redactAiSnapshotFieldValues(await takeAiSnapshotText(page, timeoutMs), async (ref) => {
-    const field = await page
-      .locator(`aria-ref=${ref}`)
-      .evaluate(
-        (element) => ({
-          tagName: element.tagName,
-          type: element.getAttribute('type'),
-          autocomplete: element.getAttribute('autocomplete'),
+    const field = page.locator(`aria-ref=${ref}`);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // Selectors are matched outside the page's JavaScript world, so page code cannot change the answer.
+      const [found, matching] = await Promise.race([
+        Promise.all([field.count(), field.and(page.locator(SENSITIVE_FIELD_SELECTOR)).count()]),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => {
+              reject(new Error('Sensitive field check timed out'));
+            },
+            Math.max(1, Math.ceil(deadline - performance.now())),
+          );
         }),
-        undefined,
-        { timeout: Math.max(1, Math.ceil(deadline - performance.now())) },
-      )
-      .catch(() => null);
-    return !field || isSensitiveFieldDescriptor(field);
+      ]);
+      return found !== 1 || matching !== 0;
+    } catch {
+      return true;
+    } finally {
+      clearTimeout(timer);
+    }
   });
 }

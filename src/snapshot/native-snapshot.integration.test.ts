@@ -124,5 +124,18 @@ describe.skipIf(executablePath === undefined)('native snapshot capture (real Chr
         expect(captured).toContain('Lisbon-visible');
       },
     );
+
+    it.each(Object.keys(captures) as (keyof typeof captures)[])(
+      'masks them in a %s snapshot when the page overrides its own attribute reads',
+      async (mode) => {
+        await page.setContent(
+          `${form}<script>Element.prototype.getAttribute = () => null; Object.defineProperty(Element.prototype, 'tagName', { get: () => 'DIV' });</script>`,
+        );
+        const captured = await captures[mode]();
+        for (const secret of ['hunter2-secret', '246810-otp', '4111-card']) expect(captured).not.toContain(secret);
+        expect(captured).toContain('[redacted]');
+        expect(captured).toContain('Lisbon-visible');
+      },
+    );
   });
 });

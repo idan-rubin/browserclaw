@@ -1,4 +1,4 @@
-import type { CDPSession } from 'playwright-core';
+import type { CDPSession, Page } from 'playwright-core';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AXNode } from './native-tree.js';
@@ -6,6 +6,7 @@ import {
   isSensitiveFieldDescriptor,
   redactAiSnapshotFieldValues,
   redactSensitiveAXNodeValues,
+  takeRedactedAiSnapshotText,
 } from './sensitive-field-values.js';
 
 describe('isSensitiveFieldDescriptor', () => {
@@ -51,6 +52,37 @@ describe('redactAiSnapshotFieldValues', () => {
   it('control: leaves every value in place when no field is sensitive', async () => {
     const redacted = await redactAiSnapshotFieldValues(snapshot, () => Promise.resolve(false));
     expect(redacted).toBe(snapshot.replace('orphan-value', '[redacted]'));
+  });
+});
+
+describe('takeRedactedAiSnapshotText', () => {
+  const snapshot = '- textbox "Password" [ref=e2]: hunter2\n- textbox "City" [ref=e4]: Lisbon';
+  const pageAnswering = (count: (selector: string, sensitiveOnly: boolean) => Promise<number>): Page =>
+    ({
+      ariaSnapshot: () => Promise.resolve(snapshot),
+      locator: (selector: string) => ({
+        count: () => count(selector, false),
+        and: () => ({ count: () => count(selector, true) }),
+      }),
+    }) as unknown as Page;
+
+  it('masks the field the selector check matches and keeps the rest', async () => {
+    const page = pageAnswering((selector, sensitiveOnly) =>
+      Promise.resolve(sensitiveOnly && selector !== 'aria-ref=e2' ? 0 : 1),
+    );
+    expect(await takeRedactedAiSnapshotText(page, 1000)).toBe(
+      '- textbox "Password" [ref=e2]: [redacted]\n- textbox "City" [ref=e4]: Lisbon',
+    );
+  });
+
+  it.each([
+    ['resolves to no element', (): Promise<number> => Promise.resolve(0)],
+    ['fails', (): Promise<number> => Promise.reject(new Error('Execution context was destroyed'))],
+    ['does not answer in time', (): Promise<number> => new Promise<number>(() => undefined)],
+  ])('masks every value when the check %s', async (_name, count) => {
+    expect(await takeRedactedAiSnapshotText(pageAnswering(count), 50)).toBe(
+      '- textbox "Password" [ref=e2]: [redacted]\n- textbox "City" [ref=e4]: [redacted]',
+    );
   });
 });
 
