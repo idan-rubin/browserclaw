@@ -117,8 +117,6 @@ function sanitizeAttrValue(value: string): string {
     .trim();
 }
 
-const SCAN_REF = /^e\d+$/;
-
 function cssEscape(text: string): string {
   return text.replace(/[^a-z0-9_-]/giu, (char) => `\\${(char.codePointAt(0) ?? 0).toString(16)} `);
 }
@@ -316,10 +314,10 @@ export async function enrichSnapshotFromDom(
     },
   );
 
-  // The scan ran in the page's JavaScript world: a ref it returns goes into selectors, so it must be one the scan
-  // could have issued, and a data value is kept only when a selector, matched outside that world, finds an ordinary
-  // element that carries this stamp and that value. A stamp alone can be stale or shared.
-  const elements = scanned.filter((el) => SCAN_REF.test(el.ref));
+  // The scan ran in the page's JavaScript world. A ref it returns goes into selectors and the snapshot's ref map, so
+  // it must be the one issued for that position; a data value is kept only when a selector, matched outside that
+  // world, finds an ordinary element that carries this stamp and that value. A stamp alone can be stale or shared.
+  const elements = scanned.filter((el, index) => el.ref === `e${String(startRef + index)}`);
   const carried = async (ref: string, attrs: DomEnrichedElement['dataAttrs']): Promise<boolean> =>
     (await Promise.resolve()
       .then(() =>

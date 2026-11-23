@@ -18,7 +18,7 @@ import type { Browser, Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { enrichSnapshotFromDom, nextRefCounter } from './dom-enrichment.js';
+import { enrichSnapshotFromDom, mergeSnapshotWithEnrichment, nextRefCounter } from './dom-enrichment.js';
 
 const ICON_BUTTON_PAGE = [
   '<!doctype html><html><body>',
@@ -217,6 +217,25 @@ d('enrichSnapshotFromDom (integration)', () => {
     expect(text).not.toContain('body');
     expect(Object.keys(refs).every((ref) => /^e\d+$/.test(ref))).toBe(true);
     expect(text).toContain('[id="city"] [data-typed="Lisbon"]');
+  });
+
+  it('keeps a snapshot ref the page tried to claim for another element', async () => {
+    await page.goto(dataUrl('<button id="save">Save</button><button id="delete">Delete</button>'));
+    await page.evaluate(() => {
+      const push = Array.prototype.push;
+      Array.prototype.push = function (...items: unknown[]): number {
+        for (const item of items) {
+          const scanned = item as { id?: string; ref?: string } | null;
+          if (scanned?.id === 'delete') scanned.ref = 'e1';
+        }
+        return push.apply(this, items);
+      };
+    });
+    const built = { snapshot: '- link "Home" [ref=e1]', refs: { e1: { role: 'link', name: 'Home' } } };
+    const merged = mergeSnapshotWithEnrichment(built, await enrichSnapshotFromDom(page, nextRefCounter(built.refs)));
+    expect(merged.refs.e1).toEqual(built.refs.e1);
+    expect(merged.snapshot.match(/\[ref=e1\]/g)).toHaveLength(1);
+    expect(merged.snapshot).toContain('[ref=e2] [id="save"]');
   });
 
   it('keeps the values of an ordinary control whose attribute names need escaping', async () => {
