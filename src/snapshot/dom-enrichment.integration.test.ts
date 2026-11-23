@@ -259,6 +259,36 @@ d('enrichSnapshotFromDom (integration)', () => {
     expect(text).toContain('[data-tick="redacted"]');
   });
 
+  it('keeps the data values of an ordinary element inside a shadow root and masks a sensitive one', async () => {
+    await page.goto(
+      dataUrl(
+        '<div id="host"></div><script>document.getElementById("host").attachShadow({ mode: "open" }).innerHTML = ' +
+          '\'<button data-kind="primary">S</button><input autocomplete="one-time-code" data-typed="246810">\';</script>',
+      ),
+    );
+    const text = (await enrichSnapshotFromDom(page, 1)).lines.join('\n');
+    expect(text).toContain('[data-kind="primary"]');
+    expect(text).not.toContain('246810');
+  });
+
+  it('checks data values without walking the whole document for each element', async () => {
+    const fields = (attrs: (i: number) => string): string =>
+      Array.from({ length: 200 }, (_, i) => `<input ${attrs(i)}>`).join('');
+    const table = `<table>${Array.from({ length: 20_000 }, (_, i) => `<tr><td>row ${String(i)}</td><td>cell</td></tr>`).join('')}</table>`;
+    const timed = async (html: string): Promise<{ text: string; ms: number }> => {
+      await page.goto('about:blank');
+      await page.setContent(html);
+      await enrichSnapshotFromDom(page, 1);
+      const start = performance.now();
+      const { lines } = await enrichSnapshotFromDom(page, 1);
+      return { text: lines.join('\n'), ms: performance.now() - start };
+    };
+    const unchecked = await timed(fields((i) => `id="f${String(i)}"`) + table);
+    const checked = await timed(fields((i) => `data-testid="f${String(i)}" data-track="t${String(i)}"`) + table);
+    expect(checked.text).toContain('[data-testid="f150"] [data-track="t150"]');
+    expect(checked.ms).toBeLessThan(unchecked.ms * 5 + 250);
+  });
+
   it('keeps ordinary data values that need escaping or are cut to the printed length', async () => {
     const long = 'x'.repeat(300);
     await page.setContent(
