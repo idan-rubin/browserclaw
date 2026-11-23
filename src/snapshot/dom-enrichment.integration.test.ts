@@ -219,6 +219,27 @@ d('enrichSnapshotFromDom (integration)', () => {
     expect(text).toContain('[id="city"] [data-typed="Lisbon"]');
   });
 
+  it('keeps the values of an ordinary control whose attribute names need escaping', async () => {
+    await page.goto(dataUrl('<button id="b" data-testid="save" data-analytics.id="cta" data-a:b="c">B</button>'));
+    const text = (await enrichSnapshotFromDom(page, 1)).lines.join('\n');
+    expect(text).toContain('[data-testid="save"]');
+    expect(text).toContain('[data-analyticsid="cta"]');
+    expect(text).toContain('[data-ab="c"]');
+  });
+
+  it('masks only the value that changed after the scan read it', async () => {
+    await page.goto(
+      dataUrl(
+        '<button id="b" data-testid="save" data-tick="0">B</button>' +
+          "<script>new MutationObserver(() => { document.getElementById('b').dataset.tick = '1'; })" +
+          ".observe(document.getElementById('b'), { attributes: true, attributeFilter: ['data-bc-ref'] });</script>",
+      ),
+    );
+    const text = (await enrichSnapshotFromDom(page, 1)).lines.join('\n');
+    expect(text).toContain('[data-testid="save"]');
+    expect(text).toContain('[data-tick="redacted"]');
+  });
+
   it('keeps ordinary data values that need escaping or are cut to the printed length', async () => {
     const long = 'x'.repeat(300);
     await page.setContent(

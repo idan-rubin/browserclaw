@@ -117,13 +117,15 @@ function sanitizeAttrValue(value: string): string {
     .trim();
 }
 
-const CSS_ATTRIBUTE_NAME = /^[a-z_][\w-]*$/i;
 const SCAN_REF = /^e\d+$/;
+
+function cssEscape(text: string): string {
+  return text.replace(/[^a-z0-9_-]/giu, (char) => `\\${(char.codePointAt(0) ?? 0).toString(16)} `);
+}
 
 function carriesValue({ name, value }: { name: string; value: string }): string {
   const shown = value.slice(0, MAX_ATTR_VALUE_LEN);
-  const escaped = shown.replace(/[^a-z0-9 _-]/giu, (char) => `\\${(char.codePointAt(0) ?? 0).toString(16)} `);
-  return `[${name}${shown === value ? '' : '^'}="${escaped}"]`;
+  return `[${cssEscape(name)}${shown === value ? '' : '^'}="${cssEscape(shown)}"]`;
 }
 
 // ── Pure snapshot builder ──
@@ -318,17 +320,22 @@ export async function enrichSnapshotFromDom(
   // could have issued, and a data value is kept only when a selector, matched outside that world, finds an ordinary
   // element that carries this stamp and that value. A stamp alone can be stale or shared.
   const elements = scanned.filter((el) => SCAN_REF.test(el.ref));
+  const carried = async (ref: string, attrs: DomEnrichedElement['dataAttrs']): Promise<boolean> =>
+    (await Promise.resolve()
+      .then(() =>
+        context.locator(`[data-bc-ref="${ref}"]${attrs.map(carriesValue).join('')}${ORDINARY_FIELD_SELECTOR}`).count(),
+      )
+      .catch(() => 0)) > 0;
   await Promise.all(
     elements
       .filter((el) => el.dataAttrs.length > 0)
       .map(async (el) => {
-        const carried = el.dataAttrs.every(({ name }) => CSS_ATTRIBUTE_NAME.test(name))
-          ? await context
-              .locator(`[data-bc-ref="${el.ref}"]${el.dataAttrs.map(carriesValue).join('')}${ORDINARY_FIELD_SELECTOR}`)
-              .count()
-              .catch(() => 0)
-          : 0;
-        if (carried === 0) el.dataAttrs = el.dataAttrs.map(({ name }) => ({ name, value: REDACTED_FIELD_VALUE }));
+        if (await carried(el.ref, el.dataAttrs)) return;
+        el.dataAttrs = await Promise.all(
+          el.dataAttrs.map(async (attr) =>
+            (await carried(el.ref, [attr])) ? attr : { name: attr.name, value: REDACTED_FIELD_VALUE },
+          ),
+        );
       }),
   );
   return buildDomEnrichedLines(elements);
