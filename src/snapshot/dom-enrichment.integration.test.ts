@@ -195,6 +195,30 @@ d('enrichSnapshotFromDom (integration)', () => {
     }
   });
 
+  it('drops an element whose ref the page rewrote on the way back from the scan', async () => {
+    await page.goto(dataUrl(MIRRORED_VALUE_PAGE));
+    await page.fill('#otp', '246810');
+    await page.fill('#city', 'Lisbon');
+    await page.evaluate(() => {
+      Element.prototype.getAttribute = () => null;
+      Object.defineProperty(Element.prototype, 'tagName', { get: () => 'DIV' });
+      const push = Array.prototype.push;
+      Array.prototype.push = function (...items: unknown[]): number {
+        for (const item of items) {
+          const scanned = item as { id?: string; ref?: string } | null;
+          if (scanned?.id === 'otp') scanned.ref = 'x"], body, [x="';
+        }
+        return push.apply(this, items);
+      };
+    });
+    const { lines, refs } = await enrichSnapshotFromDom(page, 1);
+    const text = lines.join('\n');
+    expect(text).not.toContain('246810');
+    expect(text).not.toContain('body');
+    expect(Object.keys(refs).every((ref) => /^e\d+$/.test(ref))).toBe(true);
+    expect(text).toContain('[id="city"] [data-typed="Lisbon"]');
+  });
+
   it('keeps ordinary data values that need escaping or are cut to the printed length', async () => {
     const long = 'x'.repeat(300);
     await page.setContent(

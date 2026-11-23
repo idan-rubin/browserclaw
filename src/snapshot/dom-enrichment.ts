@@ -118,6 +118,7 @@ function sanitizeAttrValue(value: string): string {
 }
 
 const CSS_ATTRIBUTE_NAME = /^[a-z_][\w-]*$/i;
+const SCAN_REF = /^e\d+$/;
 
 function carriesValue({ name, value }: { name: string; value: string }): string {
   const shown = value.slice(0, MAX_ATTR_VALUE_LEN);
@@ -224,7 +225,7 @@ export async function enrichSnapshotFromDom(
     context = frame;
   }
 
-  const elements = await context.evaluate(
+  const scanned = await context.evaluate(
     (args: {
       selector: string;
       rootSelector: string;
@@ -313,8 +314,10 @@ export async function enrichSnapshotFromDom(
     },
   );
 
-  // The scan ran in the page's JavaScript world, so a data value is kept only when a selector, matched outside it,
-  // finds an ordinary element that carries this stamp and that value. A stamp alone can be stale or shared.
+  // The scan ran in the page's JavaScript world: a ref it returns goes into selectors, so it must be one the scan
+  // could have issued, and a data value is kept only when a selector, matched outside that world, finds an ordinary
+  // element that carries this stamp and that value. A stamp alone can be stale or shared.
+  const elements = scanned.filter((el) => SCAN_REF.test(el.ref));
   await Promise.all(
     elements
       .filter((el) => el.dataAttrs.length > 0)
