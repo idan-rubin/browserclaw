@@ -33,7 +33,7 @@ export async function connectOverPinnedCdp(
   let nextInternalId = -10_000;
   const pendingResumes = new Map<number, string>();
   const attachedPageTargets = new Map<string, string>();
-  const pendingSessionCommands = new Map<number, string>();
+  const pendingSessionCommands = new Map<number, { sessionId: string; sentAt: number }>();
   let initializing = true;
   const close = (reason = 'CDP socket closed'): void => {
     if (closeReason !== undefined) return;
@@ -74,7 +74,7 @@ export async function connectOverPinnedCdp(
       const id = command?.id;
       const sessionId = command?.sessionId;
       if (initializing && typeof id === 'number' && id > 0 && typeof sessionId === 'string' && sessionId !== '')
-        pendingSessionCommands.set(id, sessionId);
+        pendingSessionCommands.set(id, { sessionId, sentAt: Date.now() });
       try {
         socket.send(JSON.stringify(message));
       } catch (error) {
@@ -139,8 +139,8 @@ export async function connectOverPinnedCdp(
         const detached = record(message.params)?.sessionId;
         if (typeof detached === 'string' && detached !== '') {
           attachedPageTargets.delete(detached);
-          for (const [id, sessionId] of pendingSessionCommands)
-            if (sessionId === detached) pendingSessionCommands.delete(id);
+          for (const [id, command] of pendingSessionCommands)
+            if (command.sessionId === detached) pendingSessionCommands.delete(id);
         }
       }
       if (
@@ -180,9 +180,13 @@ export async function connectOverPinnedCdp(
   } catch (error) {
     close();
     if (isConnectTimeout(error)) {
+      // The handshake shares this deadline, so a target is blamed only for a command it held for half the attempt.
+      const heldSince = Date.now() - Math.max(1, opts.timeoutMs) / 2;
       const unresponsive = [
         ...new Set(
-          [...pendingSessionCommands.values()].flatMap((sessionId) => attachedPageTargets.get(sessionId) ?? []),
+          [...pendingSessionCommands.values()]
+            .filter((command) => command.sentAt <= heldSince)
+            .flatMap((command) => attachedPageTargets.get(command.sessionId) ?? []),
         ),
       ].slice(0, MAX_DIAGNOSTIC_TARGETS);
       if (unresponsive.length > 0) throw new UnresponsiveCdpTargetError(unresponsive);

@@ -20,6 +20,8 @@ export async function startConnectionCdpServer(
     onBrowserInfo?: () => void;
     disconnectOnBrowserInfo?: boolean;
     handshakeStatuses?: readonly number[];
+    /** Hold every WebSocket upgrade this long, as a browser that starts on connect does. */
+    handshakeDelayMs?: number;
     commandFailures?: readonly { method: string; message: string; sessionOnly?: boolean }[];
     /** Never answer the announced page target's session, or the browser's auto-attach command. */
     unresponsive?: 'page-target' | 'browser';
@@ -56,7 +58,11 @@ export async function startConnectionCdpServer(
     const status = opts.handshakeStatuses?.[handshakes];
     handshakes += 1;
     if (status !== undefined && status !== 101) done(false, status);
-    else done(true);
+    else if (opts.handshakeDelayMs === undefined) done(true);
+    else
+      setTimeout(() => {
+        done(true);
+      }, opts.handshakeDelayMs);
   };
   const sockets = new WebSocketServer({ server, verifyClient });
   sockets.on('connection', (socket, request) => {

@@ -166,6 +166,22 @@ describe('pinned CDP network', () => {
     }
   });
 
+  it('keeps a plain, retryable timeout when a slow handshake left the page target little of the attempt', async () => {
+    const cdp = await startConnectionCdpServer({ unresponsive: 'page-target', handshakeDelayMs: 500 });
+    try {
+      const failure = await connectOverPinnedCdp(
+        { url: `${cdp.httpUrl.replace('http:', 'ws:')}/devtools/browser/x` },
+        { timeoutMs: 700 },
+      ).catch((error: unknown) => error);
+      expect(cdp.frames.some((frame) => frame.sessionId === 'hung-session')).toBe(true);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(UnresponsiveCdpTargetError);
+      expect((failure as Error).message).toMatch(/timeout/i);
+    } finally {
+      await cdp.close();
+    }
+  });
+
   it('control: a timeout with no pending page target stays a plain timeout', async () => {
     const cdp = await startConnectionCdpServer({ unresponsive: 'browser' });
     try {
