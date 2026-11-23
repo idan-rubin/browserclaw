@@ -27,7 +27,7 @@ import type { Page, Frame } from 'playwright-core';
 
 import type { RoleRefs } from '../types.js';
 
-import { isSensitiveFieldDescriptor, REDACTED_FIELD_VALUE } from './sensitive-field-values.js';
+import { isSensitiveFieldDescriptor, ORDINARY_FIELD_SELECTOR, REDACTED_FIELD_VALUE } from './sensitive-field-values.js';
 
 // ── Tunables ──
 
@@ -305,6 +305,22 @@ export async function enrichSnapshotFromDom(
     },
   );
 
+  const dataBearing = elements.filter((el) => el.dataAttrs.length > 0);
+  if (dataBearing.length > 0) {
+    // The scan above ran in the page's JavaScript world; only an element this count confirms keeps its data values.
+    const ordinary = (stamp: string): Promise<number> =>
+      context
+        .locator(`${stamp}${ORDINARY_FIELD_SELECTOR}`)
+        .count()
+        .catch(() => 0);
+    if ((await ordinary('[data-bc-ref]')) !== elements.length)
+      await Promise.all(
+        dataBearing.map(async (el) => {
+          if ((await ordinary(`[data-bc-ref="${el.ref}"]`)) !== 1)
+            el.dataAttrs = el.dataAttrs.map(({ name }) => ({ name, value: REDACTED_FIELD_VALUE }));
+        }),
+      );
+  }
   return buildDomEnrichedLines(elements);
 }
 

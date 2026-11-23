@@ -146,6 +146,24 @@ d('enrichSnapshotFromDom (integration)', () => {
     expect(text).toContain('[id="city"] [data-typed="Lisbon"]');
   });
 
+  it('masks a mirrored secret when the page overrides its own attribute reads', async () => {
+    await page.goto(dataUrl(MIRRORED_VALUE_PAGE));
+    await page.fill('#pw', 'hunter2-typed');
+    await page.fill('#otp', '246810');
+    await page.fill('#city', 'Lisbon');
+    await page.evaluate(() => {
+      Element.prototype.getAttribute = () => null;
+      Object.defineProperty(Element.prototype, 'tagName', { get: () => 'DIV' });
+    });
+    const { lines } = await enrichSnapshotFromDom(page, 1);
+    const text = lines.join('\n');
+    expect(text).not.toContain('hunter2-typed');
+    expect(text).not.toContain('246810');
+    expect(text).toContain('[id="pw"] [data-typed="redacted"]');
+    expect(text).toContain('[id="otp"] [data-typed="redacted"]');
+    expect(text).toContain('[id="city"] [data-typed="Lisbon"]');
+  });
+
   it('nextRefCounter round-trips with a scoped scan', async () => {
     await page.goto(dataUrl(ICON_BUTTON_PAGE));
     const first = await enrichSnapshotFromDom(page, 5);

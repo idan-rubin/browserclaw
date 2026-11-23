@@ -57,21 +57,26 @@ describe('redactAiSnapshotFieldValues', () => {
 
 describe('takeRedactedAiSnapshotText', () => {
   const snapshot = '- textbox "Password" [ref=e2]: hunter2\n- textbox "City" [ref=e4]: Lisbon';
-  const pageAnswering = (count: (selector: string, sensitiveOnly: boolean) => Promise<number>): Page =>
+  const pageAnswering = (ordinary: (selector: string) => Promise<number>, present = 1): Page =>
     ({
       ariaSnapshot: () => Promise.resolve(snapshot),
       locator: (selector: string) => ({
-        count: () => count(selector, false),
-        and: () => ({ count: () => count(selector, true) }),
+        count: () => Promise.resolve(present),
+        and: () => ({ count: () => ordinary(selector) }),
       }),
     }) as unknown as Page;
 
-  it('masks the field the selector check matches and keeps the rest', async () => {
-    const page = pageAnswering((selector, sensitiveOnly) =>
-      Promise.resolve(sensitiveOnly && selector !== 'aria-ref=e2' ? 0 : 1),
-    );
+  it('keeps only a field positively identified as ordinary', async () => {
+    const page = pageAnswering((selector) => Promise.resolve(selector === 'aria-ref=e4' ? 1 : 0));
     expect(await takeRedactedAiSnapshotText(page, 1000)).toBe(
       '- textbox "Password" [ref=e2]: [redacted]\n- textbox "City" [ref=e4]: Lisbon',
+    );
+  });
+
+  it('masks a field that was present a moment ago and is gone when it is classified', async () => {
+    const page = pageAnswering(() => Promise.resolve(0), 1);
+    expect(await takeRedactedAiSnapshotText(page, 1000)).toBe(
+      '- textbox "Password" [ref=e2]: [redacted]\n- textbox "City" [ref=e4]: [redacted]',
     );
   });
 

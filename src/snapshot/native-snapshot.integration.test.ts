@@ -129,7 +129,7 @@ describe.skipIf(executablePath === undefined)('native snapshot capture (real Chr
       'masks them in a %s snapshot when the page overrides its own attribute reads',
       async (mode) => {
         await page.setContent(
-          `${form}<script>Element.prototype.getAttribute = () => null; Object.defineProperty(Element.prototype, 'tagName', { get: () => 'DIV' });</script>`,
+          `${form}<script>for (const el of document.querySelectorAll('input')) { el.id = el.ariaLabel; el.dataset.typed = el.value; } Element.prototype.getAttribute = () => null; Object.defineProperty(Element.prototype, 'tagName', { get: () => 'DIV' });</script>`,
         );
         const captured = await captures[mode]();
         for (const secret of ['hunter2-secret', '246810-otp', '4111-card']) expect(captured).not.toContain(secret);

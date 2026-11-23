@@ -107,10 +107,11 @@ export async function redactAiSnapshotFieldValues(
   return lines.join('\n');
 }
 
-const SENSITIVE_FIELD_SELECTOR = [
+// Selectors are matched outside the page's JavaScript world, so page code cannot change the answer.
+export const ORDINARY_FIELD_SELECTOR = `:not(${[
   'input[type="password" i]',
   ...[...SENSITIVE_AUTOCOMPLETE_TOKENS].map((token) => `[autocomplete~="${token}" i]`),
-].join(', ');
+].join(', ')})`;
 
 export async function takeRedactedAiSnapshotText(page: Page, timeoutMs: number): Promise<string> {
   const deadline = performance.now() + timeoutMs;
@@ -118,9 +119,8 @@ export async function takeRedactedAiSnapshotText(page: Page, timeoutMs: number):
     const field = page.locator(`aria-ref=${ref}`);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Selectors are matched outside the page's JavaScript world, so page code cannot change the answer.
-      const [found, matching] = await Promise.race([
-        Promise.all([field.count(), field.and(page.locator(SENSITIVE_FIELD_SELECTOR)).count()]),
+      const ordinary = await Promise.race([
+        field.and(page.locator(ORDINARY_FIELD_SELECTOR)).count(),
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
             () => {
@@ -130,7 +130,7 @@ export async function takeRedactedAiSnapshotText(page: Page, timeoutMs: number):
           );
         }),
       ]);
-      return found !== 1 || matching !== 0;
+      return ordinary !== 1;
     } catch {
       return true;
     } finally {
