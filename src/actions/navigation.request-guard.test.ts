@@ -345,6 +345,63 @@ describe('interaction request policy enforcement', () => {
     ).resolves.toBe('again');
   });
 
+  it('returns from a finished action while the page keeps requesting documents', async () => {
+    const { page, dispatch } = fixture();
+    vi.spyOn(Security, 'assertBrowserNavigationAllowed').mockImplementation(
+      () => new Promise((resolve) => setTimeout(resolve, 40)),
+    );
+    const stream = setInterval(() => void dispatch('http://8.8.8.8/stream'), 5);
+    try {
+      const guarded = withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          return 'clicked';
+        },
+      });
+      const outcome = await Promise.race([
+        guarded,
+        new Promise<string>((resolve) => setTimeout(resolve, 1000, 'still waiting')),
+      ]);
+      expect(outcome).toBe('clicked');
+    } finally {
+      clearInterval(stream);
+    }
+  });
+
+  describe('a frame at an origin no policy check has passed', () => {
+    const settleFirstAction = async (page: Page): Promise<void> => {
+      await withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: () => Promise.resolve(),
+      });
+    };
+
+    it('is checked when it asks for another document from that origin between actions', async () => {
+      const { page, fence, dispatch } = fixture();
+      await settleFirstAction(page);
+      fence.emit('Page.frameNavigated', { frame: { id: 'subframe', url: 'http://127.0.0.1/inner' } });
+      expect(await dispatch('http://127.0.0.1/secret', { subframe: true })).toEqual(preserved);
+    });
+
+    it('control: skips the check once a document for that origin has passed one', async () => {
+      const { page, fence, dispatch } = fixture();
+      await withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          expect(await dispatch('http://8.8.8.8/inner', { subframe: true })).toEqual({ continued: true });
+        },
+      });
+      fence.emit('Page.frameNavigated', { frame: { id: 'subframe', url: 'http://8.8.8.8/inner' } });
+      const check = vi.spyOn(Security, 'assertBrowserNavigationAllowed');
+      expect(await dispatch('http://8.8.8.8/next', { subframe: true })).toEqual({ continued: true });
+      expect(check).not.toHaveBeenCalled();
+    });
+  });
+
   describe('release while Chrome holds renderer commands', () => {
     const settledWithin = async (operation: Promise<unknown>, ms: number): Promise<boolean> => {
       const settled = operation.then(

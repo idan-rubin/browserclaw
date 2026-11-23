@@ -422,6 +422,46 @@ describe.skipIf(executablePath === undefined)('navigation authority fence (real 
       },
     );
 
+    describe('with a frame already at a denied origin', () => {
+      const attachWithFrame = async (policy: SsrfPolicy): Promise<void> => {
+        await page.goto(route(allowed, '/frame-host', `${denied}/inner`));
+        await page.frames()[1]?.waitForURL(`${denied}/inner`);
+        await assertInteractionNavigationCompletedSafely({
+          cdpUrl,
+          page,
+          previousUrl: page.url(),
+          ssrfPolicy: policy,
+          action: () => Promise.resolve(),
+        });
+      };
+      const frameAsksForMore = async (): Promise<void> => {
+        await page.frames()[1]?.evaluate(() => {
+          setTimeout(() => {
+            location.href = '/secret';
+          }, 50);
+        });
+        await page.waitForTimeout(600);
+      };
+
+      it('stops the frame loading more of that origin once the tab is under the policy', async () => {
+        await attachWithFrame(strict);
+        await frameAsksForMore();
+        expect(hits.secret).toBe(0);
+        await page.evaluate((url) => {
+          const frame = document.querySelector('iframe');
+          if (frame) frame.src = url;
+        }, `${denied}/secret`);
+        await page.waitForTimeout(600);
+        expect(hits.secret).toBe(0);
+      });
+
+      it('control: the frame loads it under a policy that allows the origin', async () => {
+        await attachWithFrame(permissive);
+        await frameAsksForMore();
+        expect(hits.secret).toBe(1);
+      });
+    });
+
     it('control: a tab no guarded action has touched is not intercepted', async () => {
       await page.goto(`${allowed}/first`);
       await page.reload();

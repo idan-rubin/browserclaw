@@ -252,6 +252,7 @@ export async function withPageNavigationRequestGuard<T>(opts: PageNavigationRequ
         if (!actionStarted) await quarantineBlockedTarget(opts);
       }
     }
+    release?.stopAdmittingDocuments();
     while (inFlight.size > 0) await Promise.allSettled(inFlight);
     const cleanupError = await release?.({ stopLoading: guardState.hasError, handOffPendingDocuments: true });
     if (guardState.hasError) {

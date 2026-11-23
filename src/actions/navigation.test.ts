@@ -106,6 +106,38 @@ interface FakeContext {
   newPage: ReturnType<typeof vi.fn>;
 }
 
+describe('navigateViaPlaywright on a page that keeps requesting documents', () => {
+  it('returns once the navigation commits', async () => {
+    const fence = createFakeNavigationFence({ url: () => 'https://example.test/' });
+    const page = buildFakePage({
+      context: () => ({ newCDPSession: fence.newCDPSession }),
+      goto: vi.fn(
+        () => new Promise((resolve) => setTimeout(resolve, 30, { request: () => ({ redirectedFrom: () => null }) })),
+      ),
+    });
+    mockGetPageForTargetId.mockReset();
+    mockGetPageForTargetId.mockResolvedValue(page as unknown as Page);
+    mockAssertBrowserNavigationAllowed.mockImplementation(() => new Promise((resolve) => setTimeout(resolve, 40)));
+    const stream = setInterval(() => void fence.pauseDocument('https://example.test/stream'), 5);
+    try {
+      const navigated = navigateViaPlaywright({
+        cdpUrl: 'http://localhost:9222',
+        targetId: 'T1',
+        url: 'https://example.test/',
+      }).catch((error: unknown) => error);
+      const outcome = await Promise.race([
+        navigated,
+        new Promise<string>((resolve) => setTimeout(resolve, 1500, 'still waiting')),
+      ]);
+      expect(outcome).toEqual({ url: 'https://example.test/' });
+    } finally {
+      clearInterval(stream);
+      mockAssertBrowserNavigationAllowed.mockReset();
+      mockAssertBrowserNavigationAllowed.mockResolvedValue(undefined);
+    }
+  });
+});
+
 describe('navigateViaPlaywright retry ownership', () => {
   it('passes the originating page when retiring a detached navigation adapter', async () => {
     const origin = buildFakePage({ goto: vi.fn().mockRejectedValue(new Error('Frame has been detached')) });

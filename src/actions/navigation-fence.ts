@@ -72,6 +72,7 @@ interface FenceInvocation {
   policy: BrowserNavigationPolicyOptions;
   handleDocument?: FencedDocumentHandler;
   inFlight: Set<Promise<void>>;
+  admitsDocuments: () => boolean;
   isOpen: () => boolean;
   fail: (error: unknown) => void;
   assertTargetCurrent: () => void;
@@ -112,6 +113,8 @@ function createStandingNavigationPolicy() {
   let policy: BrowserNavigationPolicyOptions | undefined;
   let warned = false;
   const committedOrigins = new Map<string, string>();
+  // A frame can already sit at an origin when the tab is fenced; only a passed check makes that origin exempt.
+  const checkedOrigins = new Set<string>();
   const requestedNavigations = new Map<string, string>();
   const frameCommitted = (frameId: string, url: string): void => {
     const origin = networkOrigin(url);
@@ -122,6 +125,10 @@ function createStandingNavigationPolicy() {
     frameCommitted(tree.frame.id, tree.frame.url);
     for (const child of tree.childFrames ?? []) seed(child);
   };
+  const passed = (url: string): void => {
+    const origin = networkOrigin(url);
+    if (origin !== undefined) checkedOrigins.add(origin);
+  };
   return {
     set({ standingSsrfPolicy, browserProxyMode }: BrowserNavigationPolicyOptions): void {
       if (standingSsrfPolicy)
@@ -129,6 +136,7 @@ function createStandingNavigationPolicy() {
     },
     frameCommitted,
     seed,
+    passed,
     observe(events: EventEmitter): () => void {
       const onNavigated = (event: { frame: { id: string; url: string } }): void => {
         frameCommitted(event.frame.id, event.frame.url);
@@ -164,12 +172,14 @@ function createStandingNavigationPolicy() {
       const origin = networkOrigin(request.url);
       if (
         origin !== undefined &&
+        checkedOrigins.has(origin) &&
         ((frameId !== undefined && committedOrigins.get(frameId) === origin) ||
           (mainFrameId !== undefined && committedOrigins.get(mainFrameId) === origin))
       )
         return undefined;
       try {
         await assertBrowserNavigationAllowed({ url: request.url, ...policy });
+        passed(request.url);
         return undefined;
       } catch (error) {
         if (!warned) {
@@ -306,6 +316,7 @@ function createTabFence(page: Page, session: CDPSession) {
     };
     const decide = async (event: PausedRequest, remaining: FenceInvocation[]): Promise<void> => {
       if (remaining.length === 0) {
+        standing.passed(event.request.url);
         await settleInterception(target, 'Fetch.continueRequest', { requestId: event.requestId });
         return;
       }
@@ -379,7 +390,7 @@ function createTabFence(page: Page, session: CDPSession) {
       if (hostsFrame(event.frameId)) setDocumentPending(true);
       if (event.networkId !== undefined && event.networkId !== '')
         onRequestWillBeSent({ requestId: event.networkId, type: event.resourceType, frameId: event.frameId });
-      const claiming = [...invocations];
+      const claiming = [...invocations].filter((invocation) => invocation.admitsDocuments());
       const operation = (claiming.length > 0 ? decide(event, claiming) : decideStanding(target, event)).catch(
         (error: unknown) => {
           console.warn(
@@ -659,10 +670,10 @@ function createTabFence(page: Page, session: CDPSession) {
   };
 }
 
-export type NavigationAuthorityRelease = (options?: {
+export type NavigationAuthorityRelease = ((options?: {
   stopLoading?: boolean;
   handOffPendingDocuments?: boolean;
-}) => Promise<unknown>;
+}) => Promise<unknown>) & { stopAdmittingDocuments: () => void };
 
 export async function installNavigationAuthorityFence(
   page: Page,
@@ -685,6 +696,7 @@ export async function installNavigationAuthorityFence(
   const inFlight = new Set<Promise<void>>();
   let closed = false;
   let failed = false;
+  let admitting = true;
   const fail = (error: unknown): void => {
     failed = true;
     onFailure(error);
@@ -697,13 +709,19 @@ export async function installNavigationAuthorityFence(
     policy,
     handleDocument,
     inFlight,
+    admitsDocuments: () => admitting,
     isOpen: () => !closed && !failed,
     fail,
     assertTargetCurrent,
   };
   invocations.add(invocation);
   tab.standing.set(policy);
-  const release: NavigationAuthorityRelease = async (options = {}) => {
+  // Later documents go to the standing policy, so a page that keeps asking cannot hold a finished action open.
+  const stopAdmittingDocuments = (): void => {
+    admitting = false;
+  };
+  const cleanUp = async (options: Parameters<NavigationAuthorityRelease>[0] = {}): Promise<unknown> => {
+    stopAdmittingDocuments();
     const deadline = createDeferred<never>();
     const timer = setTimeout(() => {
       deadline.reject(new Error('Browser navigation did not settle before authority cleanup'));
@@ -763,6 +781,7 @@ export async function installNavigationAuthorityFence(
       clearTimeout(timer);
     }
   };
+  const release: NavigationAuthorityRelease = Object.assign(cleanUp, { stopAdmittingDocuments });
   let claimed = false;
   try {
     await tab.ready;
