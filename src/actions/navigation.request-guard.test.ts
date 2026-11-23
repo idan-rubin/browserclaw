@@ -402,15 +402,36 @@ describe('interaction request policy enforcement', () => {
       expect(await dispatch('http://127.0.0.1/secret', { subframe: true })).toEqual(preserved);
     });
 
-    it('control: skips the check once a document for that origin has passed one', async () => {
+    it('rechecks a document whose check was still running when a stricter policy took over', async () => {
       const { page, fence, dispatch } = fixture();
       await withPageNavigationRequestGuard({
         cdpUrl: 'http://localhost:39993',
         page,
-        action: async () => {
-          expect(await dispatch('http://8.8.8.8/inner', { subframe: true })).toEqual({ continued: true });
-        },
+        ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+        action: () => Promise.resolve(),
       });
+      fence.emit('Page.frameNavigated', { frame: { id: 'subframe', url: 'http://127.0.0.1/inner' } });
+      let finishOldCheck!: () => void;
+      const check = vi.spyOn(Security, 'assertBrowserNavigationAllowed').mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishOldCheck = resolve;
+          }),
+      );
+      const requested = dispatch('http://127.0.0.1/first', { subframe: true });
+      await vi.waitFor(() => {
+        expect(check).toHaveBeenCalledOnce();
+      });
+      await settleFirstAction(page);
+      finishOldCheck();
+      expect(await requested).toEqual(preserved);
+      expect(await dispatch('http://127.0.0.1/second', { subframe: true })).toEqual(preserved);
+    });
+
+    it('control: skips the check once a document for that origin has passed one', async () => {
+      const { page, fence, dispatch } = fixture();
+      await settleFirstAction(page);
+      expect(await dispatch('http://8.8.8.8/inner', { subframe: true })).toEqual({ continued: true });
       fence.emit('Page.frameNavigated', { frame: { id: 'subframe', url: 'http://8.8.8.8/inner' } });
       const check = vi.spyOn(Security, 'assertBrowserNavigationAllowed');
       expect(await dispatch('http://8.8.8.8/next', { subframe: true })).toEqual({ continued: true });

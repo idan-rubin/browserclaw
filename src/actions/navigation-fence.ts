@@ -126,10 +126,6 @@ function createStandingNavigationPolicy() {
     frameCommitted(tree.frame.id, tree.frame.url);
     for (const child of tree.childFrames ?? []) seed(child);
   };
-  const passed = (url: string): void => {
-    const origin = networkOrigin(url);
-    if (origin !== undefined) checkedOrigins.add(origin);
-  };
   return {
     set({ standingSsrfPolicy, browserProxyMode }: BrowserNavigationPolicyOptions): void {
       if (!standingSsrfPolicy) return;
@@ -142,7 +138,6 @@ function createStandingNavigationPolicy() {
     },
     frameCommitted,
     seed,
-    passed,
     observe(events: EventEmitter): () => void {
       const onNavigated = (event: { frame: { id: string; url: string } }): void => {
         frameCommitted(event.frame.id, event.frame.url);
@@ -176,24 +171,30 @@ function createStandingNavigationPolicy() {
       if (pageRequested) requestedNavigations.delete(frameId);
       if (!policy) return undefined;
       const origin = networkOrigin(request.url);
-      if (
-        origin !== undefined &&
-        checkedOrigins.has(origin) &&
-        ((frameId !== undefined && committedOrigins.get(frameId) === origin) ||
-          (mainFrameId !== undefined && committedOrigins.get(mainFrameId) === origin))
-      )
-        return undefined;
-      try {
-        await assertBrowserNavigationAllowed({ url: request.url, ...policy });
-        passed(request.url);
-        return undefined;
-      } catch (error) {
-        if (!warned) {
-          warned = true;
-          console.warn(
-            `[browserclaw] stopped a document the page requested between browser actions (${error instanceof Error ? error.name : 'error'})`,
-          );
+      for (;;) {
+        if (
+          origin !== undefined &&
+          checkedOrigins.has(origin) &&
+          ((frameId !== undefined && committedOrigins.get(frameId) === origin) ||
+            (mainFrameId !== undefined && committedOrigins.get(mainFrameId) === origin))
+        )
+          return undefined;
+        const checkedUnder = policyKey;
+        try {
+          await assertBrowserNavigationAllowed({ url: request.url, ...policy });
+        } catch (error) {
+          if (!warned) {
+            warned = true;
+            console.warn(
+              `[browserclaw] stopped a document the page requested between browser actions (${error instanceof Error ? error.name : 'error'})`,
+            );
+          }
+          break;
         }
+        // A policy that took over while the check ran has not passed this document.
+        if (checkedUnder !== policyKey) continue;
+        if (origin !== undefined) checkedOrigins.add(origin);
+        return undefined;
       }
       const hasReferer = Object.keys(request.headers).some((name) => name.toLowerCase() === 'referer');
       return frameId === mainFrameId && !pageRequested && !hasReferer ? 'BlockedByClient' : 'Aborted';
@@ -322,7 +323,6 @@ function createTabFence(page: Page, session: CDPSession) {
     };
     const decide = async (event: PausedRequest, remaining: FenceInvocation[]): Promise<void> => {
       if (remaining.length === 0) {
-        standing.passed(event.request.url);
         await settleInterception(target, 'Fetch.continueRequest', { requestId: event.requestId });
         return;
       }
