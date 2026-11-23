@@ -180,21 +180,23 @@ function createStandingNavigationPolicy() {
         )
           return undefined;
         const checkedUnder = policyKey;
-        try {
-          await assertBrowserNavigationAllowed({ url: request.url, ...policy });
-        } catch (error) {
-          if (!warned) {
-            warned = true;
-            console.warn(
-              `[browserclaw] stopped a document the page requested between browser actions (${error instanceof Error ? error.name : 'error'})`,
-            );
-          }
-          break;
-        }
-        // A policy that took over while the check ran has not passed this document.
+        const refusal = await assertBrowserNavigationAllowed({ url: request.url, ...policy }).then(
+          () => undefined,
+          (error: unknown) => ({ error }),
+        );
+        // A policy that took over while the check ran decides this document, whichever way the old one answered.
         if (checkedUnder !== policyKey) continue;
-        if (origin !== undefined) checkedOrigins.add(origin);
-        return undefined;
+        if (refusal === undefined) {
+          if (origin !== undefined) checkedOrigins.add(origin);
+          return undefined;
+        }
+        if (!warned) {
+          warned = true;
+          console.warn(
+            `[browserclaw] stopped a document the page requested between browser actions (${refusal.error instanceof Error ? refusal.error.name : 'error'})`,
+          );
+        }
+        break;
       }
       const hasReferer = Object.keys(request.headers).some((name) => name.toLowerCase() === 'referer');
       return frameId === mainFrameId && !pageRequested && !hasReferer ? 'BlockedByClient' : 'Aborted';

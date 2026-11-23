@@ -428,6 +428,30 @@ describe('interaction request policy enforcement', () => {
       expect(await dispatch('http://127.0.0.1/second', { subframe: true })).toEqual(preserved);
     });
 
+    it('rechecks a document its old policy refused once a more permissive policy took over', async () => {
+      const { page, dispatch } = fixture();
+      await settleFirstAction(page);
+      let refuseUnderOldPolicy!: (error: Error) => void;
+      const check = vi.spyOn(Security, 'assertBrowserNavigationAllowed').mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            refuseUnderOldPolicy = reject;
+          }),
+      );
+      const requested = dispatch('http://127.0.0.1/first', { subframe: true });
+      await vi.waitFor(() => {
+        expect(check).toHaveBeenCalledOnce();
+      });
+      await withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+        action: () => Promise.resolve(),
+      });
+      refuseUnderOldPolicy(new InvalidBrowserNavigationUrlError('private address'));
+      expect(await requested).toEqual({ continued: true });
+    });
+
     it('control: skips the check once a document for that origin has passed one', async () => {
       const { page, fence, dispatch } = fixture();
       await settleFirstAction(page);
