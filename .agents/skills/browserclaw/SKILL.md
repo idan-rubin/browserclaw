@@ -1,42 +1,44 @@
 ---
 name: browserclaw
-description: Browse websites with browserclaw. For one tab, use launch({ url }) then currentPage(); open(url) creates an additional tab.
+description: Use the browserclaw Node.js library to read and interact with websites that require a browser, including forms and JavaScript-rendered pages.
 ---
 
-# Browserclaw Interactive Browsing
+# Browse with the BrowserClaw library
 
-You are operating a real browser. You see pages through `snapshot()` and act on them with `click()`, `type()`, `select()`, etc. Every action may change the page — re-snapshot before deciding what to do next. Refs (`"e3"`, `"e8"`, ...) are only valid for the snapshot that produced them.
+Use `browserclaw` to drive a Chromium browser from your agent. Take a snapshot to find the control you need, act on its ref, then check what changed. When the initial HTML already contains the data you need, a plain HTTP request is enough.
 
-## Start with one tab
+## Add and verify a to-do
 
-Requires Node.js >= 22 and a system Chromium-based browser. Install with `npm install browserclaw`; no separate Playwright browser download is needed.
+Install the library with `npm install browserclaw`. You’ll need Node.js 22 or later and a Chromium-based browser. Save this example as `todo.mjs` and run `node todo.mjs`.
 
-**For the first page, pass the URL to `BrowserClaw.launch({ url })`, then use `browser.currentPage()`.** `browser.open(url)` creates an additional tab. Calling `launch()` without a URL and then `open(url)` leaves the startup blank tab beside the new tab. If already launched without a URL, use `const page = await browser.currentPage(); await page.goto(url)` to navigate that existing tab. Use `open(url)` when you want another tab.
-
-```typescript
+```javascript
 import { BrowserClaw } from 'browserclaw';
 
 const browser = await BrowserClaw.launch({ url: 'https://demo.playwright.dev/todomvc' });
-const page = await browser.currentPage();
-
 try {
-  const { snapshot, refs } = await page.snapshot({ interactive: true, compact: true });
-  // Read `snapshot` text, pick a ref from `refs`, e.g. the textbox is "e1"
-  await page.type('e1', 'Buy milk', { submit: true });
+  const page = await browser.currentPage();
+  await page.waitFor({ selector: '.new-todo' });
+  const { refs } = await page.snapshot({ interactive: true, compact: true });
+  const input = Object.entries(refs).find(
+    ([, element]) => element.role === 'textbox' && element.name === 'What needs to be done?',
+  );
+  if (!input) throw new Error('Could not find the new to-do textbox');
 
-  // Re-snapshot after an action that mutates the page
-  const after = await page.snapshot({ interactive: true, compact: true });
-  // ...read, act, repeat
+  const list = await page.locator('.todo-list');
+  const milkItems = list.getByText('Buy milk', { exact: true });
+  const before = await milkItems.count();
+
+  const [ref] = input;
+  await page.type(ref, 'Buy milk', { submit: true });
+  // The next matching item exists only if the list gained another “Buy milk”.
+  await milkItems.nth(before).waitFor({ state: 'visible', timeout: 5000 });
+  console.log('Verified: added one Buy milk item');
 } finally {
-  await browser.stop(); // always stop the browser; close(tabId) closes a single tab instead
+  await browser.stop();
 }
 ```
 
-**The core loop: Perceive → Reason → Act → Repeat.** Never assume an action worked — re-snapshot and confirm.
-
-## When _not_ to use browserclaw
-
-If the data is in the initial HTML response and the site doesn't require login, JS rendering, or interactive state, use a plain `fetch()` / `curl`. Browserclaw is for pages that need real browser behavior (SPAs, auth flows, forms, JS-rendered content, multi-step interaction).
+`launch({ url })` opens the first tab. To navigate that tab again, use `page.goto(url)`. Use `browser.open(url)` when you need another tab.
 
 ## Snapshot — your eyes
 
@@ -297,8 +299,6 @@ browserclaw ships only the library primitives: snapshots, clicks, types, `pressA
 | Agent stuck repeating the same action           | [`loop-detection.ts`](https://github.com/idan-rubin/browserclaw-agent/blob/main/src/Services/Browser/src/skills/loop-detection.ts)                |
 
 ## Key rules
-
-For a single-tab task: `launch({ url })` → `currentPage()` → interact on that page. If the browser is already launched, reuse its current page and call `goto(url)`.
 
 1. **Never guess the API.** When unsure whether a method exists or what it takes, check `node_modules/browserclaw/dist/index.d.ts` or `node_modules/browserclaw/README.md`. Don't invent alternatives.
 2. **Refs are ephemeral.** After navigation or a DOM-changing action, re-snapshot.
