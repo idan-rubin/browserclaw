@@ -156,17 +156,57 @@ describe.skipIf(executablePath === undefined)('native snapshot capture (real Chr
       },
     );
 
+    it.each(Object.keys(captures) as (keyof typeof captures)[])(
+      'masks what a sensitive field with no value of its own prints beneath it in a %s snapshot',
+      async (mode) => {
+        const pixel = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+        await page.setContent(
+          '<select id="none" aria-label="Card" autocomplete="cc-number"><option>1111-first</option>' +
+            '<option>4242-second</option></select>' +
+            '<select aria-label="Saved" autocomplete="cc-number"><option value="" selected></option>' +
+            '<option>5555-saved</option></select>' +
+            '<div role="textbox" contenteditable="true" aria-label="Code" autocomplete="one-time-code">' +
+            `<img alt="246810-alt" src="${pixel}"></div>` +
+            '<select id="plain" aria-label="Plan"><option>Monthly-visible</option></select>' +
+            "<script>for (const id of ['none', 'plain']) document.getElementById(id).selectedIndex = -1;</script>",
+        );
+        const captured = await captures[mode]();
+        for (const secret of ['1111-first', '4242-second', '5555-saved', '246810-alt'])
+          expect(captured).not.toContain(secret);
+        expect(captured).toContain('Monthly-visible');
+      },
+    );
+
+    it.each(Object.keys(captures) as (keyof typeof captures)[])(
+      'masks names printed between slashes and link addresses inside a sensitive field in a %s snapshot',
+      async (mode) => {
+        const editable = 'role="textbox" contenteditable="true"';
+        await page.setContent(
+          '<select aria-label="Card" autocomplete="cc-number"><option>/1111-first/</option>' +
+            '<option selected>4242-chosen</option></select>' +
+            `<div ${editable} aria-label="Code" autocomplete="one-time-code"><h2>/246810-otp/</h2>` +
+            '<a href="https://example.test/reset?token=246810-link">/246810-name/</a></div>' +
+            '<select aria-label="Folder"><option selected>/Public-visible/</option></select>',
+        );
+        const captured = await captures[mode]();
+        for (const secret of ['1111-first', '4242-chosen', '246810']) expect(captured).not.toContain(secret);
+        expect(captured).toContain('Public-visible');
+      },
+    );
+
     it('masks a snapshot scoped to an element inside a sensitive field', async () => {
       const editable = 'role="textbox" contenteditable="true"';
       await page.setContent(
         `<div ${editable} aria-label="Code" autocomplete="one-time-code">` +
           '<p id="code">246810-otp <b id="deep">246810-deep</b></p></div>' +
           '<select aria-label="Card" autocomplete="cc-number"><option id="chosen" selected>4242-chosen</option></select>' +
+          '<select aria-label="Saved" autocomplete="cc-number"><option value="" selected></option>' +
+          '<option id="unchosen">5555-saved</option></select>' +
           `<div ${editable} aria-label="Notes"><p id="note">Lisbon-visible</p></div>`,
       );
-      for (const selector of ['#code', '#deep', '#chosen']) {
+      for (const selector of ['#code', '#deep', '#chosen', '#unchosen']) {
         const captured = (await snapshotRole({ cdpUrl: 'test', selector })).snapshot;
-        expect(captured).not.toMatch(/246810|4242/);
+        expect(captured).not.toMatch(/246810|4242|5555/);
         expect(captured).toContain('[redacted]');
       }
       expect((await snapshotRole({ cdpUrl: 'test', selector: '#note' })).snapshot).toContain('Lisbon-visible');

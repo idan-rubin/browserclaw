@@ -60,9 +60,26 @@ export async function redactSensitiveAXNodeValues(session: CDPSession, nodes: AX
       }
     }
   };
+  // A select with nothing selected has no value and still prints its options.
+  const printsContent = (field: AXNode): boolean => {
+    const pending = [...(field.childIds ?? [])];
+    const seen = new Set<string>();
+    for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
+      const node = seen.has(id) ? undefined : byId.get(id);
+      seen.add(id);
+      if (!node) continue;
+      if (axValue(node.name) !== '' || axValue(node.value) !== '') return true;
+      pending.push(...(node.childIds ?? []));
+    }
+    return false;
+  };
   await Promise.all(
     nodes
-      .filter((node) => axValue(node.value) !== '' && VALUE_FIELD_ROLES.has(axValue(node.role).toLowerCase()))
+      .filter(
+        (node) =>
+          VALUE_FIELD_ROLES.has(axValue(node.role).toLowerCase()) &&
+          (axValue(node.value) !== '' || printsContent(node)),
+      )
       .map(async (node) => {
         const field =
           node.backendDOMNodeId !== undefined && node.backendDOMNodeId > 0
@@ -81,10 +98,7 @@ export async function redactAXNodesInsideSensitiveField(
 ): Promise<void> {
   const chain = await session.send('Accessibility.getAXNodeAndAncestors', { backendNodeId: rootBackendNodeId });
   const enclosing = chain.nodes.filter(
-    (node) =>
-      node.backendDOMNodeId !== rootBackendNodeId &&
-      axValue(node.value) !== '' &&
-      VALUE_FIELD_ROLES.has(axValue(node.role).toLowerCase()),
+    (node) => node.backendDOMNodeId !== rootBackendNodeId && VALUE_FIELD_ROLES.has(axValue(node.role).toLowerCase()),
   );
   const sensitive = await Promise.all(
     enclosing.map(async (node) => {
@@ -102,14 +116,22 @@ export async function redactAXNodesInsideSensitiveField(
   }
 }
 
-const SNAPSHOT_LINE_NAME = /^(\s*-\s+'?\w+\s+)"(?:\\.|[^"\\])*"/;
+const SNAPSHOT_PROPERTY_LINE = /^(\s*-\s+\/\w+:)\s+\S.*$/s;
 
 function snapshotLineText(line: string): { rest: string; inline: boolean; named: boolean } | null {
   const parsed = parseSnapshotLine(line);
   if (!parsed) return null;
   const attributes = /^(?:\s+\[[^\][]*\])*/.exec(parsed.suffix)?.[0] ?? '';
   const rest = parsed.suffix.slice(attributes.length);
-  return { rest, inline: /^: \S/.test(rest) && line.endsWith(rest), named: SNAPSHOT_LINE_NAME.test(line) };
+  return { rest, inline: /^: \S/.test(rest) && line.endsWith(rest), named: parsed.name !== undefined };
+}
+
+// The parser owns the name's boundaries: Playwright prints some names between slashes instead of quotes.
+function withRedactedName(line: string): string {
+  const parsed = parseSnapshotLine(line);
+  return parsed?.name === undefined
+    ? line
+    : `${parsed.prefix}${parsed.roleRaw} "${REDACTED_FIELD_VALUE}"${parsed.suffix}`;
 }
 
 export async function redactAiSnapshotFieldValues(
@@ -129,7 +151,9 @@ export async function redactAiSnapshotFieldValues(
       const childDepth = getIndentLevel(line) + 1;
       for (let i = index + 1; i < lines.length && getIndentLevel(lines[i]) >= childDepth; i += 1) {
         const child = snapshotLineText(lines[i]);
-        if (child?.inline === true || child?.named === true) nested.push(i);
+        // A property one level down is the field's own (its placeholder); deeper ones belong to its content.
+        const property = getIndentLevel(lines[i]) > childDepth && SNAPSHOT_PROPERTY_LINE.test(lines[i]);
+        if (child?.inline === true || child?.named === true || property) nested.push(i);
       }
     }
     if (own.length + nested.length > 0) fields.push({ ref: parseAiSnapshotRef(parsed.ref), own, nested });
@@ -144,10 +168,10 @@ export async function redactAiSnapshotFieldValues(
     }),
   );
   for (const index of values) {
-    let line = lines[index];
+    let line = names.has(index) ? withRedactedName(lines[index]) : lines[index];
     const text = snapshotLineText(line);
     if (text?.inline === true) line = `${line.slice(0, line.length - text.rest.length + 2)}${REDACTED_FIELD_VALUE}`;
-    if (names.has(index)) line = line.replace(SNAPSHOT_LINE_NAME, `$1"${REDACTED_FIELD_VALUE}"`);
+    else if (text === null) line = line.replace(SNAPSHOT_PROPERTY_LINE, `$1 ${REDACTED_FIELD_VALUE}`);
     lines[index] = line;
   }
   return lines.join('\n');
