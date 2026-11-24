@@ -136,6 +136,27 @@ describe('redactAiSnapshotFieldValues', () => {
     expect(isSensitive.mock.calls.map(([ref]) => ref)).toEqual(['e1', 'e4', 'e7', 'e9']);
   });
 
+  it('masks the options of a sensitive select shown as a list', async () => {
+    const printed = [
+      '- listbox "Saved" [ref=e1]:',
+      '  - group [ref=e2]:',
+      '    - option "4242" [selected] [ref=e3]',
+      '  - option "1111" [ref=e4]',
+      '- listbox "Plans" [ref=e5]:',
+      '  - option "Monthly" [selected] [ref=e6]',
+    ].join('\n');
+    const isSensitive = vi.fn((ref: string) => Promise.resolve(ref === 'e1'));
+    expect((await redactAiSnapshotFieldValues(printed, isSensitive)).split('\n')).toEqual([
+      '- listbox "Saved" [ref=e1]:',
+      '  - group [ref=e2]:',
+      '    - option "[redacted]" [selected] [ref=e3]',
+      '  - option "[redacted]" [ref=e4]',
+      '- listbox "Plans" [ref=e5]:',
+      '  - option "Monthly" [selected] [ref=e6]',
+    ]);
+    expect(isSensitive.mock.calls.map(([ref]) => ref)).toEqual(['e1', 'e5']);
+  });
+
   it('control: leaves every value in place when no field is sensitive', async () => {
     const redacted = await redactAiSnapshotFieldValues(snapshot, () => Promise.resolve(false));
     expect(redacted).toBe(snapshot.replace('orphan-value', '[redacted]'));
@@ -248,8 +269,8 @@ describe('redactSensitiveAXNodeValues', () => {
   });
 
   it('masks what a sensitive field with no value of its own prints beneath it', async () => {
-    const select = (id: number, option: string): AXNode[] => [
-      { nodeId: String(id), childIds: [String(id + 1)], backendDOMNodeId: id, role: { value: 'combobox' } },
+    const select = (id: number, option: string, role = 'combobox'): AXNode[] => [
+      { nodeId: String(id), childIds: [String(id + 1)], backendDOMNodeId: id, role: { value: role } },
       { nodeId: String(id + 1), childIds: [String(id + 2)], role: { value: 'MenuListPopup' } },
       { nodeId: String(id + 2), role: { value: 'option' }, name: { value: option } },
     ];
@@ -258,19 +279,20 @@ describe('redactSensitiveAXNodeValues', () => {
       ...select(40, 'Monthly'),
       { nodeId: '60', childIds: ['61'], backendDOMNodeId: 60, role: { value: 'textbox' }, name: { value: 'Empty' } },
       { nodeId: '61', role: { value: 'generic' } },
+      ...select(80, 'Saved 1111', 'listbox'),
     ];
     const described: number[] = [];
     await redactSensitiveAXNodeValues(
       session((backendNodeId) => {
         described.push(backendNodeId);
         return Promise.resolve({
-          node: { nodeName: 'SELECT', attributes: backendNodeId === 20 ? ['autocomplete', 'cc-number'] : [] },
+          node: { nodeName: 'SELECT', attributes: backendNodeId === 40 ? [] : ['autocomplete', 'cc-number'] },
         });
       }),
       nodes,
     );
-    expect(nodes.flatMap((node) => node.name?.value ?? [])).toEqual(['[redacted]', 'Monthly', 'Empty']);
-    expect(described.sort()).toEqual([20, 40]);
+    expect(nodes.flatMap((node) => node.name?.value ?? [])).toEqual(['[redacted]', 'Monthly', 'Empty', '[redacted]']);
+    expect(described.sort()).toEqual([20, 40, 80]);
   });
 
   it('control: leaves ordinary described fields untouched', async () => {
@@ -317,17 +339,20 @@ describe('redactAXNodesInsideSensitiveField', () => {
     expect(nodes.map((node) => node.name?.value)).toEqual([undefined, '[redacted]']);
   });
 
-  it('masks a capture below a sensitive field that has no value of its own', async () => {
-    const option: AXNode = {
-      nodeId: '3',
-      backendDOMNodeId: 30,
-      role: { value: 'option' },
-      name: { value: 'Visa 4242' },
-    };
-    const chain: AXNode[] = [option, { nodeId: '2', backendDOMNodeId: 20, role: { value: 'combobox' } }];
-    await redactAXNodesInsideSensitiveField(session(chain, field('cc-number')), [option], 30);
-    expect(option.name?.value).toBe('[redacted]');
-  });
+  it.each(['combobox', 'listbox'])(
+    'masks a capture below a sensitive %s that has no value of its own',
+    async (role) => {
+      const option: AXNode = {
+        nodeId: '3',
+        backendDOMNodeId: 30,
+        role: { value: 'option' },
+        name: { value: 'Visa 4242' },
+      };
+      const chain: AXNode[] = [option, { nodeId: '2', backendDOMNodeId: 20, role: { value: role } }];
+      await redactAXNodesInsideSensitiveField(session(chain, field('cc-number')), [option], 30);
+      expect(option.name?.value).toBe('[redacted]');
+    },
+  );
 
   it('control: leaves a capture below an ordinary field untouched', async () => {
     const nodes = captured();

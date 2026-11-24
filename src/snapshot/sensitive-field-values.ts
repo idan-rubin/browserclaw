@@ -8,7 +8,8 @@ import { getIndentLevel, parseAiSnapshotRef, parseSnapshotLine } from './ref-map
 
 export const REDACTED_FIELD_VALUE = '[redacted]';
 
-const VALUE_FIELD_ROLES = new Set(['combobox', 'searchbox', 'spinbutton', 'textbox']);
+// listbox: a select shown as a list (size, multiple) keeps its choice in its options.
+const VALUE_FIELD_ROLES = new Set(['combobox', 'listbox', 'searchbox', 'spinbutton', 'textbox']);
 
 const SENSITIVE_AUTOCOMPLETE_TOKENS = new Set([
   'cc-csc',

@@ -167,13 +167,18 @@ describe.skipIf(executablePath === undefined)('native snapshot capture (real Chr
             '<option>5555-saved</option></select>' +
             '<div role="textbox" contenteditable="true" aria-label="Code" autocomplete="one-time-code">' +
             `<img alt="246810-alt" src="${pixel}"></div>` +
+            '<select aria-label="Listed" size="2" autocomplete="cc-number"><option>6666-listed</option>' +
+            '<option selected>7777-picked</option></select>' +
+            '<select aria-label="Many" multiple autocomplete="cc-number"><optgroup label="8888-group">' +
+            '<option selected>9999-many</option></optgroup></select>' +
             '<select id="plain" aria-label="Plan"><option>Monthly-visible</option></select>' +
+            '<select aria-label="Sizes" size="2"><option selected>Large-visible</option><option>Small</option></select>' +
             "<script>for (const id of ['none', 'plain']) document.getElementById(id).selectedIndex = -1;</script>",
         );
         const captured = await captures[mode]();
-        for (const secret of ['1111-first', '4242-second', '5555-saved', '246810-alt'])
+        for (const secret of ['1111-first', '4242-second', '5555-saved', '246810-alt', '6666', '7777', '8888', '9999'])
           expect(captured).not.toContain(secret);
-        expect(captured).toContain('Monthly-visible');
+        for (const shown of ['Monthly-visible', 'Large-visible']) expect(captured).toContain(shown);
       },
     );
 
@@ -202,11 +207,12 @@ describe.skipIf(executablePath === undefined)('native snapshot capture (real Chr
           '<select aria-label="Card" autocomplete="cc-number"><option id="chosen" selected>4242-chosen</option></select>' +
           '<select aria-label="Saved" autocomplete="cc-number"><option value="" selected></option>' +
           '<option id="unchosen">5555-saved</option></select>' +
+          '<select aria-label="Listed" size="2" autocomplete="cc-number"><option id="listed">6666-listed</option></select>' +
           `<div ${editable} aria-label="Notes"><p id="note">Lisbon-visible</p></div>`,
       );
-      for (const selector of ['#code', '#deep', '#chosen', '#unchosen']) {
+      for (const selector of ['#code', '#deep', '#chosen', '#unchosen', '#listed']) {
         const captured = (await snapshotRole({ cdpUrl: 'test', selector })).snapshot;
-        expect(captured).not.toMatch(/246810|4242|5555/);
+        expect(captured).not.toMatch(/246810|4242|5555|6666/);
         expect(captured).toContain('[redacted]');
       }
       expect((await snapshotRole({ cdpUrl: 'test', selector: '#note' })).snapshot).toContain('Lisbon-visible');
