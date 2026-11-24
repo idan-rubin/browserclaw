@@ -1,8 +1,9 @@
+import { raceWithAbort } from '../abort.js';
 import { assertPageNavigationCompletedSafely } from '../actions/navigation.js';
 import { getPageForTargetId, ensurePageState, refLocator } from '../connection.js';
 import type { SsrfPolicy } from '../types.js';
 
-import { captureScreenshotWithEmulation } from './screenshot-capture.js';
+import { activateHeadlessScreenshotPage, captureScreenshotWithEmulation } from './screenshot-capture.js';
 
 export async function takeScreenshotViaPlaywright(opts: {
   cdpUrl: string;
@@ -141,8 +142,16 @@ export async function screenshotWithLabelsViaPlaywright(opts: {
         labels.map((l) => ({ index: l.index, box: l.box })),
       );
     }
+    let timeout = opts.timeoutMs;
+    const started = Date.now();
+    const activation = activateHeadlessScreenshotPage(page);
+    if (activation) {
+      const focusTimeout = timeout ?? 20_000;
+      await raceWithAbort(activation, focusTimeout > 0 ? AbortSignal.timeout(Math.ceil(focusTimeout)) : undefined);
+      if (timeout !== undefined && timeout > 0) timeout = Math.max(1, timeout - (Date.now() - started));
+    }
     return {
-      buffer: await page.screenshot({ type, timeout: opts.timeoutMs }),
+      buffer: await page.screenshot({ type, timeout }),
       labels,
       skipped,
     };

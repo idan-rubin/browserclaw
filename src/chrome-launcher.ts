@@ -29,6 +29,7 @@ import {
   stripUrlCredentials,
 } from './security.js';
 import type { ChromeExecutable, ChromeKind, LaunchOptions, RunningChrome, SsrfPolicy } from './types.js';
+import { truncateUtf16Safe } from './utf16.js';
 
 // ── Singleton Lock Recovery ──
 
@@ -224,7 +225,10 @@ export function createChromeLaunchStderrDiagnostics(maxBytes = 65536) {
 /** @internal Keep the final diagnostic hint within its UTF-16 budget without splitting a pair. */
 export function chromeLaunchStderrHint(stderrOutput: string): string {
   if (!stderrOutput) return '';
-  let start = Math.max(0, stderrOutput.length - 2000);
+  const limit = 2000;
+  const fatal = stderrOutput.match(/^.*\bFATAL:.*$/gmu)?.join('\n');
+  if (fatal !== undefined) return `\nChrome stderr:\n${truncateUtf16Safe(fatal, limit)}`;
+  let start = Math.max(0, stderrOutput.length - limit);
   const first = stderrOutput.charCodeAt(start);
   const previous = stderrOutput.charCodeAt(start - 1);
   if (first >= 0xdc00 && first <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff) start += 1;
@@ -1009,9 +1013,20 @@ export function isLoopbackHost(hostname: string): boolean {
 
 const PROXY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];
 
-function omitChromeProxyEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const childEnv = { ...env };
+function buildChromeLaunchEnv(): NodeJS.ProcessEnv {
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: os.homedir() };
   for (const key of [...PROXY_ENV_KEYS, 'NO_PROXY', 'no_proxy']) Reflect.deleteProperty(childEnv, key);
+  // Chrome uses its own allocator. Keep unrelated preloaded libraries in their original order.
+  delete childEnv.MALLOC_CONF;
+  if (childEnv.LD_PRELOAD !== undefined) {
+    const libraries = childEnv.LD_PRELOAD.split(/[\s:]+/u).filter(
+      (library) => library !== '' && !/(?:^|\/)libjemalloc\.so(?:\.\d+)*$/u.test(library),
+    );
+    if (libraries.length > 0) childEnv.LD_PRELOAD = libraries.join(':');
+    else delete childEnv.LD_PRELOAD;
+  }
+  // Leave room for Chromium's directory and socket name in Linux's Unix-domain socket path.
+  if (process.platform === 'linux' && Buffer.byteLength(childEnv.TMPDIR ?? '') > 50) childEnv.TMPDIR = '/tmp';
   return childEnv;
 }
 
@@ -1489,7 +1504,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<RunningChr
     });
     const proc = spawn(exe.path, args, {
       stdio: ['ignore', 'ignore', 'pipe'],
-      env: { ...omitChromeProxyEnv(process.env), HOME: os.homedir() },
+      env: buildChromeLaunchEnv(),
       ...spawnOpts,
     });
     // Keep a listener for the child's whole lifetime: later process errors must

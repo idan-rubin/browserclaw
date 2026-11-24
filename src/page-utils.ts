@@ -7,6 +7,9 @@ import { BrowserTabNotFoundError, NavigationRaceError, SnapshotHydrationError, S
 import { BrowserCdpEndpointBlockedError, InvalidBrowserNavigationUrlError } from './security.js';
 import { STEALTH_SCRIPT } from './stealth.js';
 import type { PageState, ContextState, NetworkRequest, DialogHandler } from './types.js';
+import { truncateUtf16Safe } from './utf16.js';
+
+export { truncateUtf16Safe } from './utf16.js';
 
 const MAX_CONSOLE_MESSAGES = 500;
 const MAX_PAGE_ERRORS = 200;
@@ -72,10 +75,15 @@ function cancelModalPasskeyRequests(
   });
 }
 
+/** @internal True when the connection identified a headless Chromium process. */
+export function isHeadlessContext(context: BrowserContext): boolean {
+  const browser = typeof context.browser === 'function' ? context.browser() : null;
+  return browser !== null && headlessBrowsers.has(browser);
+}
+
 /** @internal Also covers contexts created after the initial CDP connection. */
 export async function guardHeadlessContext(context: BrowserContext): Promise<void> {
-  const browser = typeof context.browser === 'function' ? context.browser() : null;
-  if (!browser || !headlessBrowsers.has(browser)) return;
+  if (!isHeadlessContext(context)) return;
   const existing = passkeyContextGuards.get(context);
   if (existing) {
     await existing;
@@ -476,13 +484,4 @@ export function toAIFriendlyError(error: unknown, selector: string): Error {
 
 export function normalizeTimeoutMs(timeoutMs: number | undefined, fallback: number, maxMs = 120000): number {
   return Math.max(500, Math.min(maxMs, timeoutMs ?? fallback));
-}
-
-/** Truncate to `maxLength` UTF-16 code units without splitting a surrogate pair. */
-export function truncateUtf16Safe(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value;
-  let end = Math.max(0, Math.trunc(maxLength));
-  const lastCodeUnit = value.charCodeAt(end - 1);
-  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) end -= 1;
-  return value.slice(0, end);
 }

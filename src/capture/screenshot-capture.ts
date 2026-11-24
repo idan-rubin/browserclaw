@@ -1,12 +1,20 @@
 import type { Locator, Page } from 'playwright-core';
 
+import { raceWithAbort } from '../abort.js';
 import { getPageEmulationState, runPageEmulationTransition } from '../page-emulation.js';
+import { isHeadlessContext } from '../page-utils.js';
 
 interface CaptureOptions {
   type: 'png' | 'jpeg';
   fullPage?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
+}
+
+/** Headed and unidentified browsers keep the user's active tab. */
+export function activateHeadlessScreenshotPage(page: Page): Promise<void> | undefined {
+  if (isHeadlessContext(page.context())) return page.bringToFront().catch(() => undefined);
+  return undefined;
 }
 
 /** Use the session that owns device metrics so capture does not reset mobile emulation. */
@@ -18,6 +26,11 @@ async function capturePageScreenshot(
   deadline?: number,
 ): Promise<Buffer> {
   signal.throwIfAborted();
+  const activation = activateHeadlessScreenshotPage(page);
+  if (activation) {
+    await raceWithAbort(activation, signal);
+    signal.throwIfAborted();
+  }
   const remaining = () => (deadline === undefined ? 0 : Math.max(1, deadline - Date.now()));
   const state = getPageEmulationState(page);
   const owner = state.metricsOwner;

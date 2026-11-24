@@ -55,6 +55,19 @@ const {
 } = await import('./chrome-launcher.js');
 
 describe('bounded Chrome launch stderr', () => {
+  it('prioritizes fatal lines over later noise in the retained stderr', () => {
+    const first = '[101:FATAL:display] failed to initialize';
+    const second = '[102:FATAL:process] terminated';
+    expect(chromeLaunchStderrHint([first, 'warning', second, 'noise'.repeat(1000)].join('\n'))).toBe(
+      `\nChrome stderr:\n${first}\n${second}`,
+    );
+  });
+
+  it('keeps the start of an oversized fatal diagnostic without splitting a character', () => {
+    const prefix = 'FATAL:' + 'x'.repeat(1993);
+    expect(chromeLaunchStderrHint(`${prefix}🙂more`)).toBe(`\nChrome stderr:\n${prefix}`);
+  });
+
   it('does not begin the final hint with half of a surrogate pair', () => {
     expect(chromeLaunchStderrHint(`old🙂${'x'.repeat(1999)}`)).toBe(`\nChrome stderr:\n${'x'.repeat(1999)}`);
   });
