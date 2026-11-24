@@ -3,8 +3,10 @@ import { existsSync } from 'node:fs';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { CrawlPage } from '../browser.js';
 import { takeScreenshotViaPlaywright } from '../capture/screenshot.js';
 import type * as Connection from '../connection.js';
+import { markHeadlessBrowser } from '../page-utils.js';
 
 import { setDeviceViaPlaywright } from './emulation.js';
 import { clickViaPlaywright } from './interaction.js';
@@ -57,6 +59,48 @@ describe.skipIf(executablePath === undefined)('native action state (real Chromiu
     }
   });
 
+  it('activates background tabs for ordinary and labeled screenshots only in detected headless sessions', async () => {
+    const other = await browser.newPage();
+    try {
+      await page.setContent('<main>Hello</main>');
+      await other.bringToFront();
+      const activate = vi.spyOn(page, 'bringToFront');
+      const target = new CrawlPage('test', 'target');
+      await target.screenshot();
+      expect(activate).not.toHaveBeenCalled();
+
+      markHeadlessBrowser(browser);
+      const screenshot = await target.screenshot();
+      expect(activate).toHaveBeenCalledTimes(1);
+      expect(screenshot.readUInt32BE(16)).toBeGreaterThan(0);
+      await other.bringToFront();
+      const labeled = await target.screenshotWithLabels([]);
+      expect(activate).toHaveBeenCalledTimes(2);
+      expect(labeled.buffer.readUInt32BE(16)).toBeGreaterThan(0);
+
+      const nativeCapture = vi.spyOn(page, 'screenshot');
+      let release!: () => void;
+      const stalled = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      activate.mockReturnValueOnce(stalled).mockReturnValueOnce(stalled);
+      try {
+        await expect(target.screenshotWithLabels([], { timeoutMs: 100 })).rejects.toMatchObject({
+          name: 'TimeoutError',
+        });
+        await expect(target.screenshot({ timeoutMs: 100 })).rejects.toThrow('timed out');
+        expect(nativeCapture).not.toHaveBeenCalled();
+        const retried = await target.screenshot();
+        expect(retried.readUInt32BE(16)).toBeGreaterThan(0);
+      } finally {
+        release();
+      }
+      await Promise.resolve();
+      expect(nativeCapture).toHaveBeenCalledOnce();
+    } finally {
+      await other.close();
+    }
+  });
   it('keeps mobile metrics and touch settings across a screenshot', async () => {
     await page.setContent('<meta name="viewport" content="width=device-width,initial-scale=1"><button>Mobile</button>');
     await setDeviceViaPlaywright({ cdpUrl: 'test', name: 'iPhone 13' });

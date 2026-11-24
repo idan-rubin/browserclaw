@@ -1,6 +1,10 @@
+import { EventEmitter } from 'node:events';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { CrawlPage } from '../browser.js';
 import type * as Connection from '../connection.js';
+import { NavigationRaceError } from '../errors.js';
 
 const { getPage } = vi.hoisted(() => ({ getPage: vi.fn() }));
 vi.mock('../connection.js', async (importOriginal) => ({
@@ -17,7 +21,9 @@ describe('visible page text', () => {
   const cdpUrl = 'http://localhost:9222';
   function page(contents: Record<string, string>, hidden: string[] = [], url = 'about:blank') {
     const innerText = vi.fn((selector: string) => Promise.resolve(contents[selector] ?? ''));
-    getPage.mockResolvedValue({
+    const frame = { isDetached: () => false };
+    const events = Object.assign(new EventEmitter(), {
+      mainFrame: () => frame,
       url: () => url,
       locator: (selector: string) => ({
         first: () => ({
@@ -27,10 +33,11 @@ describe('visible page text', () => {
         }),
       }),
     });
-    return innerText;
+    getPage.mockResolvedValue(events);
+    return { innerText, events, frame };
   }
   it('prefers article over main/body and reports truncation', async () => {
-    const read = page({ body: 'body', main: 'main', article: 'article text' });
+    const { innerText: read } = page({ body: 'body', main: 'main', article: 'article text' });
     expect(await getPageTextViaPlaywright({ cdpUrl, maxChars: 7 })).toEqual({ text: 'article', truncated: true });
     expect(read).toHaveBeenCalledWith('article');
   });
@@ -46,7 +53,7 @@ describe('visible page text', () => {
     expect(await getPageTextViaPlaywright({ cdpUrl })).toEqual({ text: 'body text', truncated: false });
   });
   it('blocks private page text before reading, but permits an explicit private-network opt-in', async () => {
-    const read = page({ body: 'private data' }, [], 'http://169.254.169.254/latest/meta-data/');
+    const { innerText: read } = page({ body: 'private data' }, [], 'http://169.254.169.254/latest/meta-data/');
     await expect(
       getPageTextViaPlaywright({ cdpUrl, ssrfPolicy: { dangerouslyAllowPrivateNetwork: false } }),
     ).rejects.toThrow('blocked');
@@ -62,7 +69,7 @@ describe('visible page text', () => {
     expect(result.truncated).toBe(maxChars < 4);
   });
   it.each([['article'], ['article', 'main']])('skips hidden semantic roots: %j', async (...hidden) => {
-    const read = page({ article: 'hidden article', main: 'main', body: 'body' }, hidden);
+    const { innerText: read } = page({ article: 'hidden article', main: 'main', body: 'body' }, hidden);
     const result = await getPageTextViaPlaywright({ cdpUrl });
     expect(result.text).toBe(hidden.includes('main') ? 'body' : 'main');
     expect(read).not.toHaveBeenCalledWith('article');
@@ -70,6 +77,28 @@ describe('visible page text', () => {
   it('skips an empty article and treats an empty selector as automatic selection', async () => {
     page({ article: '  ', main: 'main', body: 'body' });
     expect(await getPageTextViaPlaywright({ cdpUrl, selector: '' })).toEqual({ text: 'main', truncated: false });
+  });
+  it.each(['framenavigated', 'framedetached'])(
+    'rejects a text read across %s and permits a fresh read',
+    async (event) => {
+      const { innerText, events, frame } = page({ body: 'current document' });
+      innerText.mockImplementationOnce(() => {
+        events.emit(event, frame);
+        return Promise.resolve('replacement document');
+      });
+      const target = new CrawlPage(cdpUrl, 'target');
+      await expect(target.text({ selector: 'body' })).rejects.toBeInstanceOf(NavigationRaceError);
+      expect(events.listenerCount(event)).toBe(0);
+      await expect(target.text({ selector: 'body' })).resolves.toEqual({ text: 'current document', truncated: false });
+    },
+  );
+  it('allows an unrelated iframe to navigate during extraction', async () => {
+    const { innerText, events } = page({ article: 'article' });
+    innerText.mockImplementationOnce(() => {
+      events.emit('framenavigated', {});
+      return Promise.resolve('article');
+    });
+    expect((await getPageTextViaPlaywright({ cdpUrl })).text).toBe('article');
   });
   it('bounds stalled page acquisition and does not read a late page', async () => {
     vi.useFakeTimers();

@@ -1,6 +1,7 @@
 import { assertPageNavigationCompletedSafely } from '../actions/navigation.js';
 import { getPageForTargetId } from '../connection.js';
 import { truncateUtf16Safe } from '../page-utils.js';
+import { withSnapshotFrameGuard } from '../snapshot/capture-guard.js';
 import type { SsrfPolicy } from '../types.js';
 
 const TEXT_TIMEOUT_MS = 20_000;
@@ -34,23 +35,34 @@ export async function getPageTextViaPlaywright(opts: {
   const read = async () => {
     const page = await getPageForTargetId(opts);
     signal.throwIfAborted();
-    if (opts.ssrfPolicy) await assertPageNavigationCompletedSafely({ ...opts, page, response: null });
-    signal.throwIfAborted();
-    const readText = (selector: string) =>
-      page
-        .locator(selector)
-        .first()
-        .innerText({ timeout: Math.max(1, deadline - Date.now()), signal });
-    if (opts.selector === undefined || opts.selector === '') {
-      for (const selector of ['article', 'main']) {
-        const candidate = page.locator(selector).first();
-        if (!(await candidate.isVisible())) continue;
-        signal.throwIfAborted();
-        const text = await readText(selector);
-        if (text.trim()) return text;
-      }
-    }
-    return readText(opts.selector === '' ? 'body' : (opts.selector ?? 'body'));
+    return withSnapshotFrameGuard({
+      page,
+      frame: page.mainFrame(),
+      signal,
+      run: async (assertCurrent) => {
+        if (opts.ssrfPolicy) await assertPageNavigationCompletedSafely({ ...opts, page, response: null });
+        assertCurrent();
+        const readText = async (selector: string) => {
+          const text = await page
+            .locator(selector)
+            .first()
+            .innerText({ timeout: Math.max(1, deadline - Date.now()), signal });
+          assertCurrent();
+          return text;
+        };
+        if (opts.selector === undefined || opts.selector === '') {
+          for (const selector of ['article', 'main']) {
+            const visible = await page.locator(selector).first().isVisible();
+            assertCurrent();
+            if (visible) {
+              const text = await readText(selector);
+              if (text.trim()) return text;
+            }
+          }
+        }
+        return readText(opts.selector === '' ? 'body' : (opts.selector ?? 'body'));
+      },
+    });
   };
   try {
     const text = await Promise.race([read(), aborted]);

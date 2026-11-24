@@ -95,6 +95,36 @@ describe('Chrome spawn policy', () => {
     },
   );
 
+  it.each([
+    { platform: 'linux', tmp: '/' + 'x'.repeat(49), shorten: false },
+    { platform: 'linux', tmp: '/' + 'é'.repeat(25), shorten: true },
+    { platform: 'darwin', tmp: '/' + 'é'.repeat(25), shorten: false },
+  ])('sets a short child TMPDIR only when a Linux path exceeds 50 bytes ($platform, $shorten)', async (testCase) => {
+    Object.defineProperty(process, 'platform', { configurable: true, value: testCase.platform });
+    vi.stubEnv('TMPDIR', testCase.tmp);
+    await expect(launchChrome({ executablePath, userDataDir })).rejects.toThrow('spawn captured');
+    const options = spawnMock.mock.calls[0]?.[2] as ChildProcess.SpawnOptions;
+    expect(options.env?.TMPDIR).toBe(testCase.shorten ? '/tmp' : testCase.tmp);
+    expect(process.env.TMPDIR).toBe(testCase.tmp);
+  });
+
+  it.each([
+    { preload: 'libjemalloc.so', expected: undefined },
+    {
+      preload: '/lib/audit.so:/usr/lib/libjemalloc.so.2.0 /lib/custom-libjemalloc.so',
+      expected: '/lib/audit.so:/lib/custom-libjemalloc.so',
+    },
+  ])('removes allocator settings only in the Chrome child ($preload)', async ({ preload, expected }) => {
+    vi.stubEnv('MALLOC_CONF', 'background_thread:true');
+    vi.stubEnv('LD_PRELOAD', preload);
+    await expect(launchChrome({ executablePath, userDataDir, headless: true })).rejects.toThrow('spawn captured');
+    const options = spawnMock.mock.calls[0]?.[2] as ChildProcess.SpawnOptions;
+    expect(options.env?.LD_PRELOAD).toBe(expected);
+    expect(options.env).not.toHaveProperty('MALLOC_CONF');
+    expect(process.env.LD_PRELOAD).toBe(preload);
+    expect(process.env.MALLOC_CONF).toBe('background_thread:true');
+  });
+
   it('strips child proxy environment while preserving the parent, unrelated env and explicit proxy args', async () => {
     const keys = [
       'HTTP_PROXY',

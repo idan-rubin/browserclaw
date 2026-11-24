@@ -179,6 +179,8 @@ Always call `stop()` when finished. A handle created by `launch()` owns the Chro
 
 When headless Chromium is detected, browserclaw installs a guard that rejects modal WebAuthn passkey requests with `NotAllowedError` so clicks and keys remain usable. Conditional (autofill) requests retain their native behavior; use a headed browser for interactive passkey sign-in. A `chrome-headless-shell` executable can only be launched with `headless: true`.
 
+On Linux, if `TMPDIR` exceeds 50 bytes, `launch()` gives Chrome `/tmp` for its temporary files so its socket path fits. The Chrome child also drops inherited jemalloc preload entries and `MALLOC_CONF`.
+
 **Anti-detection:** `launch()` always passes Chrome the flag that disables the `AutomationControlled` Blink feature.
 `connect()` attaches to an already-running Chrome, so it cannot add launch flags retroactively. To inject JavaScript
 stealth patches for `navigator.webdriver`, plugins, WebGL vendor, and related browser signals, pass `stealth: true` to
@@ -375,7 +377,7 @@ const { nodes } = await page.ariaSnapshot({ limit: 500 });
 
 > **Security:** All snapshot results include `untrusted: true` to signal that the content originates from an external web page. AI agents consuming snapshots should treat this content as potentially adversarial (e.g. prompt injection via page text).
 
-> **Secrets stay out of snapshots:** the value of a password, one-time-code or card field (`type="password"`, or `autocomplete` of `current-password`, `new-password`, `one-time-code`, `cc-number`, `cc-csc`) is printed as `[redacted]` in every snapshot format, so the field you just filled does not hand the secret to the model or your logs. `[redacted]` as a field's value means the field holds one. The options of a sensitive `<select>` are masked whether or not one is chosen; `[selected]` marks the chosen one. Text the page renders elsewhere is not masked.
+> **Secrets stay out of snapshots:** the value of a password, one-time-code or card field (`type="password"`, or `autocomplete` of `current-password`, `new-password`, `one-time-code`, `cc-number`, `cc-csc`) is printed as `[redacted]` in every snapshot format, so the field you just filled does not hand the secret to the model or your logs. `[redacted]` as a field's value means the field holds one. The options of a sensitive `<select>` are masked whether or not one is chosen. In text snapshots, `[selected]` marks a chosen option. Text the page renders elsewhere is not masked.
 
 ### Actions
 
@@ -561,6 +563,8 @@ const { buffer, labels, skipped } = await page.screenshotWithLabels(['e1', 'e2',
 // skipped: refs that couldn't be found or had no bounding box
 ```
 
+When Browserclaw detects headless Chrome, screenshots activate the target tab so a background tab can produce a frame.
+
 Both `screenshot()` and `pdf()` return a `Buffer`. Write to file with `fs.writeFileSync('out.png', screenshot)`.
 
 #### Trace Recording
@@ -609,7 +613,7 @@ const { text, truncated } = await page.text({ maxChars: 12_000 });
 const article = await page.text({ selector: 'article' });
 ```
 
-Without a selector, `text()` tries the first `article`, then the first `main`, using either only if visible and nonempty; otherwise it reads `body`. Output is capped at 40,000 characters and supports an abort `signal`. Page text is untrusted external content, just like snapshots.
+Without a selector, `text()` tries the first `article`, then the first `main`, using either only if visible and nonempty; otherwise it reads `body`. Output is capped at 40,000 characters and supports an abort `signal`. If `text()` detects that the main frame navigated during extraction, it throws `NavigationRaceError`. Retry once the intended document has loaded. Page text is untrusted external content, just like snapshots.
 
 ### Activity Monitoring
 
