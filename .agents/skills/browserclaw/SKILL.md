@@ -14,7 +14,7 @@ Install the library with `npm install browserclaw`. You’ll need Node.js 22 or 
 ```javascript
 import { BrowserClaw } from 'browserclaw';
 
-const browser = await BrowserClaw.launch({ url: 'https://demo.playwright.dev/todomvc', headless: true });
+const browser = await BrowserClaw.launch({ url: 'https://demo.playwright.dev/todomvc' });
 try {
   const page = await browser.currentPage();
   await page.waitFor({ selector: '.new-todo' });
@@ -24,14 +24,15 @@ try {
   );
   if (!input) throw new Error('Could not find the new to-do textbox');
 
+  const list = await page.locator('.todo-list');
+  const milkItems = list.getByText('Buy milk', { exact: true });
+  const before = await milkItems.count();
+
   const [ref] = input;
   await page.type(ref, 'Buy milk', { submit: true });
-  await page.waitFor({ selector: '.todo-list li' });
-  const { text } = await page.text({ selector: '.todo-list' });
-  if (!text.split('\n').some((line) => line.trim() === 'Buy milk')) {
-    throw new Error('Buy milk is missing from the list');
-  }
-  console.log('Verified: Buy milk is on the list');
+  // The next matching item exists only if the list gained another “Buy milk”.
+  await milkItems.nth(before).waitFor({ state: 'visible', timeout: 5000 });
+  console.log('Verified: added one Buy milk item');
 } finally {
   await browser.stop();
 }
