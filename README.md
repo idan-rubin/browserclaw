@@ -81,7 +81,7 @@ browserclaw provides browser primitives you can call from an agent loop you alre
 
 ## How browserclaw compares
 
-Choose by the integration surface your application needs. Competitor details checked against their official documentation on October 10, 2026:
+Choose by the integration surface your application needs. Competitor details checked against their official documentation on October 10, 2026 (ego lite on November 24, 2026):
 
 | Tool | Integration surface | Action selection |
 | ---- | ------------------- | ---------------- |
@@ -89,8 +89,11 @@ Choose by the integration surface your application needs. Competitor details che
 | [browser-use](https://github.com/browser-use/browser-use) | Python agent library; [Python/TypeScript Cloud SDK](https://github.com/browser-use/sdk) for hosted tasks and browser infrastructure | Agent-driven tasks, or caller-controlled managed browsers |
 | [Stagehand](https://github.com/browserbase/stagehand) | SDK with browser methods and AI primitives; local or Browserbase browsers | Direct locators plus natural-language `act`, `observe`, and `extract`; repeated AI calls can be cached |
 | [Playwright MCP](https://github.com/microsoft/playwright-mcp) | MCP tools; supports programmatic server creation | Snapshot refs or selectors through Playwright tools |
+| [ego lite](https://github.com/citrolabs/ego-lite) | Desktop browser app for macOS and Windows; agent CLIs drive it through the `ego-browser` skill, inside your logged-in profile | Agent-written JavaScript calling in-page tools (snapshot, click, fill); snapshot refs come from its customized Chromium engine |
 
-browserclaw exposes snapshots and actions directly in application code. It ships no agent loop or hosted browser service. The other tools also support composing browser operations into your application; their APIs, hosting options, and model involvement differ.
+browserclaw exposes snapshots and actions directly in application code. It ships no agent loop or hosted browser service. browser-use, Stagehand, and Playwright MCP also support composing browser operations into your application; their APIs, hosting options, and model involvement differ.
+
+ego lite solves a different problem. It is a browser you install so a coding agent on your own computer (Claude Code, Codex, Cursor) can work in the sites you are already signed in to, in its own workspace beside your tabs. If that is the job, use it. browserclaw is what you build with: an npm library that runs headless on a server, in CI, or in a container, against any Chromium-based browser, with your code deciding every action.
 
 ## Case studies
 
