@@ -12,6 +12,7 @@ import * as Security from '../security.js';
 import { downloadViaPlaywright, waitForDownloadViaPlaywright } from './download.js';
 import { evaluateViaPlaywright } from './evaluate.js';
 import { clickViaPlaywright } from './interaction.js';
+import { createFakeNavigationFence } from './navigation-fence.test-support.js';
 import { withPageNavigationRequestGuard } from './navigation.js';
 
 afterEach(() => vi.restoreAllMocks());
@@ -29,12 +30,12 @@ function fixture() {
   const frame = {};
   const evaluate = vi.fn().mockResolvedValue(42);
   const click = vi.fn().mockResolvedValue(undefined);
+  const fence = createFakeNavigationFence({ url: () => url });
   const page = Object.assign(new EventEmitter(), {
     url: () => url,
     mainFrame: () => frame,
     isClosed: () => false,
-    route: vi.fn().mockResolvedValue(undefined),
-    unroute: vi.fn().mockResolvedValue(undefined),
+    context: () => ({ newCDPSession: fence.newCDPSession }),
     evaluate,
   });
   vi.spyOn(connection, 'getPageForTargetId').mockResolvedValue(page as unknown as Page);
@@ -44,6 +45,7 @@ function fixture() {
   >);
   return {
     page,
+    fence,
     evaluate,
     click,
     setUrl: (value: string) => {
@@ -103,13 +105,13 @@ describe('PR157 evaluator cancellation ownership', () => {
       await native.promise;
       await Promise.resolve();
       // Native completion precedes the guard's 250ms delayed-navigation window.
-      expect(f.page.unroute).not.toHaveBeenCalled();
+      expect(f.fence.releases()).toBe(0);
       controller.abort(reason);
       await rejected;
       expect(terminate).not.toHaveBeenCalled();
       expect(disconnect).not.toHaveBeenCalled();
       await vi.waitFor(() => {
-        expect(f.page.unroute).toHaveBeenCalledOnce();
+        expect(f.fence.releases()).toBe(1);
       });
     },
   );
@@ -118,9 +120,9 @@ describe('PR157 evaluator cancellation ownership', () => {
     const f = fixture();
     const entered = deferred<undefined>();
     const installed = deferred<undefined>();
-    f.page.route.mockImplementation(() => {
+    f.fence.newCDPSession.mockImplementation(() => {
       entered.resolve(undefined);
-      return installed.promise;
+      return installed.promise.then(() => f.fence.session);
     });
     const terminate = vi.spyOn(connection, 'tryTerminateExecutionForPage').mockResolvedValue(undefined);
     const disconnect = vi.spyOn(connection, 'forceDisconnectPlaywrightConnection').mockResolvedValue(undefined);

@@ -20,7 +20,12 @@ export async function startConnectionCdpServer(
     onBrowserInfo?: () => void;
     disconnectOnBrowserInfo?: boolean;
     handshakeStatuses?: readonly number[];
+    /** Hold every WebSocket upgrade this long, as a browser that starts on connect does. */
+    handshakeDelayMs?: number;
     commandFailures?: readonly { method: string; message: string; sessionOnly?: boolean }[];
+    /** Never answer the announced page target's session, or the browser's auto-attach command. */
+    unresponsive?: 'page-target' | 'browser';
+    port?: number;
   } = {},
 ) {
   const frames: Record<string, unknown>[] = [];
@@ -53,7 +58,11 @@ export async function startConnectionCdpServer(
     const status = opts.handshakeStatuses?.[handshakes];
     handshakes += 1;
     if (status !== undefined && status !== 101) done(false, status);
-    else done(true);
+    else if (opts.handshakeDelayMs === undefined) done(true);
+    else
+      setTimeout(() => {
+        done(true);
+      }, opts.handshakeDelayMs);
   };
   const sockets = new WebSocketServer({ server, verifyClient });
   sockets.on('connection', (socket, request) => {
@@ -75,6 +84,29 @@ export async function startConnectionCdpServer(
           }),
         );
         return;
+      }
+      if (opts.unresponsive === 'page-target' && message.sessionId === 'hung-session') return;
+      if (message.method === 'Target.setAutoAttach' && typeof message.sessionId !== 'string') {
+        if (opts.unresponsive === 'browser') return;
+        if (opts.unresponsive === 'page-target')
+          socket.send(
+            JSON.stringify({
+              method: 'Target.attachedToTarget',
+              params: {
+                sessionId: 'hung-session',
+                waitingForDebugger: false,
+                targetInfo: {
+                  type: 'page',
+                  targetId: 'HUNG-TARGET',
+                  browserContextId: 'default-context',
+                  title: '',
+                  url: 'about:blank',
+                  attached: true,
+                  canAccessOpener: false,
+                },
+              },
+            }),
+          );
       }
       if (message.method === 'Target.attachToTarget') {
         opts.onAttach?.();
@@ -131,7 +163,7 @@ export async function startConnectionCdpServer(
       socket.send(JSON.stringify({ id: message.id, sessionId: message.sessionId, result }));
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => server.listen(opts.port ?? 0, '127.0.0.1', resolve));
   const port = (server.address() as AddressInfo).port;
   return {
     httpUrl: `http://127.0.0.1:${String(port)}`,

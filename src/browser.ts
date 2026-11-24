@@ -35,6 +35,7 @@ import {
 import { pressKeyViaPlaywright, insertTextViaPlaywright } from './actions/keyboard.js';
 import {
   navigateViaPlaywright,
+  traverseHistoryViaPlaywright,
   listPagesViaPlaywright,
   createPageViaPlaywright,
   closePageByTargetIdViaPlaywright,
@@ -67,7 +68,6 @@ import {
   connectBrowser,
   acquireBrowserConnectionLease,
   getPageForTargetId,
-  ensurePageState,
   pageTargetId,
   normalizeTimeoutMs,
   setDialogHandler,
@@ -920,13 +920,7 @@ export class CrawlPage {
    * @param opts - Timeout options
    */
   async reload(opts?: { timeoutMs?: number }): Promise<void> {
-    const page = await getPageForTargetId({
-      cdpUrl: this.cdpUrl,
-      targetId: this._targetId,
-      ssrfPolicy: this.ssrfPolicy,
-    });
-    ensurePageState(page);
-    await page.reload({ timeout: normalizeTimeoutMs(opts?.timeoutMs, 20000) });
+    await this.traverseHistory('reload', opts);
   }
 
   /**
@@ -935,13 +929,7 @@ export class CrawlPage {
    * @param opts - Timeout options
    */
   async goBack(opts?: { timeoutMs?: number }): Promise<void> {
-    const page = await getPageForTargetId({
-      cdpUrl: this.cdpUrl,
-      targetId: this._targetId,
-      ssrfPolicy: this.ssrfPolicy,
-    });
-    ensurePageState(page);
-    await page.goBack({ timeout: normalizeTimeoutMs(opts?.timeoutMs, 20000) });
+    await this.traverseHistory('goBack', opts);
   }
 
   /**
@@ -950,13 +938,17 @@ export class CrawlPage {
    * @param opts - Timeout options
    */
   async goForward(opts?: { timeoutMs?: number }): Promise<void> {
-    const page = await getPageForTargetId({
+    await this.traverseHistory('goForward', opts);
+  }
+
+  private async traverseHistory(move: 'reload' | 'goBack' | 'goForward', opts?: { timeoutMs?: number }): Promise<void> {
+    await traverseHistoryViaPlaywright({
       cdpUrl: this.cdpUrl,
       targetId: this._targetId,
+      move,
+      timeoutMs: normalizeTimeoutMs(opts?.timeoutMs, 20000),
       ssrfPolicy: this.ssrfPolicy,
     });
-    ensurePageState(page);
-    await page.goForward({ timeout: normalizeTimeoutMs(opts?.timeoutMs, 20000) });
   }
 
   // ── Wait ─────────────────────────────────────────────────────

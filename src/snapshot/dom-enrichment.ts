@@ -27,6 +27,8 @@ import type { Page, Frame } from 'playwright-core';
 
 import type { RoleRefs } from '../types.js';
 
+import { isSensitiveFieldDescriptor, ORDINARY_FIELD_SELECTOR, REDACTED_FIELD_VALUE } from './sensitive-field-values.js';
+
 // ── Tunables ──
 
 /** Upper bound on enriched elements per snapshot. Prevents runaway growth on huge SPAs. */
@@ -55,6 +57,8 @@ export interface DomEnrichedElement {
   id: string;
   /** `type` attribute for `<input>` elements, otherwise `null` */
   inputType: string | null;
+  /** The element's `autocomplete` attribute, or `null` if absent */
+  autocomplete?: string | null;
   /** Up to five `data-*` attributes, in source order */
   dataAttrs: { name: string; value: string }[];
 }
@@ -113,6 +117,15 @@ function sanitizeAttrValue(value: string): string {
     .trim();
 }
 
+function cssEscape(text: string): string {
+  return text.replace(/[^a-z0-9_-]/giu, (char) => `\\${(char.codePointAt(0) ?? 0).toString(16)} `);
+}
+
+function carriesValue({ name, value }: { name: string; value: string }): string {
+  const shown = value.slice(0, MAX_ATTR_VALUE_LEN);
+  return `[${cssEscape(name)}${shown === value ? '' : '^'}="${cssEscape(shown)}"]`;
+}
+
 // ── Pure snapshot builder ──
 
 /**
@@ -138,10 +151,15 @@ export function buildDomEnrichedLines(elements: DomEnrichedElement[]): { lines: 
     if (el.tagName === 'input' && el.inputType !== null && el.inputType !== '') {
       attrs.push(`[type="${sanitizeAttrValue(el.inputType)}"]`);
     }
+    const sensitive = isSensitiveFieldDescriptor({
+      tagName: el.tagName,
+      type: el.inputType,
+      autocomplete: el.autocomplete,
+    });
     for (const { name, value } of el.dataAttrs) {
       const safeName = name.replace(/[^a-z0-9-]/gi, '');
       if (!safeName.startsWith('data-')) continue;
-      attrs.push(`[${safeName}="${sanitizeAttrValue(value)}"]`);
+      attrs.push(`[${safeName}="${sanitizeAttrValue(sensitive ? REDACTED_FIELD_VALUE : value)}"]`);
     }
 
     const attrStr = attrs.length > 0 ? ` ${attrs.join(' ')}` : '';
@@ -207,7 +225,7 @@ export async function enrichSnapshotFromDom(
     context = frame;
   }
 
-  const elements = await context.evaluate(
+  const scanned = await context.evaluate(
     (args: {
       selector: string;
       rootSelector: string;
@@ -268,6 +286,7 @@ export async function enrichSnapshotFromDom(
           explicitRole: el.getAttribute('role'),
           id,
           inputType: el.getAttribute('type'),
+          autocomplete: el.getAttribute('autocomplete'),
           dataAttrs,
         });
       };
@@ -295,6 +314,42 @@ export async function enrichSnapshotFromDom(
     },
   );
 
+  // The scan ran in the page's JavaScript world. A ref it returns goes into selectors and the snapshot's ref map, so
+  // it must be the one issued for that position; a data value is kept only when a selector, matched outside that
+  // world, finds an ordinary element that carries this stamp and that value. A stamp alone can be stale or shared.
+  const elements = scanned.filter((el, index) => el.ref === `e${String(startRef + index)}`);
+  let warned = false;
+  const carried = async (ref: string, attrs: DomEnrichedElement['dataAttrs']): Promise<boolean> => {
+    const selector = `[data-bc-ref="${ref}"]${attrs.map(carriesValue).join('')}${ORDINARY_FIELD_SELECTOR}`;
+    // A query that enters shadow roots walks the whole document, so it runs only when the plain one finds nothing.
+    for (const engine of ['css:light', 'css']) {
+      const found = await Promise.resolve()
+        .then(() => context.locator(`${engine}=${selector}`).count())
+        .catch((error: unknown) => {
+          // The message can quote the selector, which carries the data values.
+          if (!warned)
+            console.warn(
+              `[browserclaw] masked data values that could not be checked (${error instanceof Error ? error.name : 'error'})`,
+            );
+          warned = true;
+          return 0;
+        });
+      if (found > 0) return true;
+    }
+    return false;
+  };
+  await Promise.all(
+    elements
+      .filter((el) => el.dataAttrs.length > 0)
+      .map(async (el) => {
+        if (await carried(el.ref, el.dataAttrs)) return;
+        el.dataAttrs = await Promise.all(
+          el.dataAttrs.map(async (attr) =>
+            (await carried(el.ref, [attr])) ? attr : { name: attr.name, value: REDACTED_FIELD_VALUE },
+          ),
+        );
+      }),
+  );
   return buildDomEnrichedLines(elements);
 }
 

@@ -1,7 +1,7 @@
 import type * as DnsModule from 'node:dns/promises';
 import { EventEmitter } from 'node:events';
 
-import type { Page, Request, Route } from 'playwright-core';
+import type { Page } from 'playwright-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as ConnectionModule from '../connection.js';
@@ -42,6 +42,7 @@ import {
   mouseClickViaPlaywright,
   uploadViaPlaywright,
 } from './interaction.js';
+import { createFakeNavigationFence } from './navigation-fence.test-support.js';
 import { withPageNavigationRequestGuard } from './navigation.js';
 import { waitForViaPlaywright } from './wait.js';
 
@@ -49,46 +50,27 @@ beforeEach(() => {
   mocks.lookup.mockReset().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
 });
 
-type RouteHandler = (route: Route, request: Request) => Promise<void>;
-
 function fixture(
   afterDispatch?: () => Promise<void>,
   chooserOnly = false,
   requestUrl = 'http://169.254.169.254/latest/meta-data/',
 ) {
-  let handler: RouteHandler | undefined;
   const frame = {};
-  const sent = vi.fn().mockResolvedValue(undefined);
-  const fulfill = vi.fn().mockResolvedValue(undefined);
-  const request = {
-    url: () => requestUrl,
-    frame: () => frame,
-    isNavigationRequest: () => true,
-    resourceType: () => 'document',
-  } as unknown as Request;
-  const route = {
-    fallback: sent,
-    continue: sent,
-    fulfill,
-    abort: vi.fn().mockResolvedValue(undefined),
-  } as unknown as Route;
+  const sent = vi.fn();
+  const preserved = vi.fn();
+  const fence = createFakeNavigationFence({ url: () => page.url() });
   const dispatch = vi.fn(async () => {
-    if (handler) await handler(route, request);
-    else await sent();
+    const outcome = await fence.pauseDocument(requestUrl);
+    if (outcome.continued) sent();
+    else if (outcome.errorReason === 'Aborted') preserved();
     await afterDispatch?.();
   });
   const chooser = { setFiles: dispatch, element: () => null };
   const page = Object.assign(new EventEmitter(), {
     url: (): string => 'about:blank',
     mainFrame: () => frame,
-    route: (_pattern: string, value: RouteHandler) => {
-      handler = value;
-      return Promise.resolve();
-    },
-    unroute: vi.fn(() => {
-      handler = undefined;
-      return Promise.resolve();
-    }),
+    isClosed: () => false,
+    context: () => ({ newCDPSession: fence.newCDPSession }),
     waitForFunction: dispatch,
     evaluateHandle: () => Promise.resolve({ dispose: () => Promise.resolve() }),
     waitForEvent: () => Promise.resolve(chooser),
@@ -117,7 +99,7 @@ function fixture(
     nextArmIdDownload: 0,
     downloadWaiterDepth: 0,
   });
-  return { page, locator, sent, fulfill, dispatch };
+  return { page, locator, fence, sent, preserved, dispatch };
 }
 
 const options = (ssrfPolicy?: SsrfPolicy) => ({ cdpUrl: 'http://localhost:9222', targetId: 'target', ssrfPolicy });
@@ -140,11 +122,11 @@ describe('new mutation navigation guard call sites', () => {
       const blocked = fixture();
       await expect(actions[name]()).rejects.toThrow();
       expect(blocked.sent).not.toHaveBeenCalled();
-      expect(blocked.fulfill).toHaveBeenCalledWith({ status: 204, body: '' });
+      expect(blocked.preserved).toHaveBeenCalledOnce();
       const control = fixture();
       await actions[name]({ dangerouslyAllowPrivateNetwork: true });
       expect(control.sent).toHaveBeenCalled();
-      expect(control.fulfill).not.toHaveBeenCalled();
+      expect(control.preserved).not.toHaveBeenCalled();
     },
   );
 
@@ -154,7 +136,7 @@ describe('new mutation navigation guard call sites', () => {
       downloadViaPlaywright({ ...options(), ref: 'e1', path: '/tmp/bc-never-written.bin', timeoutMs: 1000 }),
     ).rejects.toThrow();
     expect(blocked.sent).not.toHaveBeenCalled();
-    expect(blocked.fulfill).toHaveBeenCalledWith({ status: 204, body: '' });
+    expect(blocked.preserved).toHaveBeenCalledOnce();
   });
 
   it('allows the same download click with private opt-in and publishes its payload', async () => {
@@ -181,7 +163,54 @@ describe('new mutation navigation guard call sites', () => {
       });
       await expect(pending).resolves.toMatchObject({ path });
       expect(await readFile(path, 'utf8')).toBe('payload');
-      expect(control.fulfill).not.toHaveBeenCalled();
+      expect(control.preserved).not.toHaveBeenCalled();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an unparsable wait predicate before any passive wait starts', async () => {
+    const { dispatch } = fixture();
+    const started = Date.now();
+    await expect(
+      waitForViaPlaywright({ ...options({ dangerouslyAllowPrivateNetwork: true }), timeMs: 400, fn: 'return (' }),
+    ).rejects.toBeInstanceOf(SyntaxError);
+    expect(Date.now() - started).toBeLessThan(300);
+    expect(dispatch).not.toHaveBeenCalled();
+    await waitForViaPlaywright({ ...options({ dangerouslyAllowPrivateNetwork: true }), timeMs: 400, fn: 'true' });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(400);
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it('saves to the literal path it validated instead of a trimmed one', async () => {
+    const { mkdtemp, readFile, rm, stat, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const directory = await mkdtemp(join(tmpdir(), 'bc-literal-download-'));
+    const path = join(directory, 'payload.txt ');
+    const control = fixture();
+    try {
+      const pending = downloadViaPlaywright({
+        ...options({ dangerouslyAllowPrivateNetwork: true }),
+        ref: 'e1',
+        path,
+        allowedOutputRoots: [directory],
+        timeoutMs: 3000,
+      });
+      await vi.waitFor(() => {
+        expect(control.sent).toHaveBeenCalled();
+      });
+      control.page.emit('download', {
+        url: () => 'http://169.254.169.254/file',
+        suggestedFilename: () => 'payload.txt',
+        saveAs: (tempPath: string) => writeFile(tempPath, 'payload'),
+      });
+      await expect(pending).resolves.toMatchObject({ path });
+      expect(await readFile(path, 'utf8')).toBe('payload');
+      await expect(stat(path.trim())).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(downloadViaPlaywright({ ...options(), ref: 'e1', path: '  ', timeoutMs: 1000 })).rejects.toThrow(
+        'path is required',
+      );
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -197,7 +226,7 @@ describe('new mutation navigation guard call sites', () => {
     await blocked.dispatch();
     await rejected;
     expect(blocked.sent).not.toHaveBeenCalled();
-    expect(blocked.fulfill).toHaveBeenCalledWith({ status: 204, body: '' });
+    expect(blocked.preserved).toHaveBeenCalledOnce();
     expect(blocked.page.listenerCount('download')).toBe(0);
   });
 });
@@ -226,9 +255,9 @@ describe('interaction policy preflight cancellation', () => {
   };
 
   it.each(Object.keys(preflightActions) as (keyof typeof preflightActions)[])(
-    '%s cancels stalled DNS before dispatch and removes its route',
+    '%s cancels stalled DNS before dispatch and releases its fence',
     async (name) => {
-      const { page, locator, sent, fulfill, dispatch } = fixture();
+      const { page, locator, fence, sent, preserved, dispatch } = fixture();
       page.url = () => `https://${name.toLowerCase()}.preflight.example/`;
       let finishLookup!: (addresses: { address: string; family: number }[]) => void;
       const lookup = new Promise((resolve) => {
@@ -254,12 +283,12 @@ describe('interaction policy preflight cancellation', () => {
         await pending.catch(() => undefined);
       }
       await vi.waitFor(() => {
-        expect(page.unroute).toHaveBeenCalledOnce();
+        expect(fence.releases()).toBe(1);
       });
       expect(dispatch).not.toHaveBeenCalled();
-      expect(fulfill).not.toHaveBeenCalled();
+      expect(preserved).not.toHaveBeenCalled();
       expect(sent).not.toHaveBeenCalled();
-      // Assert native dispatch itself, not just requests allowed by the route guard.
+      // Assert native dispatch itself, not just requests allowed by the fence.
       expect(locator.waitFor).not.toHaveBeenCalled();
     },
   );
@@ -275,7 +304,7 @@ describe('interaction policy preflight cancellation', () => {
   });
 
   it('cancels the reread current URL check before dispatch', async () => {
-    const { page } = fixture();
+    const { page, fence } = fixture();
     let url = 'https://first.preflight.example/';
     page.url = () => url;
     let finishLookup!: (addresses: { address: string; family: number }[]) => void;
@@ -315,13 +344,13 @@ describe('interaction policy preflight cancellation', () => {
       await pending.catch(() => undefined);
     }
     await vi.waitFor(() => {
-      expect(page.unroute).toHaveBeenCalledOnce();
+      expect(fence.releases()).toBe(1);
     });
     expect(action).not.toHaveBeenCalled();
   });
 
   it('cancels evaluator current-page validation before dispatch', async () => {
-    const { page, sent } = fixture();
+    const { page, fence, sent } = fixture();
     page.url = () => 'https://explicit-evaluate.preflight.example/';
     let finishLookup!: (addresses: { address: string; family: number }[]) => void;
     mocks.lookup.mockImplementationOnce(
@@ -350,7 +379,7 @@ describe('interaction policy preflight cancellation', () => {
     }
     expect(sent).not.toHaveBeenCalled();
     await vi.waitFor(() => {
-      expect(page.unroute).toHaveBeenCalledOnce();
+      expect(fence.releases()).toBe(1);
     });
   });
 });
@@ -385,12 +414,12 @@ describe('native mutation cancellation and navigation policy precedence', () => 
       await started;
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       expect(blocked.sent).not.toHaveBeenCalled();
-      expect(blocked.fulfill).toHaveBeenCalledOnce();
-      expect(blocked.page.unroute).toHaveBeenCalledTimes(chooserOnly ? 1 : 0);
+      expect(blocked.preserved).toHaveBeenCalledOnce();
+      expect(blocked.fence.releases()).toBe(chooserOnly ? 1 : 0);
       expect(settled).not.toHaveBeenCalled();
       finishNative();
       await rejected;
-      expect(blocked.page.unroute).toHaveBeenCalledTimes(chooserOnly ? 2 : 1);
+      expect(blocked.fence.releases()).toBe(chooserOnly ? 2 : 1);
     },
   );
 });

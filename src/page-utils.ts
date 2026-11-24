@@ -405,7 +405,7 @@ export function toAIFriendlyError(error: unknown, selector: string): Error {
 
   const message = stripVTControlCharacters(error instanceof Error ? error.message : String(error));
   const headline = (message.split('\n', 1)[0] ?? message).replace(
-    /^(?:Error:\s*)?(?:locator(?:\([^)]*\))?\.\w+:\s*)?(?:Error:\s*)?/,
+    /^(?:Error:\s*)?(?:(?:locator(?:\([^)]*\))?\.)?\w+:\s*)?(?:Error:\s*)?/,
     '',
   );
   const label = truncateUtf16Safe(stripVTControlCharacters(selector), 200);

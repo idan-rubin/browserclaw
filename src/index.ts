@@ -47,6 +47,7 @@ export {
   StaleRefError,
   SnapshotHydrationError,
   NavigationRaceError,
+  UnresponsiveCdpTargetError,
 } from './connection.js';
 export { pressAndHoldViaCdp, uploadViaPlaywright } from './actions/interaction.js';
 export type { UploadOptions } from './actions/upload-files.js';

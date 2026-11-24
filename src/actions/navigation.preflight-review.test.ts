@@ -1,8 +1,7 @@
-/* eslint-disable @typescript-eslint/unbound-method -- Page methods in this fixture are vi.fn mocks. */
 import type * as Dns from 'node:dns/promises';
 import { EventEmitter } from 'node:events';
 
-import type { Browser, Page, Request, Route } from 'playwright-core';
+import type { Browser, Page } from 'playwright-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as transport from '../cdp-transport.js';
@@ -13,12 +12,12 @@ import * as pageUtils from '../page-utils.js';
 import { downloadViaPlaywright, waitForDownloadViaPlaywright } from './download.js';
 import { evaluateViaPlaywright } from './evaluate.js';
 import { pressKeyViaPlaywright } from './keyboard.js';
+import { createFakeNavigationFence } from './navigation-fence.test-support.js';
 import { assertInteractionNavigationCompletedSafely, withPageNavigationRequestGuard } from './navigation.js';
 
 const mocks = vi.hoisted(() => ({ lookup: vi.fn() }));
 vi.mock('node:dns/promises', async (original) => ({ ...(await original<typeof Dns>()), lookup: mocks.lookup }));
 
-type Handler = (route: Route, request: Request) => Promise<void>;
 const cdpUrl = 'ws://127.0.0.1:39921/devtools/browser/review';
 
 function deferred<T>() {
@@ -30,31 +29,23 @@ function deferred<T>() {
 }
 
 function fixture(url = 'about:blank') {
-  let handler: Handler | undefined;
   const native = vi.fn().mockResolvedValue(undefined);
   const frame = {};
+  const fence = createFakeNavigationFence({
+    url: () => url,
+    respond: (method) =>
+      method === 'Target.getTargetInfo' ? { targetInfo: { targetId: 'T1', type: 'page', url } } : undefined,
+  });
   const context = {
     browser: () => browser,
     pages: () => [page],
-    newCDPSession: () =>
-      Promise.resolve({
-        send: () => Promise.resolve({ targetInfo: { targetId: 'T1', type: 'page', url } }),
-        detach: () => Promise.resolve(),
-      }),
+    newCDPSession: fence.newCDPSession,
   };
   const page = Object.assign(new EventEmitter(), {
     url: () => url,
     context: () => context,
     isClosed: () => false,
     mainFrame: () => frame,
-    route: vi.fn((_pattern: string, next: Handler) => {
-      handler = next;
-      return Promise.resolve();
-    }),
-    unroute: vi.fn(() => {
-      handler = undefined;
-      return Promise.resolve();
-    }),
     keyboard: { press: native },
     evaluate: native,
   }) as unknown as Page;
@@ -68,15 +59,7 @@ function fixture(url = 'about:blank') {
         detach: () => Promise.resolve(),
       }),
   }) as unknown as Browser;
-  const dispatch = (requestUrl: string) => {
-    const fallback = vi.fn().mockResolvedValue(undefined);
-    const fulfill = vi.fn().mockResolvedValue(undefined);
-    const route = { fallback, fulfill, abort: vi.fn().mockResolvedValue(undefined) } as unknown as Route;
-    const request = { url: () => requestUrl, frame: () => ({}), isNavigationRequest: () => true } as unknown as Request;
-    if (!handler) throw new Error('guard not installed');
-    return { done: handler(route, request), fallback, fulfill };
-  };
-  return { page, browser, native, dispatch };
+  return { page, browser, native, fence };
 }
 
 beforeEach(() => {
@@ -203,57 +186,47 @@ describe('review: background preflight security ownership', () => {
     expect(f.native).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])('releases a pre-input abort without awaiting unrelated route DNS (deny=%s)', async (deny) => {
-    const f = fixture();
-    const dns = deferred<{ address: string; family: number }[]>();
-    mocks.lookup.mockReturnValue(dns.promise);
-    const controller = new AbortController();
-    const reason = new Error('cancel before input');
-    let route: ReturnType<typeof f.dispatch> | undefined;
-    vi.mocked(f.page.route).mockImplementation((_pattern, callback) => {
-      const fallback = vi.fn().mockResolvedValue(undefined);
-      const fulfill = vi.fn().mockResolvedValue(undefined);
-      const request = {
-        url: () => `https://route-${String(deny)}.review.example/`,
-        frame: () => ({}),
-        isNavigationRequest: () => true,
-      } as unknown as Request;
-      route = {
-        done: (callback as Handler)(
-          { fallback, fulfill, abort: vi.fn().mockResolvedValue(undefined) } as unknown as Route,
-          request,
-        ),
-        fallback,
-        fulfill,
-      };
-      controller.abort(reason);
-      return Promise.resolve({ dispose: () => Promise.resolve(), [Symbol.asyncDispose]: () => Promise.resolve() });
-    });
-    const pending = withPageNavigationRequestGuard({
-      cdpUrl,
-      page: f.page,
-      signal: controller.signal,
-      action: f.native,
-    });
-    const settled = vi.fn();
-    void pending.then(settled, settled);
-    try {
-      await vi.waitFor(() => {
-        expect(mocks.lookup).toHaveBeenCalled();
+  it.each([false, true])(
+    'releases a pre-input abort without awaiting unrelated document DNS (deny=%s)',
+    async (deny) => {
+      const f = fixture();
+      const dns = deferred<{ address: string; family: number }[]>();
+      mocks.lookup.mockReturnValue(dns.promise);
+      const controller = new AbortController();
+      const reason = new Error('cancel before input');
+      let document: ReturnType<typeof f.fence.pauseDocument> | undefined;
+      const send = f.fence.session.send.getMockImplementation();
+      f.fence.session.send.mockImplementation((method, params) => {
+        if (method === 'Network.enable' && !document) {
+          document = f.fence.pauseDocument(`https://document-${String(deny)}.review.example/`, { subframe: true });
+          controller.abort(reason);
+        }
+        return send?.(method, params) ?? Promise.resolve({});
       });
-      await vi.waitFor(
-        () => {
-          expect(settled).toHaveBeenCalledWith(reason);
-        },
-        { timeout: 150 },
-      );
-      expect(f.native).not.toHaveBeenCalled();
-    } finally {
-      dns.resolve([{ address: deny ? '10.0.0.5' : '93.184.216.34', family: 4 }]);
-      await pending.catch(() => undefined);
-      await route?.done;
-    }
-    expect(route?.fallback).toHaveBeenCalledTimes(deny ? 0 : 1);
-    expect(route?.fulfill).toHaveBeenCalledTimes(deny ? 1 : 0);
-  });
+      const pending = withPageNavigationRequestGuard({
+        cdpUrl,
+        page: f.page,
+        signal: controller.signal,
+        action: f.native,
+      });
+      const settled = vi.fn();
+      void pending.then(settled, settled);
+      try {
+        await vi.waitFor(() => {
+          expect(mocks.lookup).toHaveBeenCalled();
+        });
+        await vi.waitFor(
+          () => {
+            expect(settled).toHaveBeenCalledWith(reason);
+          },
+          { timeout: 150 },
+        );
+        expect(f.native).not.toHaveBeenCalled();
+      } finally {
+        dns.resolve([{ address: deny ? '10.0.0.5' : '93.184.216.34', family: 4 }]);
+        await pending.catch(() => undefined);
+      }
+      expect(await document).toEqual(deny ? { continued: false, errorReason: 'Aborted' } : { continued: true });
+    },
+  );
 });

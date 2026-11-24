@@ -254,6 +254,7 @@ export type BrowserProxyMode = 'direct' | 'explicit-browser-proxy';
 /** Options for browser navigation SSRF policy. */
 export interface BrowserNavigationPolicyOptions {
   ssrfPolicy?: SsrfPolicy;
+  standingSsrfPolicy?: SsrfPolicy;
   browserProxyMode?: BrowserProxyMode;
   signal?: AbortSignal;
 }
@@ -267,10 +268,11 @@ export interface BrowserNavigationRequestLike {
 /** Build a BrowserNavigationPolicyOptions from an SsrfPolicy (and optional proxy mode). */
 export function withBrowserNavigationPolicy(
   ssrfPolicy?: SsrfPolicy,
-  opts?: { browserProxyMode?: BrowserProxyMode },
+  opts?: { browserProxyMode?: BrowserProxyMode; standingSsrfPolicy?: SsrfPolicy },
 ): BrowserNavigationPolicyOptions {
   return {
     ...(ssrfPolicy ? { ssrfPolicy } : {}),
+    ...(opts?.standingSsrfPolicy ? { standingSsrfPolicy: opts.standingSsrfPolicy } : {}),
     ...(opts?.browserProxyMode && opts.browserProxyMode !== 'direct'
       ? { browserProxyMode: opts.browserProxyMode }
       : {}),

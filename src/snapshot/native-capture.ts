@@ -5,6 +5,7 @@ import type { SnapshotOptions } from '../types.js';
 
 import { markNativeRefs, withNativeSnapshotRoot } from './native-markers.js';
 import { buildNativeRoleSnapshot, readScopedAXNodes, type NativeRoleSnapshot } from './native-tree.js';
+import { redactAXNodesInsideSensitiveField, redactSensitiveAXNodeValues } from './sensitive-field-values.js';
 
 /** Keep root resolution, AX capture, and marker binding on one owned native session. */
 export async function captureNativeRoleSnapshot(opts: {
@@ -31,6 +32,8 @@ export async function captureNativeRoleSnapshot(opts: {
             run: async (rootBackendNodeId) => {
               await session.send('Accessibility.enable');
               const nodes = await readScopedAXNodes(session, rootBackendNodeId);
+              await redactSensitiveAXNodeValues(session, nodes);
+              await redactAXNodesInsideSensitiveField(session, nodes, rootBackendNodeId);
               opts.assertCurrent();
               const captured = buildNativeRoleSnapshot(nodes, rootBackendNodeId, opts.options);
               const marked = await markNativeRefs({

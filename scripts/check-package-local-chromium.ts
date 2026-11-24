@@ -26,8 +26,9 @@ const library = entry.endsWith('.cjs')
   : await import(pathToFileURL(entry).href);
 const localCache = path.join(packageRoot, '.local-browsers');
 const fallbackCache = '/__browserclaw_package_smoke__/xdg/ms-playwright';
-const localBrowser = path.join(localCache, 'chromium-999', 'chrome-linux-arm64', 'chrome');
-const fallbackBrowser = path.join(fallbackCache, 'chromium-999', 'chrome-linux64', 'chrome');
+const archLayout = process.arch === 'arm64' ? 'chrome-linux-arm64' : 'chrome-linux64';
+const localBrowser = path.join(localCache, 'chromium-999', archLayout, 'chrome');
+const fallbackBrowser = path.join(fallbackCache, 'chromium-999', 'chrome-linux', 'chrome');
 const expected = mode === 'local' ? localBrowser : fallbackBrowser;
 const profile = '/__browserclaw_package_smoke__/profile';
 const attempted = [];

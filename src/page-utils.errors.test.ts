@@ -33,6 +33,14 @@ describe('actionable error diagnostics', () => {
     expect(toAIFriendlyError(new Error(`locator.fill: ${message}`), 'e1').message).toContain(expected);
   });
 
+  it.each([
+    ['click: Timeout 8000ms exceeded.', 'timed out after 8000ms'],
+    ['Error: fill: Error: Element is not an <input>, <textarea> or [contenteditable] element', 'not editable'],
+    ['click: Error: strict mode violation: locator("button") resolved to 2 elements', 'matched 2 elements'],
+  ])('recognizes a headline behind a bare method prefix: %s', (message, expected) => {
+    expect(toAIFriendlyError(new Error(message), 'e1').message).toContain(expected);
+  });
+
   it('uses the final timeout state rather than an earlier transient state', () => {
     const error = new Error(
       'locator.click: Timeout 5000ms exceeded.\nCall log:\n - element is not visible\n 2 × element is not enabled',

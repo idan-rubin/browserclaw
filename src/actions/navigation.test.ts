@@ -67,13 +67,13 @@ vi.mock('../page-target.js', () => ({
 
 const { createPageViaPlaywright, assertPageNavigationCompletedSafely, listPagesViaPlaywright, navigateViaPlaywright } =
   await import('./navigation.js');
+const { createFakeNavigationFence } = await import('./navigation-fence.test-support.js');
 const { InvalidBrowserNavigationUrlError } = await import('../security.js');
 
 interface FakePage {
   goto: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
-  route: ReturnType<typeof vi.fn>;
-  unroute: ReturnType<typeof vi.fn>;
+  context: () => unknown;
   url: () => string;
   title: () => Promise<string>;
   on: ReturnType<typeof vi.fn>;
@@ -85,11 +85,11 @@ interface FakePage {
 }
 
 function buildFakePage(overrides: Partial<FakePage> = {}): FakePage {
+  const fence = createFakeNavigationFence({ url: () => 'https://example.test/' });
   return {
     goto: vi.fn().mockResolvedValue({ request: () => ({ redirectedFrom: () => null }) }),
     close: vi.fn().mockResolvedValue(undefined),
-    route: vi.fn().mockResolvedValue(undefined),
-    unroute: vi.fn().mockResolvedValue(undefined),
+    context: () => ({ newCDPSession: fence.newCDPSession }),
     url: () => 'https://example.test/',
     title: () => Promise.resolve('ok'),
     on: vi.fn(),
@@ -105,6 +105,38 @@ function buildFakePage(overrides: Partial<FakePage> = {}): FakePage {
 interface FakeContext {
   newPage: ReturnType<typeof vi.fn>;
 }
+
+describe('navigateViaPlaywright on a page that keeps requesting documents', () => {
+  it('returns once the navigation commits', async () => {
+    const fence = createFakeNavigationFence({ url: () => 'https://example.test/' });
+    const page = buildFakePage({
+      context: () => ({ newCDPSession: fence.newCDPSession }),
+      goto: vi.fn(
+        () => new Promise((resolve) => setTimeout(resolve, 30, { request: () => ({ redirectedFrom: () => null }) })),
+      ),
+    });
+    mockGetPageForTargetId.mockReset();
+    mockGetPageForTargetId.mockResolvedValue(page as unknown as Page);
+    mockAssertBrowserNavigationAllowed.mockImplementation(() => new Promise((resolve) => setTimeout(resolve, 40)));
+    const stream = setInterval(() => void fence.pauseDocument('https://example.test/stream'), 5);
+    try {
+      const navigated = navigateViaPlaywright({
+        cdpUrl: 'http://localhost:9222',
+        targetId: 'T1',
+        url: 'https://example.test/',
+      }).catch((error: unknown) => error);
+      const outcome = await Promise.race([
+        navigated,
+        new Promise<string>((resolve) => setTimeout(resolve, 1500, 'still waiting')),
+      ]);
+      expect(outcome).toEqual({ url: 'https://example.test/' });
+    } finally {
+      clearInterval(stream);
+      mockAssertBrowserNavigationAllowed.mockReset();
+      mockAssertBrowserNavigationAllowed.mockResolvedValue(undefined);
+    }
+  });
+});
 
 describe('navigateViaPlaywright retry ownership', () => {
   it('passes the originating page when retiring a detached navigation adapter', async () => {
@@ -129,6 +161,32 @@ describe('navigateViaPlaywright retry ownership', () => {
     } finally {
       mockEnsurePageState.mockReturnValue({});
     }
+  });
+});
+
+describe('navigateViaPlaywright stop-loading scope', () => {
+  const stopsAfterFailedNavigation = async (error: Error): Promise<number> => {
+    const fence = createFakeNavigationFence({ url: () => 'https://example.test/' });
+    const page = buildFakePage({
+      goto: vi.fn().mockRejectedValue(error),
+      context: () => ({ newCDPSession: fence.newCDPSession }),
+    });
+    mockGetPageForTargetId.mockReset();
+    mockGetPageForTargetId.mockResolvedValue(page as unknown as Page);
+    await expect(
+      navigateViaPlaywright({ cdpUrl: 'http://localhost:9222', targetId: 'T1', url: 'https://example.test/next' }),
+    ).rejects.toThrow(error.message);
+    return fence.stops();
+  };
+
+  it('stops loading when its own navigation timed out', async () => {
+    const timeout = Object.assign(new Error('page.goto: Timeout 1000ms exceeded.'), { name: 'TimeoutError' });
+    expect(await stopsAfterFailedNavigation(timeout)).toBe(1);
+  });
+
+  it('leaves loading alone when the navigation failed because another one replaced it', async () => {
+    const replaced = new Error('page.goto: net::ERR_ABORTED at https://example.test/next');
+    expect(await stopsAfterFailedNavigation(replaced)).toBe(0);
   });
 });
 

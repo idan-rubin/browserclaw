@@ -1,12 +1,14 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
 import { describe, it, expect, vi } from 'vitest';
 
 import { isChromeReachable, launchChrome, stopChrome } from './chrome-launcher.js';
+import { startConnectionCdpServer } from './connection-cdp.test-support.js';
 import { startFakeCdpServer } from './fake-cdp.test-support.js';
 import type { RunningChrome } from './types.js';
 
@@ -188,6 +190,97 @@ describe('launchChrome asynchronous spawn failures', () => {
         expect(prefs.net.network_prediction_options).toBe(0);
       }
     } finally {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('launchChrome when the spawned browser exits before CDP is ready', () => {
+  function fakeBrowser(body: string): { userDataDir: string; executablePath: string } {
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'browserclaw-early-exit-'));
+    fs.writeFileSync(path.join(userDataDir, 'Local State'), '{}');
+    fs.mkdirSync(path.join(userDataDir, 'Default'));
+    fs.writeFileSync(path.join(userDataDir, 'Default', 'Preferences'), '{}');
+    const executablePath = path.join(userDataDir, 'browser');
+    fs.writeFileSync(executablePath, `#!/bin/sh\n${body}\n`, { mode: 0o700 });
+    return { userDataDir, executablePath };
+  }
+
+  async function freePort(): Promise<number> {
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as net.AddressInfo;
+    await new Promise<void>((resolve) =>
+      server.close(() => {
+        resolve();
+      }),
+    );
+    return port;
+  }
+
+  async function waitForFile(file: string): Promise<void> {
+    await vi.waitFor(
+      () => {
+        expect(fs.existsSync(file)).toBe(true);
+      },
+      { timeout: 5000 },
+    );
+  }
+
+  it('reports the exit status at once instead of polling the full window', async () => {
+    const { userDataDir, executablePath } = fakeBrowser('echo "cannot open display" >&2\nexit 7');
+    try {
+      const started = Date.now();
+      await expect(launchChrome({ executablePath, userDataDir })).rejects.toThrow(
+        /exited before CDP became ready \(code 7, signal null\)[\s\S]*cannot open display/,
+      );
+      expect(Date.now() - started).toBeLessThan(5000);
+    } finally {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('control: keeps waiting while the browser is still running', async () => {
+    const { userDataDir, executablePath } = fakeBrowser('sleep 1.5\nexit 7');
+    try {
+      const started = Date.now();
+      await expect(launchChrome({ executablePath, userDataDir })).rejects.toThrow(/code 7, signal null/);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(1400);
+    } finally {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not adopt another process that answers on the port after its own browser exited', async () => {
+    const { userDataDir, executablePath } = fakeBrowser('touch "$0.exiting"\nexit 3');
+    const cdpPort = await freePort();
+    let other: Awaited<ReturnType<typeof startConnectionCdpServer>> | undefined;
+    try {
+      const launching = launchChrome({ executablePath, userDataDir, cdpPort });
+      const rejected = expect(launching).rejects.toThrow(/exited before CDP became ready \(code 3, signal null\)/);
+      await waitForFile(`${executablePath}.exiting`);
+      other = await startConnectionCdpServer({ port: cdpPort });
+      await rejected;
+    } finally {
+      await other?.close();
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('control: the same responder counts as ready while the browser is running', async () => {
+    const { userDataDir, executablePath } = fakeBrowser('touch "$0.started"\nexec sleep 30');
+    const cdpPort = await freePort();
+    let other: Awaited<ReturnType<typeof startConnectionCdpServer>> | undefined;
+    let running: RunningChrome | undefined;
+    try {
+      const launching = launchChrome({ executablePath, userDataDir, cdpPort });
+      await waitForFile(`${executablePath}.started`);
+      other = await startConnectionCdpServer({ port: cdpPort });
+      running = await launching;
+      expect(running.cdpPort).toBe(cdpPort);
+    } finally {
+      running?.proc.kill('SIGKILL');
+      await other?.close();
       fs.rmSync(userDataDir, { recursive: true, force: true });
     }
   });

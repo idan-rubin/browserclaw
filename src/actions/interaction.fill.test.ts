@@ -21,13 +21,15 @@ vi.mock('../connection.js', async (importOriginal) => {
 });
 
 const { fillFormViaPlaywright } = await import('./interaction.js');
+const { createFakeNavigationFence } = await import('./navigation-fence.test-support.js');
 
 describe('fillFormViaPlaywright — mid-fill navigation', () => {
   it('throws NavigationRaceError instead of silently returning after a benign mid-fill navigation', async () => {
     let url = 'http://93.184.216.34/form';
+    const fence = createFakeNavigationFence({ url: () => url });
     const page = {
-      route: vi.fn().mockResolvedValue(undefined),
-      unroute: vi.fn().mockResolvedValue(undefined),
+      context: () => ({ newCDPSession: fence.newCDPSession }),
+      isClosed: () => false,
       url: () => url,
       on: () => undefined,
       off: () => undefined,

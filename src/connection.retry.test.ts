@@ -1,11 +1,39 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import * as transport from './cdp-transport.js';
 import { startConnectionCdpServer } from './connection-cdp.test-support.js';
 import { connectBrowser, disconnectBrowser } from './connection.js';
+import { UnresponsiveCdpTargetError } from './errors.js';
 
 describe('CDP connection retry classification', () => {
   afterEach(async () => {
+    vi.restoreAllMocks();
     await disconnectBrowser();
+  });
+
+  it('does not retry when a page target never answered initialization', async () => {
+    const cdp = await startConnectionCdpServer();
+    const unresponsive = new UnresponsiveCdpTargetError(['HUNG-TARGET']);
+    const connect = vi.spyOn(transport, 'connectOverPinnedCdp').mockRejectedValue(unresponsive);
+    try {
+      const configured = `${cdp.httpUrl.replace('http:', 'ws:')}/devtools/browser/configured`;
+      await expect(connectBrowser(configured)).rejects.toBe(unresponsive);
+      expect(connect).toHaveBeenCalledOnce();
+    } finally {
+      await cdp.close();
+    }
+  });
+
+  it('control: retries an ordinary connect timeout', async () => {
+    const cdp = await startConnectionCdpServer();
+    const connect = vi.spyOn(transport, 'connectOverPinnedCdp').mockRejectedValue(new Error('Timeout 5000ms exceeded'));
+    try {
+      const configured = `${cdp.httpUrl.replace('http:', 'ws:')}/devtools/browser/configured`;
+      await expect(connectBrowser(configured)).rejects.toThrow('Timeout 5000ms exceeded');
+      expect(connect).toHaveBeenCalledTimes(3);
+    } finally {
+      await cdp.close();
+    }
   });
 
   it('backs off and retries an HTTP429 websocket handshake', async () => {

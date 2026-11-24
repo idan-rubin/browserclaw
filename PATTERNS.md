@@ -177,7 +177,7 @@ async function agentStep(history: Anthropic.MessageParam[]): Promise<void> {
 Token indirection covers the LLM round-trip. It does **not** cover these channels — plug them explicitly:
 
 - **Your own logs.** Any `console.log(resolvedValue)` in the fill handler defeats the whole pattern. Log the token (pre-resolve), never the resolved value.
-- **Snapshots.** If the page renders a credential in plaintext (profile pages, confirmation screens, error messages like `"invalid password: hunter2"`), the next `page.snapshot()` captures it and ships it to the LLM. Redact or avoid snapshotting pages that display credentials.
+- **Snapshots.** browserclaw masks the value of password, one-time-code and card fields as `[redacted]`, so the field you just filled does not echo the secret back. Anything the page renders elsewhere in plaintext (profile pages, confirmation screens, error messages like `"invalid password: hunter2"`) is still captured by the next `page.snapshot()` and shipped to the LLM. Redact or avoid snapshotting pages that display credentials.
 - **Screenshots.** Same issue as snapshots, worse — image OCR in observability tools will surface the value. Don't capture screenshots of authenticated profile pages without a redaction pass.
 - **Error messages.** Playwright errors that include the typed text will leak on exception. Scrub the resolved value from any re-thrown message — for example:
 

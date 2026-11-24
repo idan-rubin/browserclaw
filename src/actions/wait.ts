@@ -84,6 +84,7 @@ export async function waitForViaPlaywright(
   };
   const waitOptions = () => ({ timeout: remaining(), signal: opts.signal });
   const source = waitPredicateSource(opts.fn);
+  const predicate = source !== '' ? createWaitPredicate(source) : undefined;
 
   const runWaitSequence = async () => {
     if (typeof opts.timeMs === 'number' && Number.isFinite(opts.timeMs)) {
@@ -124,7 +125,7 @@ export async function waitForViaPlaywright(
     if (opts.loadState !== undefined) {
       await step(() => page.waitForLoadState(opts.loadState, waitOptions()));
     }
-    if (source !== '') {
+    if (predicate) {
       opts.signal?.throwIfAborted();
       const documentController = new AbortController();
       const signal = opts.signal
@@ -151,7 +152,7 @@ export async function waitForViaPlaywright(
           signal.throwIfAborted();
           await step(() =>
             page.waitForFunction(
-              createWaitPredicate(source),
+              predicate,
               {
                 document: documentHandle,
                 arg: opts.arg,
@@ -170,7 +171,7 @@ export async function waitForViaPlaywright(
       }
     }
   };
-  if (source !== '') {
+  if (predicate) {
     await assertInteractionNavigationCompletedSafely({
       ...opts,
       page,

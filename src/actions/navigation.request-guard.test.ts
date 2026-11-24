@@ -1,35 +1,28 @@
-/* eslint-disable @typescript-eslint/unbound-method -- Page methods below are vi.fn mocks. */
-import type { Page, Request, Route } from 'playwright-core';
+import type { Page } from 'playwright-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { isBlockedPageRef } from '../connection.js';
 import * as Security from '../security.js';
 
+import { createFakeNavigationFence, FAKE_MAIN_FRAME_ID } from './navigation-fence.test-support.js';
 import {
   assertInteractionNavigationCompletedSafely,
   wasBrowserNavigationSourcePreservedAfterPolicyDenial,
   withPageNavigationRequestGuard,
 } from './navigation.js';
 
-type Handler = (route: Route, request: Request) => Promise<void>;
 const { InvalidBrowserNavigationUrlError } = Security;
+const preserved = { continued: false, errorReason: 'Aborted' };
 
 afterEach(() => vi.restoreAllMocks());
 
 function fixture() {
-  let handler: Handler | undefined;
   const frame = {};
   let url = 'about:blank';
+  const fence = createFakeNavigationFence({ url: () => url });
   const page = {
     url: () => url,
-    route: vi.fn((_pattern: string, value: Handler) => {
-      handler = value;
-      return Promise.resolve();
-    }),
-    unroute: vi.fn(() => {
-      handler = undefined;
-      return Promise.resolve();
-    }),
+    context: () => ({ newCDPSession: fence.newCDPSession }),
     on: vi.fn(),
     off: vi.fn(),
     mainFrame: () => frame,
@@ -37,32 +30,15 @@ function fixture() {
   } as unknown as Page;
   const dispatch = async (
     targetUrl: string,
-    options: { subframe?: boolean; failFulfill?: boolean; resourceType?: string } = {},
+    options: { subframe?: boolean; failPreserve?: boolean; redirected?: boolean } = {},
   ) => {
-    const send = vi.fn(() => {
-      if (options.subframe !== true) url = targetUrl;
-      return Promise.resolve();
-    });
-    const route = {
-      fallback: send,
-      continue: send,
-      fulfill: vi.fn(() =>
-        options.failFulfill === true ? Promise.reject(new Error('fulfill failed')) : Promise.resolve(),
-      ),
-      abort: vi.fn().mockResolvedValue(undefined),
-    };
-    const request = {
-      url: () => targetUrl,
-      frame: () => (options.subframe === true ? {} : frame),
-      isNavigationRequest: () => options.resourceType === undefined,
-      resourceType: () => options.resourceType ?? 'document',
-    };
-    if (handler) await handler(route as unknown as Route, request as unknown as Request);
-    else await send();
-    return route;
+    const outcome = await fence.pauseDocument(targetUrl, options);
+    if (outcome.continued && options.subframe !== true) url = targetUrl;
+    return outcome;
   };
   return {
     page,
+    fence,
     dispatch,
     setUrl: (value: string) => {
       url = value;
@@ -117,13 +93,11 @@ describe('interaction request policy enforcement', () => {
     await started;
     rejectPolicy(new InvalidBrowserNavigationUrlError('late policy denial'));
     await assertion;
-    const route = await dispatched;
-    expect(route?.fallback).not.toHaveBeenCalled();
-    expect(route?.fulfill).toHaveBeenCalledOnce();
+    expect(await dispatched).toEqual(preserved);
   });
 
   it('preserves an already detected policy denial over caller abort', async () => {
-    const { page, dispatch } = fixture();
+    const { page, fence, dispatch } = fixture();
     let rejectPolicy!: (error: Error) => void;
     const check = new Promise<void>((_resolve, reject) => {
       rejectPolicy = reject;
@@ -158,21 +132,20 @@ describe('interaction request policy enforcement', () => {
     const assertion = expect(operation).rejects.toThrow('pending document denied');
     await actionStarted;
     rejectPolicy(new InvalidBrowserNavigationUrlError('pending document denied'));
-    const route = await dispatched;
+    const outcome = await dispatched;
     abort(new Error('caller cancelled'));
-    expect(route?.fallback).not.toHaveBeenCalled();
-    expect(route?.fulfill).toHaveBeenCalledOnce();
+    expect(outcome).toEqual(preserved);
     expect(settled).not.toHaveBeenCalled();
-    expect(page.unroute).not.toHaveBeenCalled();
+    expect(fence.releases()).toBe(0);
     releaseNative();
     await assertion;
-    expect(page.unroute).toHaveBeenCalledOnce();
+    expect(fence.releases()).toBe(1);
   });
 
   it.each([false, true])(
     'returns caller abort while policy is stalled, retaining the guard (deny=%s)',
     async (deny) => {
-      const { page, dispatch } = fixture();
+      const { page, fence, dispatch } = fixture();
       let allowPolicy!: () => void;
       let denyPolicy!: (error: Error) => void;
       const check = new Promise<void>((resolve, reject) => {
@@ -217,25 +190,23 @@ describe('interaction request policy enforcement', () => {
           },
           { timeout: 100 },
         );
-        expect(page.unroute).not.toHaveBeenCalled();
+        expect(fence.releases()).toBe(0);
         if (deny) denyPolicy(new InvalidBrowserNavigationUrlError('late denial'));
         else allowPolicy();
-        const route = await dispatched;
-        expect(route?.fallback).toHaveBeenCalledTimes(deny ? 0 : 1);
-        expect(route?.fulfill).toHaveBeenCalledTimes(deny ? 1 : 0);
+        expect(await dispatched).toEqual(deny ? preserved : { continued: true });
       } finally {
         allowPolicy();
         releaseNative();
         await vi.waitFor(() => {
-          expect(page.unroute).toHaveBeenCalledOnce();
+          expect(fence.releases()).toBe(1);
         });
       }
     },
   );
 
   it('ignores cleanup failure only for an already closed page', async () => {
-    const { page } = fixture();
-    vi.mocked(page.unroute).mockRejectedValueOnce(new Error('target closed'));
+    const { page, fence } = fixture();
+    fence.failNext('Runtime.evaluate', new Error('target closed'));
     page.isClosed = () => true;
     await expect(
       withPageNavigationRequestGuard({
@@ -246,34 +217,28 @@ describe('interaction request policy enforcement', () => {
     ).resolves.toBe('completed');
   });
 
-  it('does not conceal fallback failures for ordinary non-document requests', async () => {
-    let handler: Handler | undefined;
-    const { page } = fixture();
-    vi.mocked(page.route).mockImplementation((_pattern, callback) => {
-      handler = callback;
-      return Promise.resolve({ dispose: () => Promise.resolve(), [Symbol.asyncDispose]: () => Promise.resolve() });
-    });
-    const route = {
-      fallback: vi.fn().mockRejectedValue(new Error('fallback transport failed')),
-      abort: vi.fn().mockResolvedValue(undefined),
-    };
-    const request = { frame: () => page.mainFrame(), isNavigationRequest: () => false, resourceType: () => 'image' };
+  it('does not conceal a document that could not be resumed', async () => {
+    const { page, fence, dispatch } = fixture();
+    fence.failNext('Fetch.continueRequest', new Error('resume transport failed'));
+    let outcome: Awaited<ReturnType<typeof dispatch>> | undefined;
     await expect(
       withPageNavigationRequestGuard({
         cdpUrl: 'http://localhost:39997',
         page,
         action: async () => {
-          await handler?.(route as unknown as Route, request as unknown as Request);
+          outcome = await dispatch('http://8.8.8.8/next');
         },
       }),
-    ).rejects.toThrow('fallback transport failed');
-    expect(route.abort).toHaveBeenCalledOnce();
+    ).rejects.toThrow('resume transport failed');
+    expect(outcome).toEqual({ continued: false, errorReason: 'Failed' });
+    expect(fence.stops()).toBeGreaterThan(0);
   });
+
   it.each([false, true])(
     'blocks a private document before dispatch (subframe=%s), preserving the source',
     async (subframe) => {
-      const { page, dispatch } = fixture();
-      let route: Awaited<ReturnType<typeof dispatch>> | undefined;
+      const { page, fence, dispatch } = fixture();
+      let outcome: Awaited<ReturnType<typeof dispatch>> | undefined;
       let denial: unknown;
       try {
         await assertInteractionNavigationCompletedSafely({
@@ -281,61 +246,61 @@ describe('interaction request policy enforcement', () => {
           page,
           previousUrl: page.url(),
           action: async () => {
-            route = await dispatch('http://169.254.169.254/latest/meta-data/', { subframe });
+            outcome = await dispatch('http://169.254.169.254/latest/meta-data/', { subframe });
           },
         });
       } catch (err) {
         denial = err;
       }
       expect(denial).toBeInstanceOf(InvalidBrowserNavigationUrlError);
-      expect(route?.fallback).not.toHaveBeenCalled();
-      expect(route?.fulfill).toHaveBeenCalledWith({ status: 204, body: '' });
+      expect(outcome).toEqual(preserved);
       expect(page.url()).toBe('about:blank');
       expect(wasBrowserNavigationSourcePreservedAfterPolicyDenial(denial)).toBe(true);
       expect(isBlockedPageRef('http://localhost:39990', page)).toBe(false);
-      expect(page.unroute).toHaveBeenCalled();
+      expect(fence.releases()).toBe(1);
     },
   );
 
   it('admits the identical private request with an explicit opt-in (non-vacuous control)', async () => {
     const { page, dispatch } = fixture();
-    const route = await withPageNavigationRequestGuard({
+    const outcome = await withPageNavigationRequestGuard({
       cdpUrl: 'http://localhost:39990',
       page,
       ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
       action: () => dispatch('http://169.254.169.254/latest/meta-data/'),
     });
-    expect(route.fallback).toHaveBeenCalledOnce();
-    expect(route.fulfill).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ continued: true });
     expect(page.url()).toContain('169.254.169.254');
   });
 
-  it('keeps ordinary non-document requests available', async () => {
-    const { page, dispatch } = fixture();
-    const route = await withPageNavigationRequestGuard({
+  it('pauses documents only, leaving every other request to the browser', async () => {
+    const { page, fence } = fixture();
+    await withPageNavigationRequestGuard({
       cdpUrl: 'http://localhost:39990',
       page,
-      action: () => dispatch('https://example.test/image.png', { subframe: true, resourceType: 'image' }),
+      action: () => Promise.resolve(),
     });
-    expect(route.fallback).toHaveBeenCalledOnce();
+    const enabled = fence.session.send.mock.calls.filter(([method]) => method === 'Fetch.enable');
+    expect(enabled).toEqual([
+      ['Fetch.enable', { patterns: [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }] }],
+    ]);
   });
 
-  it('preserves the policy error over an action cancellation and quarantines if204 fails', async () => {
+  it('preserves the policy error over an action cancellation and quarantines if the source cannot be kept', async () => {
     const { page, dispatch } = fixture();
-    let route: Awaited<ReturnType<typeof dispatch>> | undefined;
+    let outcome: Awaited<ReturnType<typeof dispatch>> | undefined;
     await expect(
       assertInteractionNavigationCompletedSafely({
         cdpUrl: 'http://localhost:39991',
         page,
         previousUrl: page.url(),
         action: async () => {
-          route = await dispatch('http://127.0.0.1/private', { failFulfill: true });
+          outcome = await dispatch('http://127.0.0.1/private', { failPreserve: true });
           throw new Error('action cancelled');
         },
       }),
     ).rejects.toBeInstanceOf(InvalidBrowserNavigationUrlError);
-    expect(route?.fallback).not.toHaveBeenCalled();
-    expect(route?.abort).toHaveBeenCalledOnce();
+    expect(outcome).toEqual({ continued: false, errorReason: 'Failed' });
     expect(isBlockedPageRef('http://localhost:39991', page)).toBe(true);
   });
 
@@ -359,18 +324,299 @@ describe('interaction request policy enforcement', () => {
     expect(page.url()).toBe('about:blank');
   });
 
-  it('fails closed if route installation or live-page removal fails', async () => {
-    const { page } = fixture();
+  it('keeps the tab navigable under its policy after a cleanup failure', async () => {
+    const { page, fence, dispatch } = fixture();
+    fence.failNext('Runtime.evaluate', new Error('cleanup barrier failed'));
+    await expect(
+      withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: () => Promise.resolve('clicked'),
+      }),
+    ).rejects.toThrow('cleanup barrier failed');
+    expect(await dispatch('http://8.8.8.8/next')).toEqual({ continued: true });
+    expect(await dispatch('http://127.0.0.1/denied')).toEqual({ continued: false, errorReason: 'BlockedByClient' });
+    await expect(
+      withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          expect(await dispatch('http://8.8.8.8/again')).toEqual({ continued: true });
+          return 'again';
+        },
+      }),
+    ).resolves.toBe('again');
+  });
+
+  it('returns from a finished action while the page keeps requesting documents', async () => {
+    const { page, dispatch } = fixture();
+    vi.spyOn(Security, 'assertBrowserNavigationAllowed').mockImplementation(
+      () => new Promise((resolve) => setTimeout(resolve, 40)),
+    );
+    const stream = setInterval(() => void dispatch('http://8.8.8.8/stream'), 5);
+    try {
+      const guarded = withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          return 'clicked';
+        },
+      });
+      const outcome = await Promise.race([
+        guarded,
+        new Promise<string>((resolve) => setTimeout(resolve, 1000, 'still waiting')),
+      ]);
+      expect(outcome).toBe('clicked');
+    } finally {
+      clearInterval(stream);
+    }
+  });
+
+  describe('a document the page requests between actions', () => {
+    const blockedPage = { continued: false, errorReason: 'BlockedByClient' };
+    const settleFirstAction = async (page: Page): Promise<void> => {
+      await withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: () => Promise.resolve(),
+      });
+    };
+
+    it('keeps the source when a redirect hop of that navigation is denied and carries no Referer', async () => {
+      const { page, fence, dispatch } = fixture();
+      await settleFirstAction(page);
+      fence.emit('Page.frameRequestedNavigation', { frameId: FAKE_MAIN_FRAME_ID, url: 'http://8.8.8.8/go' });
+      expect(await dispatch('http://8.8.8.8/go')).toEqual({ continued: true });
+      expect(await dispatch('http://8.8.8.8/again', { redirected: true })).toEqual({ continued: true });
+      expect(await dispatch('http://127.0.0.1/secret', { redirected: true })).toEqual(preserved);
+    });
+
+    it('keeps the source when the first hop was decided by an action and a later hop is denied', async () => {
+      const { page, fence, dispatch } = fixture();
+      await settleFirstAction(page);
+      await withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          fence.emit('Page.frameRequestedNavigation', { frameId: FAKE_MAIN_FRAME_ID, url: 'http://8.8.8.8/top' });
+          expect(await dispatch('http://8.8.8.8/top')).toEqual({ continued: true });
+        },
+      });
+      expect(await dispatch('http://127.0.0.1/secret', { redirected: true })).toEqual(preserved);
+    });
+
+    it('control: shows the blocked page for a denied document no page navigation led to', async () => {
+      const { page, fence, dispatch } = fixture();
+      await settleFirstAction(page);
+      expect(await dispatch('http://127.0.0.1/secret')).toEqual(blockedPage);
+      fence.emit('Page.frameRequestedNavigation', { frameId: FAKE_MAIN_FRAME_ID, url: 'http://8.8.8.8/go' });
+      expect(await dispatch('http://8.8.8.8/go')).toEqual({ continued: true });
+      expect(await dispatch('http://127.0.0.1/secret')).toEqual(blockedPage);
+    });
+
+    it('works on a runtime without URL.parse', async () => {
+      const { page, dispatch } = fixture();
+      const parse = Object.getOwnPropertyDescriptor(URL, 'parse');
+      Object.defineProperty(URL, 'parse', { value: undefined, configurable: true, writable: true });
+      try {
+        await settleFirstAction(page);
+        expect(await dispatch('http://8.8.8.8/go')).toEqual({ continued: true });
+      } finally {
+        if (parse) Object.defineProperty(URL, 'parse', parse);
+      }
+    });
+  });
+
+  describe('a frame at an origin no policy check has passed', () => {
+    const settleFirstAction = async (page: Page): Promise<void> => {
+      await withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: () => Promise.resolve(),
+      });
+    };
+
+    it('is checked when it asks for another document from that origin between actions', async () => {
+      const { page, fence, dispatch } = fixture();
+      await settleFirstAction(page);
+      fence.emit('Page.frameNavigated', { frame: { id: 'subframe', url: 'http://127.0.0.1/inner' } });
+      expect(await dispatch('http://127.0.0.1/secret', { subframe: true })).toEqual(preserved);
+    });
+
+    it('is checked again once a stricter policy replaces the one that passed its origin', async () => {
+      const { page, fence, dispatch } = fixture();
+      await withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+        action: async () => {
+          expect(await dispatch('http://127.0.0.1/inner', { subframe: true })).toEqual({ continued: true });
+        },
+      });
+      fence.emit('Page.frameNavigated', { frame: { id: 'subframe', url: 'http://127.0.0.1/inner' } });
+      expect(await dispatch('http://127.0.0.1/more', { subframe: true })).toEqual({ continued: true });
+      await settleFirstAction(page);
+      expect(await dispatch('http://127.0.0.1/secret', { subframe: true })).toEqual(preserved);
+    });
+
+    it('rechecks a document whose check was still running when a stricter policy took over', async () => {
+      const { page, fence, dispatch } = fixture();
+      await withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+        action: () => Promise.resolve(),
+      });
+      fence.emit('Page.frameNavigated', { frame: { id: 'subframe', url: 'http://127.0.0.1/inner' } });
+      let finishOldCheck!: () => void;
+      const check = vi.spyOn(Security, 'assertBrowserNavigationAllowed').mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishOldCheck = resolve;
+          }),
+      );
+      const requested = dispatch('http://127.0.0.1/first', { subframe: true });
+      await vi.waitFor(() => {
+        expect(check).toHaveBeenCalledOnce();
+      });
+      await settleFirstAction(page);
+      finishOldCheck();
+      expect(await requested).toEqual(preserved);
+      expect(await dispatch('http://127.0.0.1/second', { subframe: true })).toEqual(preserved);
+    });
+
+    it('rechecks a document its old policy refused once a more permissive policy took over', async () => {
+      const { page, dispatch } = fixture();
+      await settleFirstAction(page);
+      let refuseUnderOldPolicy!: (error: Error) => void;
+      const check = vi.spyOn(Security, 'assertBrowserNavigationAllowed').mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            refuseUnderOldPolicy = reject;
+          }),
+      );
+      const requested = dispatch('http://127.0.0.1/first', { subframe: true });
+      await vi.waitFor(() => {
+        expect(check).toHaveBeenCalledOnce();
+      });
+      await withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+        action: () => Promise.resolve(),
+      });
+      refuseUnderOldPolicy(new InvalidBrowserNavigationUrlError('private address'));
+      expect(await requested).toEqual({ continued: true });
+    });
+
+    it('control: skips the check once a document for that origin has passed one', async () => {
+      const { page, fence, dispatch } = fixture();
+      await settleFirstAction(page);
+      expect(await dispatch('http://8.8.8.8/inner', { subframe: true })).toEqual({ continued: true });
+      fence.emit('Page.frameNavigated', { frame: { id: 'subframe', url: 'http://8.8.8.8/inner' } });
+      const check = vi.spyOn(Security, 'assertBrowserNavigationAllowed');
+      expect(await dispatch('http://8.8.8.8/next', { subframe: true })).toEqual({ continued: true });
+      expect(check).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('release while Chrome holds renderer commands', () => {
+    const settledWithin = async (operation: Promise<unknown>, ms: number): Promise<boolean> => {
+      const settled = operation.then(
+        () => true,
+        () => true,
+      );
+      return await Promise.race([settled, new Promise<boolean>((resolve) => setTimeout(resolve, ms, false))]);
+    };
+
+    it('returns once a top-level document is pending, without waiting for the held flush', async () => {
+      const { page, fence, dispatch } = fixture();
+      fence.hold(['Runtime.evaluate', 'Network.disable']);
+      const guarded = withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          expect(await dispatch('http://8.8.8.8/slow')).toEqual({ continued: true });
+          return 'clicked';
+        },
+      });
+      await expect(guarded).resolves.toBe('clicked');
+      expect(fence.releases()).toBe(1);
+      expect(await dispatch('http://127.0.0.1/after-hand-off')).toEqual({
+        continued: false,
+        errorReason: 'BlockedByClient',
+      });
+    });
+
+    it('control: waits for the flush when only a subframe document is pending', async () => {
+      const { page, fence, dispatch } = fixture();
+      const answer = fence.hold(['Runtime.evaluate']);
+      const guarded = withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          expect(await dispatch('http://8.8.8.8/frame', { subframe: true })).toEqual({ continued: true });
+          return 'clicked';
+        },
+      });
+      expect(await settledWithin(guarded, 50)).toBe(false);
+      answer();
+      await expect(guarded).resolves.toBe('clicked');
+    });
+
+    it('stops a pending top-level document after a guard error without waiting for the held flush', async () => {
+      const { page, fence, dispatch } = fixture();
+      fence.hold(['Runtime.evaluate'], { until: 'Page.stopLoading' });
+      const guarded = withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          expect(await dispatch('http://8.8.8.8/slow')).toEqual({ continued: true });
+          await dispatch('http://127.0.0.1/private-frame', { subframe: true });
+        },
+      });
+      expect(await settledWithin(guarded, 1000)).toBe(true);
+      await expect(guarded).rejects.toBeInstanceOf(InvalidBrowserNavigationUrlError);
+      expect(fence.stops()).toBeGreaterThan(0);
+    });
+
+    it('claims a tab whose earlier release Chrome is still holding', async () => {
+      const { page, fence, dispatch } = fixture();
+      const first = withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          fence.hold(['Runtime.evaluate', 'Network.disable', 'Network.enable']);
+          expect(await dispatch('http://8.8.8.8/slow')).toEqual({ continued: true });
+          return 'first';
+        },
+      });
+      await expect(first).resolves.toBe('first');
+      const second = withPageNavigationRequestGuard({
+        cdpUrl: 'http://localhost:39993',
+        page,
+        action: async () => {
+          expect(await dispatch('http://127.0.0.1/private')).toEqual(preserved);
+          return 'second';
+        },
+      });
+      expect(await settledWithin(second, 1000)).toBe(true);
+      await expect(second).rejects.toBeInstanceOf(InvalidBrowserNavigationUrlError);
+    });
+  });
+
+  it('fails closed if the fence cannot be installed or released on a live page', async () => {
+    const { page, fence } = fixture();
     const action = vi.fn().mockResolvedValue('done');
-    vi.mocked(page.route).mockRejectedValueOnce(new Error('install failed'));
+    fence.newCDPSession.mockRejectedValueOnce(new Error('install failed'));
     await expect(withPageNavigationRequestGuard({ cdpUrl: 'http://localhost:39993', page, action })).rejects.toThrow(
       'install failed',
     );
     expect(action).not.toHaveBeenCalled();
-    expect(page.unroute).toHaveBeenCalledOnce();
-    vi.mocked(page.unroute).mockRejectedValueOnce(new Error('remove failed'));
+    fence.failNext('Runtime.evaluate', new Error('release failed'));
     await expect(withPageNavigationRequestGuard({ cdpUrl: 'http://localhost:39993', page, action })).rejects.toThrow(
-      'remove failed',
+      'release failed',
     );
     expect(action).toHaveBeenCalledOnce();
   });

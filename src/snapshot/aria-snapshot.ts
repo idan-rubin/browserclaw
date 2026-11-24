@@ -6,7 +6,6 @@ import {
   ensurePageState,
   storeRoleRefsForTarget,
   withPlaywrightPageCdpSession,
-  takeAiSnapshotText,
 } from '../connection.js';
 import type { SnapshotResult, AriaSnapshotResult, AriaNode, RoleRefs, SnapshotOptions, SsrfPolicy } from '../types.js';
 
@@ -17,6 +16,7 @@ import { captureNativeRoleSnapshot } from './native-capture.js';
 import { markNativeRefs } from './native-markers.js';
 import { axValue, type AXNode } from './native-tree.js';
 import { buildRoleSnapshotFromAiSnapshot } from './ref-map.js';
+import { redactSensitiveAXNodeValues, takeRedactedAiSnapshotText } from './sensitive-field-values.js';
 
 interface SnapshotPageOptions {
   cdpUrl: string;
@@ -98,7 +98,7 @@ export async function snapshotRole(
       };
       let built: { snapshot: string; refs: RoleRefs; truncated?: boolean };
       if (opts.refsMode === 'aria') {
-        built = buildRoleSnapshotFromAiSnapshot(await takeAiSnapshotText(page, remaining()), opts.options);
+        built = buildRoleSnapshotFromAiSnapshot(await takeRedactedAiSnapshotText(page, remaining()), opts.options);
       } else {
         const locator = (frame ?? page).locator(selector || ':root');
         if (selector && (await locator.count()) === 0) {
@@ -176,6 +176,7 @@ export async function snapshotAria(opts: SnapshotPageOptions & { limit?: number 
         async (session) => {
           await session.send('Accessibility.enable');
           const response = await session.send('Accessibility.getFullAXTree');
+          await redactSensitiveAXNodeValues(session, response.nodes);
           assertCurrent();
           const nodes = formatAriaNodes(response.nodes, limit);
           const backendRefs = nodes.flatMap((node) =>

@@ -55,5 +55,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright-core install --with-deps chromium
+      - name: Require the Chromium revision playwright-core expects
+        run: node -e "const p = require('playwright-core').chromium.executablePath(); if (!require('fs').existsSync(p)) { console.error('Chromium is missing at ' + p); process.exit(1); }"
       - run: npm test

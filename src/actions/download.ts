@@ -294,8 +294,8 @@ export async function downloadViaPlaywright(opts: {
   opts.signal?.throwIfAborted();
 
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120000);
-  const outPath = opts.path.trim();
-  if (!outPath) throw new Error('path is required');
+  const outPath = opts.path;
+  if (!outPath.trim()) throw new Error('path is required');
 
   let admission: { armId: number; waiter: ReturnType<typeof createPageDownloadWaiter> } | undefined;
   try {

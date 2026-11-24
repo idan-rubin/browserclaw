@@ -15,7 +15,7 @@ import {
   hasProxyEnvConfigured,
   isCdpUrlProxyRouted,
 } from './chrome-launcher.js';
-import { BrowserTabNotFoundError } from './errors.js';
+import { BrowserTabNotFoundError, UnresponsiveCdpTargetError } from './errors.js';
 import { pageTargetInfo } from './page-target.js';
 import {
   ensurePageState,
@@ -70,7 +70,13 @@ export {
 
 // ── Errors ──
 
-export { BrowserTabNotFoundError, StaleRefError, SnapshotHydrationError, NavigationRaceError } from './errors.js';
+export {
+  BrowserTabNotFoundError,
+  StaleRefError,
+  SnapshotHydrationError,
+  NavigationRaceError,
+  UnresponsiveCdpTargetError,
+} from './errors.js';
 
 /**
  * Page extended with Playwright's AI-snapshot APIs.
@@ -797,7 +803,12 @@ export async function connectBrowser(
         try {
           browser = await connectAt(endpoint);
         } catch (connectErr) {
-          if (!isWebSocketUrl(normalized) || endpoint.url === normalized) throw connectErr;
+          if (
+            connectErr instanceof UnresponsiveCdpTargetError ||
+            !isWebSocketUrl(normalized) ||
+            endpoint.url === normalized
+          )
+            throw connectErr;
           browser = await connectAt({ url: normalized, lookup: configuredPin?.lookup });
         }
         if (isCancelled()) {
@@ -835,7 +846,7 @@ export async function connectBrowser(
       } catch (err) {
         if (isPolicyError(err)) throw err;
         lastErr = err;
-        if (isCancelled()) break;
+        if (isCancelled() || err instanceof UnresponsiveCdpTargetError) break;
         const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
         if (attempt === 2) break;
         const backoff =

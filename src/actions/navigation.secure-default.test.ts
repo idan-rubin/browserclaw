@@ -1,20 +1,21 @@
 import type { Page } from 'playwright-core';
 import { describe, it, expect } from 'vitest';
 
+import { createFakeNavigationFence } from './navigation-fence.test-support.js';
 import { assertInteractionNavigationCompletedSafely } from './navigation.js';
 
 const START_URL = 'http://93.184.216.34/page';
 
 function makeFakePage(): Page & { setUrl: (u: string) => void } {
   let current = START_URL;
+  const fence = createFakeNavigationFence({ url: () => current });
   const page = {
     url: () => current,
     on: () => undefined,
     off: () => undefined,
     mainFrame: () => ({}),
     close: () => Promise.resolve(),
-    route: () => Promise.resolve(),
-    unroute: () => Promise.resolve(),
+    context: () => ({ newCDPSession: fence.newCDPSession }),
     isClosed: () => false,
     setUrl: (u: string) => {
       current = u;

@@ -173,11 +173,11 @@ const browser = await BrowserClaw.connect('http://host:9222', { authToken: '…'
 const browser = await BrowserClaw.connect();
 ```
 
-`connect()` checks that Chrome is reachable, then the internal CDP connection retries 3 times with increasing timeouts (5 s, 7 s, 9 s) — safe for Docker/CI where Chrome starts slowly.
+`connect()` checks that Chrome is reachable, then the internal CDP connection retries 3 times with increasing timeouts (5 s, 7 s, 9 s) — safe for Docker/CI where Chrome starts slowly. If an attempt times out because a tab never answered during initialization, the retries stop and `connect()` throws `UnresponsiveCdpTargetError` naming that tab (`err.targetIds`): close the tab or restart the browser.
 
 Always call `stop()` when finished. A handle created by `launch()` owns the Chrome process and terminates it on stop. A handle created by `connect()` releases its connection lease without terminating externally launched Chrome; the shared Playwright adapter closes when the last handle stops. Stopping one connected handle leaves other handles to the same endpoint usable. Stopping the launching handle still terminates its Chrome process, even if connected handles remain.
 
-When headless Chromium is detected, browserclaw installs a guard that rejects modal WebAuthn passkey requests with `NotAllowedError` so clicks and keys remain usable. Conditional (autofill) requests retain their native behavior; use a headed browser for interactive passkey sign-in.
+When headless Chromium is detected, browserclaw installs a guard that rejects modal WebAuthn passkey requests with `NotAllowedError` so clicks and keys remain usable. Conditional (autofill) requests retain their native behavior; use a headed browser for interactive passkey sign-in. A `chrome-headless-shell` executable can only be launched with `headless: true`.
 
 **Anti-detection:** `launch()` always passes Chrome the flag that disables the `AutomationControlled` Blink feature.
 `connect()` attaches to an already-running Chrome, so it cannot add launch flags retroactively. To inject JavaScript
@@ -221,6 +221,8 @@ When a launch fails because Chrome reports the profile is in use by another proc
 **Secure by default.** browserclaw validates navigation URLs and DNS answers, blocking private and loopback addresses — `127.0.0.1`, RFC 1918 ranges, link-local, the RFC 2544 range, IPv6 ULA, and cloud metadata endpoints like `169.254.169.254` unless an applicable policy exemption permits them. Explicit hostname denials take precedence over exemptions.
 
 CDP HTTP and WebSocket connections use direct sockets with the validated DNS lookup for the actual dial. They do not use `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY`; remote CDP endpoints must be directly reachable. Chrome page-navigation proxy settings are separate. Chrome resolves page-navigation hostnames independently, so those navigation checks alone cannot eliminate DNS rebinding. Set `ssrfPolicy.requireAllowlistedHostnames: true` to reject unlisted DNS hostnames; names admitted through `allowedHostnames` or `hostnameAllowlist` must still be trusted. This gate does not apply when private-network access is enabled, and `hostnameAllowlist` alone never grants a private-network exemption.
+
+The policy follows the tab, not just the URL you pass. Every redirect hop is checked before its request is sent. Once browserclaw has navigated or interacted with a tab (`goto`, `reload`, `goBack`, `goForward`, a click, a keypress), a document the page asks for on its own between your actions — a script redirect, a meta refresh, an iframe — is stopped when it points at a blocked address, leaving the current page in place. A tab you attached to and have only read from (snapshot, screenshot, text) is not intercepted until then; each call still validates the tab's current URL before reading it. Subresources and CORS preflights are left to the browser.
 
 To reach private or loopback hosts on purpose (local development, a dev tunnel, an internal dashboard), opt out explicitly:
 
@@ -295,6 +297,7 @@ import {
   StaleRefError, // ref is not in the current snapshot
   SnapshotHydrationError, // snapshot returned without interactive refs
   NavigationRaceError, // the page navigated during an operation
+  UnresponsiveCdpTargetError, // a tab never answered while connecting; close it or restart the browser
 } from 'browserclaw';
 
 try {
@@ -371,6 +374,8 @@ const { nodes } = await page.ariaSnapshot({ limit: 500 });
 - `'role'` — Captures the native accessibility tree and binds refs to DOM identities. Supports `selector` and `frameSelector` for scoped snapshots; navigation or frame replacement invalidates the capture.
 
 > **Security:** All snapshot results include `untrusted: true` to signal that the content originates from an external web page. AI agents consuming snapshots should treat this content as potentially adversarial (e.g. prompt injection via page text).
+
+> **Secrets stay out of snapshots:** the value of a password, one-time-code or card field (`type="password"`, or `autocomplete` of `current-password`, `new-password`, `one-time-code`, `cc-number`, `cc-csc`) is printed as `[redacted]` in every snapshot format, so the field you just filled does not hand the secret to the model or your logs. `[redacted]` as a field's value means the field holds one. The options of a sensitive `<select>` are masked whether or not one is chosen; `[selected]` marks the chosen one. Text the page renders elsewhere is not masked.
 
 ### Actions
 
@@ -764,7 +769,7 @@ npx tsx examples/basic.ts
 - **Chromium-based browser** installed (Chrome, Brave, Edge, or Chromium)
 - **playwright-core** >= 1.63 (installed automatically as a dependency)
 
-No need to install Playwright browsers — browserclaw uses your system's existing Chrome installation via CDP.
+No need to install Playwright browsers — browserclaw uses your system's existing Chrome installation via CDP. If none is found, it falls back to a Chromium already in Playwright's browser cache.
 
 ## Contributing
 

@@ -22,6 +22,7 @@ vi.mock('../connection.js', async (importOriginal) => {
 });
 
 const { awaitActionWithAbort, armFileUploadViaPlaywright } = await import('./interaction.js');
+const { createFakeNavigationFence } = await import('./navigation-fence.test-support.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // awaitActionWithAbort
@@ -117,8 +118,8 @@ interface FakeKeyboard {
 
 interface FakePage {
   url: () => string;
-  route: ReturnType<typeof vi.fn>;
-  unroute: ReturnType<typeof vi.fn>;
+  context: () => unknown;
+  isClosed: () => boolean;
   on: ReturnType<typeof vi.fn>;
   mainFrame: () => object;
   waitForEvent: ReturnType<typeof vi.fn>;
@@ -140,10 +141,11 @@ function buildFakePage(): {
     signalRegistered = resolve;
   });
 
+  const fence = createFakeNavigationFence({ url: () => 'about:blank' });
   const page: FakePage = {
     url: () => 'about:blank',
-    route: vi.fn().mockResolvedValue(undefined),
-    unroute: vi.fn().mockResolvedValue(undefined),
+    context: () => ({ newCDPSession: fence.newCDPSession }),
+    isClosed: () => false,
     on: vi.fn(),
     mainFrame: () => ({}),
     waitForEvent: vi.fn((eventName: string) => {
