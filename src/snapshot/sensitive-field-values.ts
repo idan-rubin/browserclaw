@@ -55,6 +55,8 @@ export async function redactSensitiveAXNodeValues(session: CDPSession, nodes: AX
       seen.add(node);
       if (axValue(node.value)) node.value = { value: REDACTED_FIELD_VALUE };
       if (node !== field && axValue(node.name)) node.name = { value: REDACTED_FIELD_VALUE };
+      // An option's tooltip repeats its text; the aria tree prints it as a description.
+      if (node !== field && axValue(node.description)) node.description = { value: REDACTED_FIELD_VALUE };
       for (const id of node.childIds ?? []) {
         const child = byId.get(id);
         if (child) pending.push(child);
@@ -69,7 +71,7 @@ export async function redactSensitiveAXNodeValues(session: CDPSession, nodes: AX
       const node = seen.has(id) ? undefined : byId.get(id);
       seen.add(id);
       if (!node) continue;
-      if (axValue(node.name) !== '' || axValue(node.value) !== '') return true;
+      if ([node.name, node.value, node.description].some((text) => axValue(text) !== '')) return true;
       pending.push(...(node.childIds ?? []));
     }
     return false;
@@ -114,6 +116,7 @@ export async function redactAXNodesInsideSensitiveField(
   for (const node of nodes) {
     if (axValue(node.value)) node.value = { value: REDACTED_FIELD_VALUE };
     if (axValue(node.name)) node.name = { value: REDACTED_FIELD_VALUE };
+    if (axValue(node.description)) node.description = { value: REDACTED_FIELD_VALUE };
   }
 }
 

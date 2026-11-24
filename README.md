@@ -375,7 +375,7 @@ const { nodes } = await page.ariaSnapshot({ limit: 500 });
 
 > **Security:** All snapshot results include `untrusted: true` to signal that the content originates from an external web page. AI agents consuming snapshots should treat this content as potentially adversarial (e.g. prompt injection via page text).
 
-> **Secrets stay out of snapshots:** the value of a password, one-time-code or card field (`type="password"`, or `autocomplete` of `current-password`, `new-password`, `one-time-code`, `cc-number`, `cc-csc`) is printed as `[redacted]` in every snapshot format, so the field you just filled does not hand the secret to the model or your logs. `[redacted]` means the field holds a value. Text the page renders elsewhere is not masked.
+> **Secrets stay out of snapshots:** the value of a password, one-time-code or card field (`type="password"`, or `autocomplete` of `current-password`, `new-password`, `one-time-code`, `cc-number`, `cc-csc`) is printed as `[redacted]` in every snapshot format, so the field you just filled does not hand the secret to the model or your logs. `[redacted]` as a field's value means the field holds one. The options of a sensitive `<select>` are masked whether or not one is chosen; `[selected]` marks the chosen one. Text the page renders elsewhere is not masked.
 
 ### Actions
 

@@ -295,6 +295,40 @@ describe('redactSensitiveAXNodeValues', () => {
     expect(described.sort()).toEqual([20, 40, 80]);
   });
 
+  it("masks the descriptions beneath a sensitive field and keeps the field's own", async () => {
+    const select = (id: number, option: Partial<AXNode>): AXNode[] => [
+      {
+        nodeId: String(id),
+        childIds: [String(id + 1)],
+        backendDOMNodeId: id,
+        role: { value: 'combobox' },
+        description: { value: 'Hint' },
+      },
+      { nodeId: String(id + 1), role: { value: 'option' }, ...option },
+    ];
+    const nodes: AXNode[] = [
+      ...select(20, { name: { value: 'Visa 4242' }, description: { value: 'Visa 4242' } }),
+      ...select(40, { description: { value: 'Saved 1111' } }),
+      ...select(60, { name: { value: 'Monthly' }, description: { value: 'Billed monthly' } }),
+    ];
+    await redactSensitiveAXNodeValues(
+      session((backendNodeId) =>
+        Promise.resolve({
+          node: { nodeName: 'SELECT', attributes: backendNodeId === 60 ? [] : ['autocomplete', 'cc-number'] },
+        }),
+      ),
+      nodes,
+    );
+    expect(nodes.map((node) => node.description?.value)).toEqual([
+      'Hint',
+      '[redacted]',
+      'Hint',
+      '[redacted]',
+      'Hint',
+      'Billed monthly',
+    ]);
+  });
+
   it('control: leaves ordinary described fields untouched', async () => {
     const nodes = tree();
     await redactSensitiveAXNodeValues(
@@ -347,10 +381,11 @@ describe('redactAXNodesInsideSensitiveField', () => {
         backendDOMNodeId: 30,
         role: { value: 'option' },
         name: { value: 'Visa 4242' },
+        description: { value: 'Visa 4242' },
       };
       const chain: AXNode[] = [option, { nodeId: '2', backendDOMNodeId: 20, role: { value: role } }];
       await redactAXNodesInsideSensitiveField(session(chain, field('cc-number')), [option], 30);
-      expect(option.name?.value).toBe('[redacted]');
+      expect([option.name?.value, option.description?.value]).toEqual(['[redacted]', '[redacted]']);
     },
   );
 

@@ -199,6 +199,22 @@ describe.skipIf(executablePath === undefined)('native snapshot capture (real Chr
       },
     );
 
+    it("masks the descriptions beneath a sensitive field in an aria tree snapshot and keeps the field's own", async () => {
+      await page.setContent(
+        '<select aria-label="Card" title="Card-hint" autocomplete="cc-number"><option title="1111-tip">Visa</option>' +
+          '<option selected aria-description="4242-described">Amex</option></select>' +
+          '<select aria-label="Saved" autocomplete="cc-number"><option aria-description="5555-only"></option></select>' +
+          '<select aria-label="Listed" size="2" autocomplete="cc-number"><option title="6666-tip">Listed</option></select>' +
+          '<div role="textbox" contenteditable="true" aria-label="Code" autocomplete="one-time-code">' +
+          '<a href="#" title="246810-tip">resend</a></div>' +
+          '<select aria-label="Plan"><option title="Monthly-visible" selected>Monthly</option></select>',
+      );
+      const captured = await captures['aria tree']();
+      expect(captured).not.toMatch(/1111|4242|5555|6666|246810/);
+      expect(captured).toContain('Card-hint');
+      expect(captured).toContain('Monthly-visible');
+    });
+
     it('masks a snapshot scoped to an element inside a sensitive field', async () => {
       const editable = 'role="textbox" contenteditable="true"';
       await page.setContent(
