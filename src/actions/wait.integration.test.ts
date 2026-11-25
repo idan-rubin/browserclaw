@@ -55,6 +55,19 @@ describe.skipIf(executablePath === undefined)('document-bound waits (real Chromi
     await waitForViaPlaywright({ cdpUrl: 'test', text: 'Visible content', textGone: 'missing' });
   });
 
+  it('disposes the returned handle after every successful text or predicate wait', async () => {
+    const text = await page.evaluateHandle(() => true);
+    const textGone = await page.evaluateHandle(() => true);
+    const predicate = await page.evaluateHandle(() => true);
+    const disposals = [text, textGone, predicate].map((handle) => vi.spyOn(handle, 'dispose'));
+    vi.spyOn(page, 'waitForFunction')
+      .mockResolvedValueOnce(text)
+      .mockResolvedValueOnce(textGone)
+      .mockResolvedValueOnce(predicate);
+    await waitForViaPlaywright({ cdpUrl: 'test', text: 'ready', textGone: 'pending', fn: () => true });
+    for (const dispose of disposals) expect(dispose).toHaveBeenCalledOnce();
+  });
+
   it('serializes async predicate polls and surfaces rejection', async () => {
     await page.setContent('<body></body>');
     await waitForViaPlaywright({

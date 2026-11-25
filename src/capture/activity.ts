@@ -1,3 +1,4 @@
+import { clearNetworkRequests } from '../cdp-network-log.js';
 import { getPageForTargetId, ensurePageState } from '../connection.js';
 import type { ConsoleMessage, PageError, NetworkRequest, SsrfPolicy } from '../types.js';
 
@@ -57,9 +58,6 @@ export async function getNetworkRequestsViaPlaywright(opts: {
   const raw = [...state.requests];
   const filter = typeof opts.filter === 'string' ? opts.filter.trim() : '';
   const requests = filter ? raw.filter((r) => r.url.includes(filter) || r.resourceType.includes(filter)) : raw;
-  if (opts.clear === true) {
-    state.requests = [];
-    state.requestIds = new WeakMap();
-  }
+  if (opts.clear === true) clearNetworkRequests(state);
   return { requests };
 }

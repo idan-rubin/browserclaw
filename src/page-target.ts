@@ -7,6 +7,7 @@ interface PageTargetInfo {
   title: string;
 }
 
+const targetIds = new WeakMap<Page, string>();
 const pendingReads = new WeakMap<Page, Promise<PageTargetInfo | null>>();
 const TARGET_INFO_TIMEOUT_MS = 2000;
 
@@ -20,7 +21,9 @@ export function pageTargetInfo(page: Page): Promise<PageTargetInfo | null> {
       const { targetInfo } = await session.send('Target.getTargetInfo');
       const identity = targetInfo as { targetId?: string; title?: string } | undefined;
       const targetId = identity?.targetId?.trim();
-      return targetId !== undefined && targetId !== '' ? { targetId, title: identity?.title ?? '' } : null;
+      if (targetId === undefined || targetId === '') return null;
+      targetIds.set(page, targetId);
+      return { targetId, title: identity?.title ?? '' };
     },
     TARGET_INFO_TIMEOUT_MS,
   );
@@ -31,4 +34,9 @@ export function pageTargetInfo(page: Page): Promise<PageTargetInfo | null> {
   // Coalesce concurrent reads only: titles can change while target IDs remain stable.
   void pending.then(release, release);
   return pending;
+}
+
+/** A Page's native target ID remains stable across document changes. */
+export async function pageTargetId(page: Page): Promise<string | null> {
+  return targetIds.get(page) ?? (await pageTargetInfo(page))?.targetId ?? null;
 }

@@ -1,4 +1,4 @@
-import type { Locator, Page } from 'playwright-core';
+import type { CDPSession, Locator, Page } from 'playwright-core';
 
 import { raceWithAbort } from '../abort.js';
 import { getPageEmulationState, runPageEmulationTransition } from '../page-emulation.js';
@@ -11,10 +11,73 @@ interface CaptureOptions {
   signal?: AbortSignal;
 }
 
-/** Headed and unidentified browsers keep the user's active tab. */
-export function activateHeadlessScreenshotPage(page: Page): Promise<void> | undefined {
-  if (isHeadlessContext(page.context())) return page.bringToFront().catch(() => undefined);
-  return undefined;
+/** Keep the target rendering for the capture without focusing a headed browser. */
+export async function withScreenshotRendering<T>(
+  page: Page,
+  signal: AbortSignal | undefined,
+  capture: () => Promise<T>,
+  renderingTimeoutMs?: number,
+): Promise<T> {
+  const renderDeadline = () =>
+    signal ?? (renderingTimeoutMs === undefined ? undefined : AbortSignal.timeout(renderingTimeoutMs));
+  let stageSignal = renderDeadline();
+  stageSignal?.throwIfAborted();
+  if (isHeadlessContext(page.context())) {
+    await raceWithAbort(
+      page.bringToFront().catch(() => undefined),
+      stageSignal,
+    );
+    stageSignal?.throwIfAborted();
+    return await capture();
+  }
+
+  // A one-pixel screencast keeps Chrome producing frames for a background tab.
+  const pending = page
+    .context()
+    .newCDPSession(page)
+    .catch(() => undefined);
+  let session: CDPSession | undefined;
+  let detached: Promise<void> | undefined;
+  const detach = () => (detached ??= pending.then((cdp) => cdp?.detach()).catch(() => undefined));
+  const onAbort = () => {
+    void detach();
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    session = await raceWithAbort(pending, stageSignal);
+    stageSignal?.throwIfAborted();
+    if (session) {
+      const cdp = session;
+      cdp.on('Page.screencastFrame', ({ sessionId }) => {
+        void cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => undefined);
+      });
+      await raceWithAbort(
+        cdp
+          .send('Page.startScreencast', { format: 'jpeg', quality: 1, maxWidth: 1, maxHeight: 1 })
+          .catch(() => undefined),
+        stageSignal,
+      );
+    }
+    stageSignal?.throwIfAborted();
+    // The native screenshot can have its own page/context timeout. Only an
+    // explicit caller deadline spans both the native capture and CDP cleanup.
+    stageSignal = signal;
+    return await capture();
+  } finally {
+    const cleanupSignal = stageSignal ?? renderDeadline();
+    try {
+      if (session && cleanupSignal?.aborted !== true) {
+        await raceWithAbort(
+          session.send('Page.stopScreencast').catch(() => undefined),
+          cleanupSignal,
+        );
+      }
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+      const released = detach();
+      if (cleanupSignal?.aborted !== true) await raceWithAbort(released, cleanupSignal);
+    }
+  }
 }
 
 /** Use the session that owns device metrics so capture does not reset mobile emulation. */
@@ -26,11 +89,6 @@ async function capturePageScreenshot(
   deadline?: number,
 ): Promise<Buffer> {
   signal.throwIfAborted();
-  const activation = activateHeadlessScreenshotPage(page);
-  if (activation) {
-    await raceWithAbort(activation, signal);
-    signal.throwIfAborted();
-  }
   const remaining = () => (deadline === undefined ? 0 : Math.max(1, deadline - Date.now()));
   const state = getPageEmulationState(page);
   const owner = state.metricsOwner;
@@ -113,7 +171,8 @@ export async function captureScreenshotWithEmulation(
   try {
     return await runPageEmulationTransition(
       page,
-      () => capturePageScreenshot(page, options, signal, locator, deadline),
+      () =>
+        withScreenshotRendering(page, signal, () => capturePageScreenshot(page, options, signal, locator, deadline)),
       signal,
     );
   } finally {

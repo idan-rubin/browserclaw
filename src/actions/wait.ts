@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
-import type { Frame } from 'playwright-core';
+import type { Frame, JSHandle } from 'playwright-core';
 
 import { getPageForTargetId, ensurePageState, normalizeTimeoutMs, resolveBoundedDelayMs } from '../connection.js';
 import type { SsrfPolicy, WaitOptions } from '../types.js';
@@ -82,6 +82,11 @@ export async function waitForViaPlaywright(
     }
     opts.signal?.throwIfAborted();
   };
+  const waitForResult = (action: () => Promise<JSHandle>) =>
+    step(async () => {
+      const handle = await action();
+      await handle.dispose();
+    });
   const waitOptions = () => ({ timeout: remaining(), signal: opts.signal });
   const source = waitPredicateSource(opts.fn);
   const predicate = source !== '' ? createWaitPredicate(source) : undefined;
@@ -96,14 +101,14 @@ export async function waitForViaPlaywright(
     }
     if (opts.text !== undefined && opts.text !== '') {
       const text = opts.text;
-      await step(() =>
+      await waitForResult(() =>
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- document.body is null before DOM ready
         page.waitForFunction((text) => (document.body?.innerText ?? '').includes(text), text, waitOptions()),
       );
     }
     if (opts.textGone !== undefined && opts.textGone !== '') {
       const textGone = opts.textGone;
-      await step(() =>
+      await waitForResult(() =>
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- document.body is null before DOM ready
         page.waitForFunction((text) => !(document.body?.innerText ?? '').includes(text), textGone, waitOptions()),
       );
@@ -150,7 +155,7 @@ export async function waitForViaPlaywright(
         page.on('framenavigated', onNavigated);
         try {
           signal.throwIfAborted();
-          await step(() =>
+          await waitForResult(() =>
             page.waitForFunction(
               predicate,
               {

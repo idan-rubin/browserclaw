@@ -1,5 +1,6 @@
 import { chromium, type Browser, type ConnectOverCDPTransport } from 'playwright-core';
 
+import { cdpNetworkLogs, createCdpNetworkLog } from './cdp-network-log.js';
 import { cdpMessageText, closeCdpSocket, openPinnedCdpSocket, type CdpEndpoint } from './cdp-network.js';
 import { UnresponsiveCdpTargetError } from './errors.js';
 
@@ -25,6 +26,7 @@ export async function connectOverPinnedCdp(
 ): Promise<Browser> {
   const deadline = Date.now() + Math.max(1, opts.timeoutMs);
   const socket = await openPinnedCdpSocket(endpoint, { ...opts, playwrightDefaults: true });
+  const networkLog = createCdpNetworkLog();
   let onMessage: ConnectOverCDPTransport['onmessage'];
   let onClose: ConnectOverCDPTransport['onclose'];
   const pending: object[] = [];
@@ -40,11 +42,13 @@ export async function connectOverPinnedCdp(
     closeReason = reason;
     pending.length = 0;
     pendingResumes.clear();
+    networkLog.clear();
     closeCdpSocket(socket);
   };
   const notifyClose = (reason: string): void => {
     setImmediate(() => {
       closeReason ??= reason;
+      networkLog.clear();
       if (closeNotified || !onClose) return;
       closeNotified = true;
       onClose(closeReason);
@@ -160,6 +164,7 @@ export async function connectOverPinnedCdp(
           return;
         }
       }
+      networkLog.receive(message);
       scheduleMessage(message);
     } catch {
       close();
@@ -173,6 +178,7 @@ export async function connectOverPinnedCdp(
   });
   try {
     const browser = await chromium.connectOverCDP(transport, { timeout: Math.max(1, deadline - Date.now()) });
+    cdpNetworkLogs.set(browser, networkLog);
     initializing = false;
     attachedPageTargets.clear();
     pendingSessionCommands.clear();

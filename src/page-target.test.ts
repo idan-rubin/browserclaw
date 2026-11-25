@@ -1,7 +1,7 @@
 import type { CDPSession, Page } from 'playwright-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { pageTargetInfo } from './page-target.js';
+import { pageTargetId, pageTargetInfo } from './page-target.js';
 
 describe('bounded browser-owned page metadata', () => {
   afterEach(() => {
@@ -22,6 +22,8 @@ describe('bounded browser-owned page metadata', () => {
     const first = pageTargetInfo(page);
     expect(pageTargetInfo(page)).toBe(first);
     expect(await first).toEqual({ targetId: 'tab-1', title: 'First title' });
+    expect(await pageTargetId(page)).toBe('tab-1');
+    expect(attach).toHaveBeenCalledOnce();
     send.mockResolvedValue({ targetInfo: { targetId: 'tab-1', title: 'Changed title' } });
     expect(await pageTargetInfo(page)).toEqual({ targetId: 'tab-1', title: 'Changed title' });
     expect(title).not.toHaveBeenCalled();

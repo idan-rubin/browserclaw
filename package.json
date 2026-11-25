@@ -1,6 +1,6 @@
 {
   "name": "browserclaw",
-  "version": "0.20.9",
+  "version": "0.20.10",
   "description": "AI-friendly browser automation with snapshot + ref targeting. No CSS selectors, no XPath, no vision — just numbered refs.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -66,7 +66,7 @@
     "minimatch": "^11.0.3"
   },
   "dependencies": {
-    "file-type": "^22.1.0",
+    "file-type": "^22.3.0",
     "ipaddr.js": "^2.3.0",
     "playwright-core": "^1.63.0",
     "ws": "^8.21.3"

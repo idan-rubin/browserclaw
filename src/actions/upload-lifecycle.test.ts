@@ -108,6 +108,7 @@ describe('armed upload lifetime', () => {
     const { done } = await armFileUploadViaPlaywright(options);
     const rejected = expect(done).rejects.toThrow('completing file upload');
     await vi.advanceTimersByTimeAsync(700);
+    vi.setSystemTime(Date.now() - 60_000);
     choosers[0].resolve({ setFiles, element: () => null });
     await flush();
     expect(setFiles).toHaveBeenCalledWith(options.paths, expect.objectContaining({ timeout: 300 }));

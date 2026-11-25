@@ -4,6 +4,7 @@ import https from 'node:https';
 import type { Browser, Page, Frame, CDPSession } from 'playwright-core';
 
 import { raceWithAbort } from './abort.js';
+import { cdpNetworkLogs } from './cdp-network-log.js';
 import { closeCdpSocket, fetchCdpJson, openPinnedCdpSocket, sendCdpCommand, type CdpEndpoint } from './cdp-network.js';
 import { connectOverPinnedCdp } from './cdp-transport.js';
 import {
@@ -16,7 +17,7 @@ import {
   isCdpUrlProxyRouted,
 } from './chrome-launcher.js';
 import { BrowserTabNotFoundError, UnresponsiveCdpTargetError } from './errors.js';
-import { pageTargetInfo } from './page-target.js';
+import { pageTargetId } from './page-target.js';
 import {
   ensurePageState,
   observeBrowser,
@@ -39,6 +40,8 @@ import {
   withBrowserNavigationPolicy,
 } from './security.js';
 import type { DialogHandler, SsrfPolicy } from './types.js';
+
+export { pageTargetId } from './page-target.js';
 
 // Re-export everything from sub-modules so existing `import … from './connection.js'`
 // paths keep working. When adding a public function to page-utils or ref-resolver,
@@ -1044,17 +1047,6 @@ export function getAllPages(browser: Browser) {
   return browser.contexts().flatMap((c) => c.pages().filter((p) => !p.url().startsWith('chrome://omnibox-popup')));
 }
 
-/** Cache of CDP target IDs — stable for a page's lifetime. */
-const pageTargetIdCache = new WeakMap<Page, string>();
-
-export async function pageTargetId(page: Page): Promise<string | null> {
-  const cached = pageTargetIdCache.get(page);
-  if (cached !== undefined) return cached;
-  const id = (await pageTargetInfo(page))?.targetId ?? null;
-  if (id !== null) pageTargetIdCache.set(page, id);
-  return id;
-}
-
 export async function findPageByTargetId(browser: Browser, targetId: string, cdpUrl?: string, ssrfPolicy?: SsrfPolicy) {
   // Retain the exported signature, but never infer identity from a URL or list order.
   if (cdpUrl !== undefined && cdpUrl !== '' && isBlockedTarget(cdpUrl, targetId, ssrfPolicy)) return null;
@@ -1080,6 +1072,7 @@ export async function findPageByTargetId(browser: Browser, targetId: string, cdp
 }
 
 async function partitionAccessiblePages(opts: {
+  browser: Browser;
   cdpUrl: string;
   pages: Page[];
   ssrfPolicy?: SsrfPolicy;
@@ -1111,6 +1104,8 @@ async function partitionAccessiblePages(opts: {
       blockedCount += 1;
       continue;
     }
+    const log = cdpNetworkLogs.get(opts.browser);
+    if (log) log.bind(targetId, ensurePageState(page));
     accessible.push(page);
   }
   return { accessible, blockedCount };
@@ -1165,6 +1160,7 @@ async function getPageForTargetIdOnce(opts: PageSelectionOptions) {
   const pages = getAllPages(browser);
   if (!pages.length) throw new Error('No pages available in the connected browser.');
   const { accessible, blockedCount } = await partitionAccessiblePages({
+    browser,
     cdpUrl: opts.cdpUrl,
     pages,
     ssrfPolicy: opts.ssrfPolicy,
@@ -1337,7 +1333,7 @@ export async function resolveActiveTargetId(
   const { browser } = await connectBrowser(cdpUrl, undefined, opts?.ssrfPolicy);
   const pages = getAllPages(browser);
   if (!pages.length) return null;
-  const { accessible } = await partitionAccessiblePages({ cdpUrl, pages, ssrfPolicy: opts?.ssrfPolicy });
+  const { accessible } = await partitionAccessiblePages({ browser, cdpUrl, pages, ssrfPolicy: opts?.ssrfPolicy });
   if (!accessible.length) return null;
 
   return pickActiveTargetId({
