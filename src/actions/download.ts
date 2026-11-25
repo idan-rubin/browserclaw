@@ -47,6 +47,7 @@ function createPageDownloadWaiter(
     }
     if (handler) {
       page.off('download', handler);
+      page.off('close', onClose);
       handler = undefined;
     }
   };
@@ -78,6 +79,9 @@ function createPageDownloadWaiter(
     }
     rejectOperation(reason);
   };
+  const onClose = () => {
+    abort(new Error('Page closed before download started.'));
+  };
   const onExternalAbort = () => {
     const reason: unknown = opts.signal?.reason;
     abort(
@@ -93,13 +97,15 @@ function createPageDownloadWaiter(
       releaseListener();
       resolve(download);
     };
+    page.on('close', onClose);
     page.on('download', handler);
     timer = setTimeout(() => {
       abort(new Error(opts.timeoutMessage ?? 'Timeout waiting for download'));
-    }, timeoutMs);
+    }, timeoutMs).unref();
   });
   opts.signal?.addEventListener('abort', onExternalAbort, { once: true });
   if (opts.signal?.aborted === true) onExternalAbort();
+  else if (typeof page.isClosed === 'function' && page.isClosed()) onClose();
   return {
     promise,
     signal: operation.signal,

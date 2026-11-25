@@ -101,6 +101,15 @@ describe.skipIf(executablePath === undefined)('native action state (real Chromiu
       await other.close();
     }
   });
+  it('leaves the native timeout for labeled captures to Playwright unless the caller supplies one', async () => {
+    page.setDefaultTimeout(150);
+    const nativeCapture = vi.spyOn(page, 'screenshot');
+    const target = new CrawlPage('test', 'target');
+    await target.screenshotWithLabels([]);
+    expect(nativeCapture).toHaveBeenLastCalledWith({ type: 'png', timeout: undefined });
+    await target.screenshotWithLabels([], { timeoutMs: 0 });
+    expect(nativeCapture).toHaveBeenLastCalledWith({ type: 'png', timeout: 0 });
+  });
   it('keeps mobile metrics and touch settings across a screenshot', async () => {
     await page.setContent('<meta name="viewport" content="width=device-width,initial-scale=1"><button>Mobile</button>');
     await setDeviceViaPlaywright({ cdpUrl: 'test', name: 'iPhone 13' });

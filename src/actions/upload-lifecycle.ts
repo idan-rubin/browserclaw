@@ -28,7 +28,7 @@ export async function armPageUpload(
   const controller = new AbortController();
   const { signal } = controller;
   const pending = new Set<Promise<unknown>>();
-  const deadline = Date.now() + opts.timeoutMs;
+  const deadline = performance.now() + opts.timeoutMs;
   const timer = setTimeout(() => {
     controller.abort(new Error(`Timeout ${String(opts.timeoutMs)}ms exceeded while completing file upload`));
   }, opts.timeoutMs);
@@ -61,7 +61,7 @@ export async function armPageUpload(
   });
   const lifetime: UploadLifetime = {
     signal,
-    remainingMs: () => Math.max(1, deadline - Date.now()),
+    remainingMs: () => Math.max(1, deadline - performance.now()),
     assertCurrent: () => {
       signal.throwIfAborted();
     },

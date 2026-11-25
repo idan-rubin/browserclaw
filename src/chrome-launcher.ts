@@ -37,6 +37,10 @@ const CHROME_SINGLETON_LOCK_PATHS = ['SingletonLock', 'SingletonSocket', 'Single
 // Brand-agnostic: stderr says "Chromium", "Google Chrome", "Microsoft Edge", ... per build; localized (non-English) messages won't match.
 export const CHROME_SINGLETON_IN_USE_PATTERN = /profile appears to be in use by another .{1,40} process/i;
 
+function hasErrnoCode(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
+}
+
 function readLinuxProcessStatus(pid: number): string | undefined {
   try {
     return fs.readFileSync(`/proc/${String(pid)}/status`, 'utf8');
@@ -58,7 +62,7 @@ function isExitedLinuxProcess(pid: number): boolean {
   try {
     process.kill(pid, 0);
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'ESRCH';
+    return hasErrnoCode(err, 'ESRCH');
   }
   return false;
 }
@@ -68,7 +72,7 @@ export function processExists(pid: number): boolean {
   try {
     process.kill(pid, 0);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EPERM') return false;
+    if (!hasErrnoCode(err, 'EPERM')) return false;
   }
   return (process.platform !== 'linux' && process.platform !== 'android') || !isExitedLinuxProcess(pid);
 }

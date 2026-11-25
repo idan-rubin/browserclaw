@@ -566,7 +566,7 @@ const { buffer, labels, skipped } = await page.screenshotWithLabels(['e1', 'e2',
 // skipped: refs that couldn't be found or had no bounding box
 ```
 
-When Browserclaw detects headless Chrome, screenshots activate the target tab so a background tab can produce a frame.
+In headed Chrome, screenshots capture background tabs while the user's active tab keeps focus. In detected headless Chrome, screenshots activate the target tab to render it.
 
 Both `screenshot()` and `pdf()` return a `Buffer`. Write to file with `fs.writeFileSync('out.png', screenshot)`.
 

@@ -59,6 +59,7 @@ vi.mock('../security.js', async (importOriginal) => {
 });
 
 vi.mock('../page-target.js', () => ({
+  pageTargetId: mockPageTargetId,
   pageTargetInfo: async (page: FakePage) => {
     const targetId = await mockPageTargetId(page);
     return targetId === null ? null : { targetId, title: 'browser-owned title' };

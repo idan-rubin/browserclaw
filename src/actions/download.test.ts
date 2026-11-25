@@ -489,16 +489,43 @@ describe('armNavigationDownloadCapture — secure-by-default URL validation', ()
     expect(saveAs).not.toHaveBeenCalled();
   });
 
+  it('rejects on close before a download and releases both listeners and the waiter depth', async () => {
+    const page = new EventEmitter();
+    const state = makeState();
+    const capture = armNavigationDownloadCapture(
+      page as unknown as Page,
+      state,
+      60_000,
+      'https://example.com/report.pdf',
+    );
+    page.emit('close');
+    await expect(capture.settle(1000)).rejects.toThrow('Page closed before download started');
+    expect(state.downloadWaiterDepth).toBe(0);
+    expect(page.listenerCount('close')).toBe(0);
+    expect(page.listenerCount('download')).toBe(0);
+  });
+
   it('saves a download that fired before the navigation error surfaced', async () => {
     const { writeFileSync, existsSync, rmSync } = await import('node:fs');
     const { DEFAULT_DOWNLOAD_DIR } = await import('../security.js');
-    const { page, emit } = pageWithDownloadEmitter();
+    const page = new EventEmitter();
     const saveAs = vi.fn((tempPath: string) => {
       writeFileSync(tempPath, 'payload');
       return Promise.resolve();
     });
-    const capture = armNavigationDownloadCapture(page, makeState(), 1000, 'https://example.com/report.pdf');
-    emit({ url: () => 'https://example.com/report.pdf', suggestedFilename: () => 'report.pdf', saveAs });
+    const capture = armNavigationDownloadCapture(
+      page as unknown as Page,
+      makeState(),
+      1000,
+      'https://93.184.216.34/report.pdf',
+    );
+    page.emit('download', {
+      url: () => 'https://93.184.216.34/report.pdf',
+      suggestedFilename: () => 'report.pdf',
+      saveAs,
+    });
+    expect(page.listenerCount('close')).toBe(0);
+    page.emit('close');
     const result = await capture.settle(1000);
     expect(saveAs).toHaveBeenCalledTimes(1);
     expect(result.path.startsWith(DEFAULT_DOWNLOAD_DIR)).toBe(true);

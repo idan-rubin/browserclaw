@@ -150,8 +150,18 @@ describe('page-owned emulation', () => {
 });
 
 describe('emulation-safe screenshot', () => {
-  it('captures via the metrics-owning session with visual viewport scale and restores touch', async () => {
+  function screenshotFixture() {
     const f = fixture();
+    const rendering = Object.assign(new EventEmitter(), {
+      send: vi.fn(() => Promise.resolve({})),
+      detach: vi.fn(() => Promise.resolve()),
+    });
+    f.attach.mockResolvedValue(rendering as unknown as CDPSession);
+    return { ...f, rendering };
+  }
+
+  it('captures via the metrics-owning session with visual viewport scale and restores touch', async () => {
+    const f = screenshotFixture();
     const state = getPageEmulationState(f.page);
     state.metricsOwner = { session: f.session, viewport: { width: 390, height: 664 } };
     state.touch = { session: f.session, enabled: true, maxTouchPoints: 5 };
@@ -166,7 +176,7 @@ describe('emulation-safe screenshot', () => {
   });
 
   it('uses native Playwright capture when no device metrics are owned', async () => {
-    const f = fixture();
+    const f = screenshotFixture();
     expect(await captureScreenshotWithEmulation(f.page, { type: 'jpeg', fullPage: true })).toEqual(
       Buffer.from('plain'),
     );
@@ -174,12 +184,13 @@ describe('emulation-safe screenshot', () => {
     const timeout = (f.screenshot.mock.calls[0] as unknown as [{ timeout: number }])[0].timeout;
     expect(timeout).toBeGreaterThan(0);
     expect(timeout).toBeLessThanOrEqual(20_000);
-    expect(f.attach).not.toHaveBeenCalled();
+    expect(f.rendering.detach).toHaveBeenCalledOnce();
+    expect(f.send).not.toHaveBeenCalled();
   });
 
   it('keeps a timed-out capture fenced until its underlying work settles', async () => {
     vi.useFakeTimers();
-    const f = fixture();
+    const f = screenshotFixture();
     const work = deferred<ReturnType<typeof Buffer.from>>();
     f.screenshot.mockReturnValueOnce(work.promise);
     const capture = captureScreenshotWithEmulation(f.page, { type: 'png', timeoutMs: 25 });
@@ -195,7 +206,7 @@ describe('emulation-safe screenshot', () => {
 
   it('cancels element preparation before it can start a late screenshot', async () => {
     vi.useFakeTimers();
-    const f = fixture();
+    const f = screenshotFixture();
     const screenshot = vi.fn();
     const dispose = vi.fn(() => Promise.resolve());
     const scrollIntoViewIfNeeded = vi.fn(
@@ -227,7 +238,7 @@ describe('emulation-safe screenshot', () => {
   });
 
   it('honors caller cancellation and keeps late native work fenced until it settles', async () => {
-    const f = fixture();
+    const f = screenshotFixture();
     const reason = new Error('caller cancelled screenshot');
     await expect(
       captureScreenshotWithEmulation(f.page, {

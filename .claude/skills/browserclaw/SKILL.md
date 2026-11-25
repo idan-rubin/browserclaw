@@ -127,7 +127,7 @@ await page.evaluate('window.scrollBy(0, 500)'); // page-level scroll
 
 ### Screenshot
 
-When Browserclaw detects headless Chrome, a screenshot activates the target tab so it can produce a frame.
+In headed Chrome, screenshots capture background tabs while the user's active tab keeps focus. In detected headless Chrome, screenshots activate the target tab to render it.
 
 ```typescript
 const buf = await page.screenshot(); // Buffer

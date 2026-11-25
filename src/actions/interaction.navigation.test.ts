@@ -71,7 +71,10 @@ function fixture(
     mainFrame: () => frame,
     isClosed: () => false,
     context: () => ({ newCDPSession: fence.newCDPSession }),
-    waitForFunction: dispatch,
+    waitForFunction: async () => {
+      await dispatch();
+      return { dispose: () => Promise.resolve() };
+    },
     evaluateHandle: () => Promise.resolve({ dispose: () => Promise.resolve() }),
     waitForEvent: () => Promise.resolve(chooser),
     keyboard: { press: vi.fn().mockResolvedValue(undefined) },

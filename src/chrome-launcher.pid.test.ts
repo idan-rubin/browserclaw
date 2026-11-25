@@ -65,6 +65,18 @@ describe('Chrome singleton PID liveness', () => {
     expect(processExists(pid)).toBe(false);
   });
 
+  it('interprets signal failures without errno codes on the first and repeated probes', () => {
+    const throwNonErrno = (): never => {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- exercises a syscall wrapper throwing a non-error value
+      throw null;
+    };
+    kill.mockImplementationOnce(throwNonErrno);
+    expect(processExists(pid)).toBe(false);
+    vi.spyOn(fs, 'readFileSync').mockReturnValue('Threads:\t0\n');
+    kill.mockReturnValueOnce(true).mockImplementationOnce(throwNonErrno);
+    expect(processExists(pid)).toBe(true);
+  });
+
   it('checks zombie status even after EPERM, but skips it for ESRCH', () => {
     const read = vi.spyOn(fs, 'readFileSync').mockReturnValue('State:\tZ\nThreads:\t1\n');
     kill.mockImplementation(() => {

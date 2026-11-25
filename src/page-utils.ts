@@ -13,7 +13,6 @@ export { truncateUtf16Safe } from './utf16.js';
 
 const MAX_CONSOLE_MESSAGES = 500;
 const MAX_PAGE_ERRORS = 200;
-const MAX_NETWORK_REQUESTS = 500;
 const MAX_OBSERVED_PAGE_TEXT_CHARS = 2048;
 
 function truncateObservedPageText(value: string): string {
@@ -207,42 +206,6 @@ export function ensurePageState(page: Page): PageState {
         timestamp: new Date().toISOString(),
       });
       if (state.errors.length > MAX_PAGE_ERRORS + 20) state.errors.splice(0, 20);
-    });
-
-    page.on('request', (req) => {
-      state.nextRequestId += 1;
-      const id = `r${String(state.nextRequestId)}`;
-      state.requestIds.set(req, id);
-      state.requests.push({
-        id,
-        timestamp: new Date().toISOString(),
-        method: req.method(),
-        url: req.url(),
-        resourceType: req.resourceType(),
-      });
-      if (state.requests.length > MAX_NETWORK_REQUESTS + 50) state.requests.splice(0, 50);
-    });
-
-    page.on('response', (resp) => {
-      const req = resp.request();
-      const id = state.requestIds.get(req);
-      if (id === undefined) return;
-      const rec = findNetworkRequestById(state, id);
-      if (rec) {
-        rec.status = resp.status();
-        rec.ok = resp.ok();
-      }
-    });
-
-    page.on('requestfailed', (req) => {
-      const id = state.requestIds.get(req);
-      if (id === undefined) return;
-      const rec = findNetworkRequestById(state, id);
-      if (rec) {
-        const failure = req.failure()?.errorText;
-        rec.failureText = failure !== undefined && failure !== '' ? truncateObservedPageText(failure) : undefined;
-        rec.ok = false;
-      }
     });
 
     page.on('dialog', (dialog) => {
